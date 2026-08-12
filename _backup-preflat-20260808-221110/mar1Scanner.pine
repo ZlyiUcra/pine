@@ -1,0 +1,3035 @@
+//@version=6
+// MAR1 Scanner - which pairs have a series open right now.
+//
+// The question this answers is the one a chart cannot: maRejection.pine tells you
+// everything about the pair in front of you and nothing about the other twenty-nine.
+// This runs the same state machine on a list of symbols at once and prints only
+// the pairs where a window is currently OPEN - a gate that opened and has not yet
+// been closed by a win.
+//
+// What "open" means here
+// ----------------------
+// Exactly what it means in maRejection.pine, because it is the same code path:
+//
+//   ARMED    the gate opened - a failure marker landed on the streak threshold,
+//            so the next signal on that pair is a live entry. No entry yet.
+//   RUNNING  N entries have been taken since the window opened and none of them
+//            has come out right yet. This is the "series not closed" state.
+//   idle     nothing pending. Not shown unless you ask for it.
+//
+// A window opens on a green diamond, or on the first entry when the streak gate
+// is Off and there are no green diamonds to open it. It closes on a win, and only
+// on a win. Nothing else - not time, not a change of trend - closes it.
+//
+// And the other half: what got finished
+// -------------------------------------
+// The second table is the log of windows that CLOSED, one row each: pair, the
+// minute the winning candle ended, how many entries it cost, and which way it
+// went. It starts over each day by default.
+//
+// The two tables are the same fact from opposite ends, and they are worth
+// reading as a pair. The scanner says where your attention is owed right now;
+// the log says what the day actually cost - and its average, entries per closed
+// window, is the number the streak gate exists to bring down.
+//
+// The cost, stated plainly
+// ------------------------
+// TradingView computes an indicator only for the symbol on the chart. The only
+// way to learn anything about the other pairs is request.security(), which
+// re-runs the whole calculation on each requested symbol's data. So this script
+// is roughly thirty times the work of the original, and that lands inside one
+// execution budget.
+//
+// Three levers when it times out, in the order worth trying:
+//
+//   1. blank out slots you do not need. A blank slot still spends one of the 40
+//      security calls TradingView allows, but on the chart's own symbol, whose
+//      data is already loaded.
+//   2. run it on a higher timeframe. Fewer bars, same logic.
+//   3. 'Bars of history per pair' - last, and reluctantly. It is the only lever
+//      that changes the ANSWER rather than the cost: a shorter history gives the
+//      streak gate a different threshold from the chart's, and the table stops
+//      agreeing with the large diamonds. See the input for the full reasoning.
+//
+// Two things it does NOT reproduce
+// --------------------------------
+// The scanner carries its own copy of every signal input, because Pine cannot
+// read another script's settings. KEEP THEM IN SYNC WITH maRejection.pine or the
+// two will disagree about what is open, and the scanner will be the one that is
+// wrong - the chart is the source of truth. The defaults below are the defaults
+// there, so an untouched pair of scripts already agrees.
+//
+// And the data feed matters: OANDA:EURUSD and FX_IDC:EURUSD are different price
+// series and will occasionally grade a candle differently. Point the slots at the
+// same exchange your charts use.
+indicator('MAR1 Scanner', overlay = true, max_bars_back = 200)
+
+// ---------------------------------------------------------------------------
+// Gate and window - the three settings the log below answers to
+// ---------------------------------------------------------------------------
+// First in the dialog, and first for one reason: these are the settings that get
+// changed while the finished-series log is open, and that log's entries-per-win
+// average is the number they move. Reading the average and reaching the setting
+// that changes it now happen on one screen, without a scroll between them.
+//
+// Pine has no way to order the settings dialog - sections appear in the order
+// their inputs are DECLARED - so first in the dialog and first in the file are
+// the same fact, and this is what being first costs: every setting below shifts
+// by three positions, and TradingView maps saved settings onto inputs BY
+// POSITION. See the note on the log section for the recovery.
+//
+//   Percentage            the cumulative cutoff the streak distribution is read
+//                         at, which becomes the gate threshold in Distribution
+//                         and in Max of both
+//   Min entries to start  the manual floor under that threshold
+//   A window is closed by which successes close a window - the definition every
+//                         number in the log is counted against
+//
+// All three are folded into CFGSUM, so maRejection.pine disagreeing about any of
+// them is caught rather than discovered. They are still Filters settings in
+// every sense that matters to the signal; only the header above them changed.
+// NOTHING BELOW PRINTS ITSELF IN THE STATUS LINE, and that is what
+// display = display.none on nearly every input in this file buys.
+//
+// TradingView prints an indicator's ARGUMENTS after its name in the legend, in
+// declaration order. This file has a hundred and two inputs - thirty pair slots
+// with their tick boxes are sixty of them on their own - and the line ran the
+// width of the chart with nothing saying which number was which. A legend that
+// has to be decoded is worse than no legend.
+//
+// display.none removes an input from that line and from the Data Window and
+// changes NOTHING ELSE: the input is fully live, fully editable, and sits in the
+// settings dialog exactly where it did. It is a display flag, not a switch, and
+// it does not touch the saved-settings POSITION that everything else in this
+// file has to be careful about.
+//
+// THREE ARE DELIBERATELY LEFT VISIBLE, the same three maRejection.pine keeps -
+// which is the point, since the two are meant to be read against each other:
+//
+//   MA Length      5 against 27 is not the same scanner twice. It is the one
+//                  setting every column in every table is measured with.
+//   Streak gate    with Off there is no gate at all, nothing is held back, and
+//                  every row is a live entry. Reading the tables without knowing
+//                  this is reading fiction.
+//   Fire signals   whether the hours filter is actually biting. A quiet table
+//   only inside    means 'nothing triggered' when this is off and 'nothing was
+//   those hours    allowed to' when it is on, and those are not the same fact.
+//
+// Everything else that a screenshot would have to carry is already folded into
+// CFGSUM at the foot, which catches a divergence from maRejection.pine that no
+// amount of squinting at a legend would.
+//
+// TO BRING ANY OTHER ONE BACK: delete ', display = display.none' from its line.
+// To hide one of the three above: add it. There is nothing to keep in sync - the
+// flag is per input and reaches no logic.
+gTune = 'Gate and window (must match MAR1)'
+
+basePercentage    = input.float(95.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+minEntriesToStart = input.int(5, 'Min entries to start', minval = 1, group = gTune, display = display.none)
+
+// Which successes close a window. 'Entries only' is the strict reading and the
+// default on both sides: a window is closed by a trade that was actually taken,
+// not by a signal the gate held back.
+successScope = input.string('Entries only', 'A window is closed by',
+     options = ['Entries only', 'Entries and warnings', 'All found signals'], group = gTune, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The log of finished series
+// ---------------------------------------------------------------------------
+// The scanner table further down answers "what is open". This answers the
+// opposite question - what got finished today - and it is the one that
+// accumulates into something worth reading back: pair, the minute the winning
+// candle closed, and how many entries that window cost.
+//
+// It is built from history rather than watched live, so it is complete the
+// moment the script loads: the state machine reports every closure it passes,
+// and the log keeps whichever ones fall inside the current period.
+//
+// Why this sits at the top of the file
+// ------------------------------------
+// Pine has no way to order the settings dialog: the sections appear in the order
+// their inputs are DECLARED, so being second in the dialog and being second in
+// the file are the same fact. This section and the custom window below it are
+// the two that get opened while trading rather than while setting the script up,
+// and they used to sit fourth and fifth, behind the whole Scanner group.
+//
+// Nothing is in front of them now except the three gate settings above, and that
+// pairing is the point rather than a side effect: those three and this log fit on
+// ONE screen of the dialog together, so the number being read and the settings
+// that move it are never a scroll apart. Signal, Filters and everything else are
+// set up once and then left alone, which is why they are all now below.
+//
+// The cost is the one this file has already paid once, at 'The custom log
+// window' below: TradingView maps saved settings onto inputs BY POSITION, so
+// moving these fifteen widgets in front of Signal, Filters, Scanner and the
+// thirty pair slots slides every one of those onto a value that was saved
+// against something else. The recovery is Defaults -> Reset settings, once, on
+// each chart already carrying the script - and it works because the defaults in
+// this file ARE the working setup, the twenty-one pairs below included.
+//
+// Anything ADDED later still goes to the bottom, next to the skip list, for
+// exactly the reason this move had to be paid for.
+gJrn = 'Finished series log'
+
+// How much of the log to put on the chart. The log itself is kept either way -
+// this only decides what is drawn.
+//
+// Full list by DEFAULT, which it was not until the log learned to wrap.
+//
+// Hidden was the honest default while a day of closures across twenty-one pairs
+// was one column taller than any chart window - the list arrived covering the
+// price it was supposed to be read against, and the two channels that cost no
+// screen space, the Pine Logs panel and the CSV export, were both already on.
+//
+// Blocks are what changed that: fifty-nine closures at twenty rows a block is
+// three short columns, which sits beside the price rather than over it. And this
+// file's defaults now have to stand on their own - moving this whole section to
+// the top of the dialog means a reset is how settings come back, and a reset
+// that hides the log looks exactly like a log that broke.
+//
+// Summary only is the middle setting: a single line with the count and the
+// average per window, which is the number the streak gate exists to bring down.
+journalShow = input.string('Full list', 'Show the log as',
+     options = ['Full list', 'Summary only', 'Hidden'], group = gJrn, display = display.none)
+
+// The way out of TradingView.
+//
+// Pine cannot write a file - it has no access to the disk, the network or the
+// clipboard. What TradingView itself has is 'Export chart data', which writes
+// every PLOT of every indicator on the chart into a CSV, one row per candle with
+// the candle's time in the first column. So the log leaves as thirty plots, one
+// per slot, each carrying nothing but the closures of its own pair.
+//
+// Set to data_window: no line on the chart, no value in the status line, but a
+// real series that the exporter can see. The chart stays exactly as clean as it
+// is with the table hidden.
+exportClosures = input.bool(true, 'Publish closures for CSV export', group = gJrn,
+     tooltip = 'Right-click the chart, Export chart data, pick the range, Export. The CLOSED 01..30 columns are empty except on the candle where that slot closed a series - the value is the entry count, positive for a long and negative for a short.', display = display.none)
+
+// The window the log covers, split into the two questions it actually has:
+// HOW LONG a stretch, and WHERE that stretch sits.
+//
+// It used to be one dropdown with a 'Custom window' entry in it, which asked you
+// to set a mode and then two numbers that were ignored in every other mode - so
+// nothing appeared to happen until all three agreed. Splitting it removes that:
+// the length is always live, and the anchor is the only thing that decides
+// whether the stretch follows the clock or stands still.
+//
+//   length N hours         with 'Ending now'        the last N hours, rolling
+//                          with 'Starting at hour'  a fixed slice of today
+//   length Day / Week      the calendar unit, from midnight UTC+1 or Monday.
+//                          The anchor does not apply - these carry their own
+//                          boundaries - and the start hour is ignored.
+//   length Everything      no window at all, until the row cap evicts the oldest
+//
+// Rolling is the working setting: a day is the smallest calendar unit there is,
+// and by the afternoon a day of closures is longer than the screen.
+//
+// Fixed is the reading-back setting. A rolling window cannot show you the London
+// open once it is three hours behind you, and a day shows it buried under
+// everything since. Naming the hour is what makes a slice of the morning
+// readable on its own while the afternoon is still going.
+// Custom takes its length from 'Custom window length' at the bottom of this
+// group, and it is there rather than here for a reason given in full at that
+// input: TradingView maps saved settings onto inputs by POSITION, so a new one
+// declared in the middle of this file would shift every setting after it - all
+// thirty pair slots included.
+//
+// The steps run past a session and up to a full day because a rolling window is
+// the only thing that can span midnight: 24 hours is the last day of trading,
+// where Day is the last day of the CALENDAR, and at nine in the morning those
+// are not remotely the same list. 12 and 16 cover the same distance for a desk
+// that starts before the London open.
+journalLength = input.string('Day', 'Window length',
+     options = ['1 hour', '2 hours', '4 hours', '8 hours', '12 hours', '16 hours', '24 hours', 'Custom', 'Day', 'Week', 'Everything'], group = gJrn,
+     tooltip = 'Day and Week ignore the anchor below - they start at midnight UTC+1 and at Monday. 24 hours is not the same as Day: it rolls back a full day from now, across midnight. Custom reads the number of hours from the input at the bottom of this group.', display = display.none)
+
+journalAnchor = input.string('Ending now', 'Window anchored',
+     options = ['Ending now', 'Starting at hour', 'Starting at date'], group = gJrn,
+     tooltip = 'Ending now rolls with the clock. Starting at hour pins a stretch of TODAY. Starting at date pins a stretch of a named day, which is the only one that can read back a day that has already ended - it takes its start from the date picker at the bottom of this group.', display = display.none)
+
+// UTC+1, the frame every other timestamp in this project is written in. The
+// window stays inside today: 22:00 for four hours simply ends when today does.
+journalFromHour = input.int(9, 'Starting hour, UTC+1', minval = 0, maxval = 23, group = gJrn,
+     tooltip = 'Only used when the anchor above is Starting at hour and the length is in hours.', display = display.none)
+
+// How many closures the log KEEPS, which since the cap went past a hundred is no
+// longer the same question as how many it draws.
+//
+// ZERO is the default, and it means keep every closure the window holds. That is
+// what this field should have shipped with, because a number here is a promise
+// about how much of the period the summary line describes, and any number
+// smaller than the period itself breaks that promise silently. At the old cap of
+// 40 the entries-per-win average covered a fifth of an M1 day while the header
+// directly above it named the whole day - the one number the streak gate exists
+// to move, read off the wrong sample and labelled as though it were not. A
+// hundred moved that line without removing it; zero removes it.
+//
+// The table is unaffected either way. It stops at a block height times six
+// blocks whatever this says, which is six hundred rows at the tallest a block
+// can be - past that a table is taller and wider than any screen, and Pine's own
+// row limit is in that neighbourhood too. So this setting is about the SUMMARY,
+// the CSV export and the Pine Logs panel, never about what is on screen.
+//
+// Typing a number is still worth it in one case, and it is not a correctness
+// one: the loops below are bounded by the length of the list, so a deliberately
+// short log is the cheap way to keep this script inside its execution budget on
+// a slow machine or a long history. Reach for it when the script times out, not
+// otherwise.
+//
+// What actually decides how far back the log reaches is 'Window length' above,
+// not this. With Day - the default there - midnight empties the list whatever
+// this says. Zero here AND Everything there is the whole loaded history.
+journalCap = input.int(0, 'Keep at most N closures (0 = all)', minval = 0, maxval = 50000, group = gJrn,
+     tooltip = "Zero keeps every closure inside the window, which is what makes the average on the header line describe the period the header names. Type a number only to cut the script's work - the table draws what the block layout holds either way. How far back the log reaches is decided by 'Window length', not by this.", display = display.none)
+
+// The ceiling that applies when the cap is 0, and it exists for exactly one
+// reason: Pine refuses an array past 100,000 elements and there are six of them
+// here. Fifty thousand closures is more than thirty pairs produce in a month of
+// M1, so nothing real reaches it - but "keep everything" still has to stop
+// somewhere, and stopping at a number beats stopping at a runtime error.
+//
+// When it does bite, it says so on the header line rather than quietly dropping
+// rows, which is the whole difference between a ceiling and a bug.
+JRN_KEEP_MAX = 50000
+
+journalKeep = journalCap <= 0 ? JRN_KEEP_MAX : journalCap
+
+// The tallest ONE column of the log can be. Not an input: it is a property of
+// tables rather than a preference, and jrnTable is declared for exactly this
+// many rows plus the two headers.
+//
+// It stopped being the ceiling on the whole list when the list learned to wrap:
+// blocks stand beside each other, so six of them hold six times this and cost no
+// height at all. What it is now is the tallest a block may be asked to be - by
+// the setting, or by auto once all six blocks are already open - which puts the
+// ceiling on the whole log at six hundred.
+JRN_DRAW_MAX = 100
+
+// How much of the date the Opened and Closed columns carry.
+//
+// The time alone was written for M1, where a log is one afternoon and every row
+// in it is obviously today. It stops working the moment a row is NOT obviously
+// today: on H1 a window runs for hours and a forty-row log covers most of a
+// week, on H4 it covers a month, and '13:49' then names a moment that could be
+// any of six days. Two rows an hour apart on the clock and four days apart in
+// fact look identical, which is the one thing a log must never do.
+//
+// Auto is the default and it prints the day and the month on every row of both
+// tables. It used to work the span out from the rows themselves and print only
+// what they needed - bare times on a single day, the day number once the log
+// crossed midnight, the month once it crossed a month.
+//
+// That was right about the list and wrong about the reader. It made the date
+// appear and disappear on the same screen as the log rolled, which is precisely
+// what a column kept for comparing one day against another cannot do. A stamp
+// you cannot rely on being there is one you cannot write anything down against.
+//
+// The year is the one part still left out, and it is the part most likely to
+// need adding back now that the cap defaults to keeping everything: the column
+// has to fit beside four others, twice over in the two-block layout, and a log
+// that reaches across a new year would date two different Januaries the same
+// way. 'yyyy-MM-dd HH:mm' is in the list for exactly that.
+journalStamp = input.string('Auto', 'Timestamp format', group = gJrn,
+     options = ['Auto', 'HH:mm', 'dd HH:mm', 'MM-dd HH:mm', 'yyyy-MM-dd HH:mm'],
+     tooltip = 'Auto prints day and month on every row - MM-dd HH:mm - in both tables. Pick a fixed format to override it.', display = display.none)
+
+// The second way out, and the one that does not depend on the plan. Pine Logs
+// is a panel in the editor, not on the chart: it costs no screen space at all,
+// and its text can be selected and copied into a file by hand.
+//
+// It exists because 'Export chart data' is a paid feature. When it is not there,
+// this is the whole of what is left - Pine cannot reach the disk, the network or
+// the clipboard by itself.
+//
+// One line per closed series, semicolon separated so a paste into a spreadsheet
+// splits into columns in one step:
+//
+//   MAR1CLOSE;EURUSD;2026-07-27 14:36;3;long
+//
+// Scoped to the same window the table is - see periodFrom below for why that can
+// be decided while the script is still walking through history.
+logClosures = input.bool(true, 'Write closures to Pine Logs', group = gJrn,
+     tooltip = 'Open the Pine Editor and switch to the Pine Logs tab. Select the lines and copy them. This is the export that works without a paid plan.', display = display.none)
+
+journalPos = input.string('Middle left', 'Log position',
+     options = ['Middle left', 'Bottom center', 'Middle center', 'Top center', 'Top right', 'Middle right', 'Bottom right'], group = gJrn, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The custom log window
+// ---------------------------------------------------------------------------
+// These feed 'Window length' and 'Window anchored' directly above, and they are
+// declared here, next to what they control, rather than at the bottom of the
+// dialog where they used to sit.
+//
+// That position was not a preference and moving them was not free. TradingView
+// maps saved settings onto inputs BY POSITION, so putting four inputs in front
+// of the thirty pair slots slides every one of those slots - and the skip list
+// with them - onto values that were saved against something else. Which is why
+// they were parked at the end in the first place.
+//
+// It was done anyway, deliberately, because the cost is a one-off and the
+// annoyance was permanent: three settings that only make sense while reading the
+// log lived four hundred lines and sixty widgets away from it, under a header of
+// their own, and had to be hunted for every time. The section above has since
+// been moved for the same reason and at the same price, so the two now travel
+// together at the front of the file.
+//
+// What pays for it is that the defaults in this file ARE the working setup - the
+// twenty-one pairs below are the real watchlist, in order. So the recovery is
+// Defaults -> Reset settings, once, and the list comes back rather than having to
+// be retyped. Whatever is added later still goes to the BOTTOM, next to the skip
+// list, for exactly the reason this move had to be paid for.
+//
+// The section is what the fixed 1/2/4/8 dropdown could not express, and the two
+// gaps were different:
+//
+//   the LENGTH was quantised   there was no way to ask for three hours, or for
+//                              forty minutes, and no combination of the fixed
+//                              steps adds up to either
+//   the START was always today every anchor was built from todayStart or from
+//                              the wall clock, so a day that had already ended
+//                              was unreachable - the log could describe this
+//                              morning and never last Monday
+//
+// The length is a float because a typed length is not a whole number of hours:
+// 2.5 and 0.75 are ordinary things to want, and rounding them to the hour would
+// answer a question nobody asked. Capped at a week, which is where the row cap
+// rather than the window becomes what limits the answer.
+gWin = 'Custom log window'
+
+customHours = input.float(3.0, 'Custom window length, hours', minval = 0.05, maxval = 168.0, step = 0.25, group = gWin,
+     tooltip = "Used only when 'Window length' is set to Custom. Fractions are honoured - 2.5 is two and a half hours, 0.75 is forty-five minutes.", display = display.none)
+
+// input.time gives a date AND a time from one picker, which is why it is one
+// input rather than a date and an hour that have to be kept consistent by hand.
+//
+// One thing to know about it, said here rather than discovered later: the value
+// the picker returns is read as a plain timestamp, and the picker itself works
+// in the chart's exchange time, while every other stamp in this project is
+// UTC+1. Rather than convert behind your back and hope, the log's header line
+// prints the window it actually ended up with, in UTC+1 - so what you selected
+// is checkable on screen instead of assumed.
+// The default is a plain number, and it is a number rather than a timestamp()
+// call because input.time demands a CONST int and timestamp() does not give one.
+//
+// Both of its forms were tried. timestamp(2026, 1, 1, 0, 0) comes back as SIMPLE
+// int - the numeric form reads the exchange's timezone, and a value that depends
+// on which symbol the chart is on cannot be a compile-time constant. The string
+// form is the documented way to get a const, but this input has already cost two
+// paste cycles, and a literal cannot be wrong about its own type at all.
+//
+// 1767225600000 is 2026-01-01 00:00 UTC in milliseconds. To move it: seconds
+// since the epoch times a thousand. It is only where the date picker opens, so
+// the exact value carries no meaning beyond being a neutral starting point.
+customFrom = input.time(1767225600000, 'Custom window starts', group = gWin,
+     tooltip = "Used only when 'Window anchored' is set to Starting at date. The window runs from here for the length above. Check the log's header line - it prints the window that was actually applied, in UTC+1.", display = display.none)
+
+// The Today button the picker does not have.
+//
+// TradingView's calendar is its own widget and nothing in Pine can put a button
+// inside it - it underlines today's number and that is the whole of the help it
+// gives. Reading back last Monday takes two clicks; coming back to today takes
+// finding the month, finding the number, and then reading the header to check.
+//
+// A tick box beside the picker is the nearest thing that can exist, and it is
+// better than a button in one way: a button would set the date and be forgotten,
+// so tomorrow the log would still be showing today's date, pinned. This follows
+// the calendar instead - ticked, the window starts at midnight of whatever day
+// it currently is.
+//
+// The picked date is left untouched underneath, so unticking returns to it
+// rather than to a date that got overwritten.
+customToday = input.bool(false, 'Custom window starts today (ignores the date)', group = gWin,
+     tooltip = "Overrides the date above with today's midnight, and follows the calendar - it still means today tomorrow. The date you picked is kept and comes back when this is unticked.", display = display.none)
+
+// The date default, repeated as a constant so the header can tell a date that
+// was CHOSEN from one that was never touched.
+//
+// Without that distinction the only honest warning would be permanent - the
+// date is inert under every anchor except one, so a fixed note would sit on the
+// header for everyone who has never opened the picker, and a warning that is
+// always there is one nobody reads.
+CUSTOM_FROM_DEFAULT = 1767225600000
+
+// ---------------------------------------------------------------------------
+// The closed log, in two columns
+// ---------------------------------------------------------------------------
+// A hundred rows is taller than any screen, which is what the row cap was
+// supposed to solve and does not: twenty rows already run off a chart window,
+// and the cap only decides where the list stops, not how it is shaped.
+//
+// So the list wraps into another block beside it. Same five columns repeated, a
+// blank column between them, and each block picks up where the one before it ran
+// out - which divides the height by the number of blocks for the same rows.
+//
+// It wraps as many times as it needs to, up to six blocks. The first version
+// stopped at two, and that turned out to be a ceiling rather than a layout: with
+// twenty rows a column it listed forty of fifty-nine closures and said so in the
+// header, which is the log going from too tall to too short in one step. Rows
+// per column is now a shape, not a limit.
+//
+// Zero is AUTO and does the shaping itself: columns stay twenty tall while there
+// are blocks left to open, and only once all six are full does the height grow,
+// to a hundred. That holds six hundred closures side by side instead of the old
+// hundred stacked.
+//
+// It used to mean the single tall column, and that was the wrong meaning for a
+// zero to carry here. 'Keep at most N closures', a few settings above, reads
+// zero as "no limit" - so the same key turned the opposite way in two
+// neighbouring fields, and the one that produced the WORST layout was the one
+// that looked like "no limit". Typing 100 gets the tall column back.
+journalPerCol = input.int(20, 'Closed log: rows per column (0 = auto)', minval = 0, maxval = 100, group = gWin,
+     tooltip = 'How tall each block of the finished-series list is. The list wraps into as many blocks side by side as it needs, up to six - so 20 here holds 120 closures. 0 is auto: twenty tall until all six blocks are in use, then taller, up to 600 rows in all. Type 100 for one tall column.', display = display.none)
+
+// ---------------------------------------------------------------------------
+// Signal settings - mirrors of maRejection.pine
+// ---------------------------------------------------------------------------
+gSig  = 'Signal (must match MAR1)'
+gFilt = 'Filters (must match MAR1)'
+
+maLength = input.int(5, 'MA Length', minval = 2, group = gSig)
+maType   = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig, display = display.none)
+
+// A string rather than input.source, and the difference is not cosmetic. An
+// input.source is bound to the series of the CHART's symbol, so passing one into
+// request.security would feed every pair the price of whatever chart this script
+// happens to sit on. Naming the source and resolving it inside the requested
+// context is the only way each pair gets its own prices.
+srcName = input.string('ohlc4', 'Source', options = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'], group = gSig, display = display.none)
+
+trendBars = input.int(3, 'Bars that must close on the trend side of MA', minval = 2, maxval = 10, group = gSig, display = display.none)
+trendSep  = input.float(0.30, 'Min distance of trend closes from MA (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+wickRatio = input.float(0.60, 'Min wick share of candle range', minval = 0.30, maxval = 0.95, step = 0.05, group = gSig, display = display.none)
+touchTol  = input.float(0.30, 'Almost-reached tolerance (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+atrLen    = input.int(8, 'ATR length', minval = 2, group = gSig, display = display.none)
+
+allowBodyInside    = input.bool(true, 'Accept small body fully on the trend side', group = gSig, display = display.none)
+allowLongWick      = input.bool(true, 'Accept wick longer than its running average', group = gSig, display = display.none)
+allowCounterCandle = input.bool(true, 'Accept a single counter-trend candle', group = gSig, display = display.none)
+
+// --- MODULE: two counter-trend candles -------------------------------------
+//
+// The switches for the block of the same name inside mar1State(). They are
+// constants rather than inputs so that adding them shifts nothing: TradingView
+// maps saved settings onto inputs by position, and MAR1 has to declare its copy
+// above the trigger, mid-file, where an input would displace every setting
+// under it on every chart already carrying the script.
+//
+// The price of that is that nothing checks them: CFGSUM covers inputs only, so
+// if these three ever stop matching maRejection.pine's, the scanner and the
+// chart will quietly be running different entry rules and the banner will still
+// say they agree. Change them in both files or in neither.
+//
+// What the module does, and why, is written out in maRejection.pine.
+DC_ON   = true      // false rolls the module back without deleting it
+DC_BACK = 4         // candles back from the second counter candle
+DC_REF  = 'Close'   // 'Close' or 'Open' - which price of that candle bounds it
+// ---------------------------------------------------------------------------
+
+refLen = input.int(200, 'Average window (candles)', minval = 10, maxval = 200, group = gSig, display = display.none)
+
+minPips              = input.float(1.0, 'Min wick length (pips)', minval = 0.0, step = 0.1, group = gFilt, display = display.none)
+cooldown             = input.int(1, 'Min bars between signals', minval = 1, group = gFilt, display = display.none)
+perDirectionCooldown = input.bool(true, 'Cooldown per direction', group = gFilt, display = display.none)
+gateMode             = input.string('Max of both', 'Streak gate', options = ['Off', 'Manual', 'Distribution', 'Max of both'], group = gFilt)
+
+// On by default, and the default must stay identical to maRejection.pine's. The
+// hours filter runs before the streak is counted, so a mismatch here feeds the
+// two scripts different distributions and hands them different gate thresholds.
+startHour       = input.int(4, "Start indicator's hours", group = gFilt, display = display.none)
+endHour         = input.int(16, "End indicator's hours", group = gFilt, display = display.none)
+restrictToHours = input.bool(true, 'Fire signals only inside those hours', group = gFilt)
+
+// ---------------------------------------------------------------------------
+// Scanner settings
+// ---------------------------------------------------------------------------
+gScan = 'Scanner'
+
+// The performance lever, and 0 - no limit - is the default for a reason worth
+// stating, because the old default of 5000 was quietly the largest source of
+// disagreement between this script and the chart.
+//
+// maRejection.pine builds its streak distribution from the ENTIRE loaded history:
+// its statistics block carries no window at all. A window here meant a different
+// sample, a different percentile, and therefore a different gate threshold - and
+// the gate is what decides whether a signal becomes an ENTRY or merely a warning.
+// So a shorter history did not just blur a statistic, it changed which candles
+// the scanner called entries, and the table stopped matching the large diamonds
+// on the chart.
+//
+// What the window actually saved was close to nothing. Every expensive thing in
+// mar1State - both refLen averages, the ATR, the trendBars loop - is computed
+// outside it on every bar regardless. All the window ever skipped was O(1)
+// counter bookkeeping and a cached sixteen-element loop.
+//
+// Set a number here only if the script genuinely times out, and expect the gate
+// to drift from the chart's when you do.
+scanBars = input.int(0, 'Bars of history per pair (0 = all)', minval = 0, maxval = 20000, group = gScan,
+     tooltip = 'Leave at 0 so the streak gate is built from the same history the chart uses. Set a limit only if the script times out - a limited history gives a different gate threshold, and the table will stop agreeing with the diamonds.', display = display.none)
+
+showIdle = input.bool(false, 'Also list pairs with nothing open', group = gScan,
+     tooltip = 'Off by default - the whole point is a short list you can read at a glance.', display = display.none)
+
+// Bottom right by default. The top right corner is where TradingView stacks its
+// own chart controls and where MAR1's 'Fails After Success' table lands, so a
+// scanner anchored there is read over the top of something else - which is worse
+// than not being there at all, because a half-covered table still looks answered.
+//
+// The one thing to keep clear of down here is MAR1's TAKEN table, which owns
+// bottom right on its own chart. Two tables on one anchor overlap, so if both
+// scripts sit on the same chart, move one of them.
+tablePos = input.string('Bottom right', 'Table position',
+     options = ['Bottom right', 'Bottom center', 'Middle right', 'Middle left', 'Middle center', 'Top right', 'Top center'], group = gScan, display = display.none)
+
+// Small rather than Pine's Normal. Thirty rows plus the closed log is a lot of
+// table for a corner of a chart, and this is the one setting that decides
+// whether all of it fits without covering the price it is supposed to be read
+// against. Normal is still one step away in the list if a screen can take it.
+scanTextSize = input.string('Small', 'Table text size', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = gScan, display = display.none)
+
+// The slots. Thirty of the 40 request calls TradingView allows, which leaves the
+// call count comfortable and puts the whole of the remaining headroom into
+// execution time - the calculation behind each slot is the whole of MAR1, not a
+// moving average, so time is the budget that runs out first.
+//
+// If the script starts timing out, the fix is 'Bars of history per pair' rather
+// than fewer pairs: halving the history halves the work on all thirty at once,
+// while blanking a slot saves one thirtieth and loses a pair.
+//
+// Blank means "skip this slot". It still costs a call - see the header - but it
+// is pointed at the chart's own symbol, which is already loaded, and no row is
+// printed for it.
+//
+// Why every slot carries a tick box
+// ---------------------------------
+// The symbol picker is what you want for choosing a pair, because choosing a
+// pair means choosing a data provider as much as a ticker - OANDA:EURUSD and
+// FX_IDC:EURUSD are different price series, and only the picker shows you which
+// providers exist for a symbol and lets you pick between them. A plain text
+// field cannot do that: it can only take a prefix you already know by heart.
+//
+// What the picker cannot do is give a slot back. It has no empty state - it will
+// only exchange one symbol for another - so a slot filled in by mistake stays
+// filled forever, and a list of thirty is a list that will be mistyped at least
+// once.
+//
+// The tick box is that missing state, kept beside the picker rather than
+// replacing it. Unticked, the slot is skipped: no row, not counted, and the
+// symbol underneath is left alone so ticking it again brings the pair back
+// without retyping. Both widgets share an inline id, so they occupy one row of
+// the dialog between them.
+//
+// An unticked slot still spends a request call - see the header - because Pine
+// cannot make that call conditional. It costs time, not correctness.
+gList1 = 'Pairs 1-10'
+gList2 = 'Pairs 11-20'
+gList3 = 'Pairs 21-30'
+
+// The defaults are the watchlist this was built for, on the FX feed and in the
+// order it is kept in: the USD majors first, then the EUR crosses, the GBP
+// crosses, and the remaining CHF, CAD and AUD legs. Twenty-one pairs; slots 22
+// to 30 are left empty for whatever gets added later.
+// display = display.none on every slot, and it is the fix for the legend rather
+// than a detail. TradingView prints an indicator's arguments after its name in
+// the status line, and sixty of them - thirty tick boxes and thirty tickers -
+// is a line of text across the whole top of the chart. display.none keeps a slot
+// out of that line while leaving it fully live in the settings dialog.
+//
+// The count is not lost: the footer of the scanner table says how many pairs
+// were actually scanned, which is the number worth seeing anyway.
+use01 = input.bool(true,  'Pair 1',  inline = 'p01', group = gList1, display = display.none,
+     tooltip = 'The tick is the off switch. The symbol picker has no empty state - it will only swap one symbol for another - so this is what takes a slot out of the scan, including one filled in by mistake.')
+sym01 = input.symbol('FX:EURUSD', '', inline = 'p01', group = gList1, display = display.none)
+use02 = input.bool(true,  'Pair 2',  inline = 'p02', group = gList1, display = display.none)
+sym02 = input.symbol('FX:GBPUSD', '', inline = 'p02', group = gList1, display = display.none)
+use03 = input.bool(true,  'Pair 3',  inline = 'p03', group = gList1, display = display.none)
+sym03 = input.symbol('FX:USDCAD', '', inline = 'p03', group = gList1, display = display.none)
+use04 = input.bool(true,  'Pair 4',  inline = 'p04', group = gList1, display = display.none)
+sym04 = input.symbol('FX:USDCHF', '', inline = 'p04', group = gList1, display = display.none)
+use05 = input.bool(true,  'Pair 5',  inline = 'p05', group = gList1, display = display.none)
+sym05 = input.symbol('FX:USDJPY', '', inline = 'p05', group = gList1, display = display.none)
+use06 = input.bool(true,  'Pair 6',  inline = 'p06', group = gList1, display = display.none)
+sym06 = input.symbol('FX:AUDUSD', '', inline = 'p06', group = gList1, display = display.none)
+use07 = input.bool(true,  'Pair 7',  inline = 'p07', group = gList1, display = display.none)
+sym07 = input.symbol('FX:EURGBP', '', inline = 'p07', group = gList1, display = display.none)
+use08 = input.bool(true,  'Pair 8',  inline = 'p08', group = gList1, display = display.none)
+sym08 = input.symbol('FX:EURCHF', '', inline = 'p08', group = gList1, display = display.none)
+use09 = input.bool(true,  'Pair 9',  inline = 'p09', group = gList1, display = display.none)
+sym09 = input.symbol('FX:EURJPY', '', inline = 'p09', group = gList1, display = display.none)
+use10 = input.bool(true,  'Pair 10', inline = 'p10', group = gList1, display = display.none)
+sym10 = input.symbol('FX:EURAUD', '', inline = 'p10', group = gList1, display = display.none)
+
+use11 = input.bool(true,  'Pair 11', inline = 'p11', group = gList2, display = display.none)
+sym11 = input.symbol('FX:EURCAD', '', inline = 'p11', group = gList2, display = display.none)
+use12 = input.bool(true,  'Pair 12', inline = 'p12', group = gList2, display = display.none)
+sym12 = input.symbol('FX:GBPAUD', '', inline = 'p12', group = gList2, display = display.none)
+use13 = input.bool(true,  'Pair 13', inline = 'p13', group = gList2, display = display.none)
+sym13 = input.symbol('FX:GBPJPY', '', inline = 'p13', group = gList2, display = display.none)
+use14 = input.bool(true,  'Pair 14', inline = 'p14', group = gList2, display = display.none)
+sym14 = input.symbol('FX:GBPCHF', '', inline = 'p14', group = gList2, display = display.none)
+use15 = input.bool(true,  'Pair 15', inline = 'p15', group = gList2, display = display.none)
+sym15 = input.symbol('FX:GBPCAD', '', inline = 'p15', group = gList2, display = display.none)
+use16 = input.bool(true,  'Pair 16', inline = 'p16', group = gList2, display = display.none)
+sym16 = input.symbol('FX:CHFJPY', '', inline = 'p16', group = gList2, display = display.none)
+use17 = input.bool(true,  'Pair 17', inline = 'p17', group = gList2, display = display.none)
+sym17 = input.symbol('FX:CADCHF', '', inline = 'p17', group = gList2, display = display.none)
+use18 = input.bool(true,  'Pair 18', inline = 'p18', group = gList2, display = display.none)
+sym18 = input.symbol('FX:CADJPY', '', inline = 'p18', group = gList2, display = display.none)
+use19 = input.bool(true,  'Pair 19', inline = 'p19', group = gList2, display = display.none)
+sym19 = input.symbol('FX:AUDJPY', '', inline = 'p19', group = gList2, display = display.none)
+use20 = input.bool(true,  'Pair 20', inline = 'p20', group = gList2, display = display.none)
+sym20 = input.symbol('FX:AUDCHF', '', inline = 'p20', group = gList2, display = display.none)
+
+use21 = input.bool(true,  'Pair 21', inline = 'p21', group = gList3, display = display.none)
+sym21 = input.symbol('FX:AUDCAD', '', inline = 'p21', group = gList3, display = display.none)
+use22 = input.bool(false, 'Pair 22', inline = 'p22', group = gList3, display = display.none)
+sym22 = input.symbol('', '', inline = 'p22', group = gList3, display = display.none)
+use23 = input.bool(false, 'Pair 23', inline = 'p23', group = gList3, display = display.none)
+sym23 = input.symbol('', '', inline = 'p23', group = gList3, display = display.none)
+use24 = input.bool(false, 'Pair 24', inline = 'p24', group = gList3, display = display.none)
+sym24 = input.symbol('', '', inline = 'p24', group = gList3, display = display.none)
+use25 = input.bool(false, 'Pair 25', inline = 'p25', group = gList3, display = display.none)
+sym25 = input.symbol('', '', inline = 'p25', group = gList3, display = display.none)
+use26 = input.bool(false, 'Pair 26', inline = 'p26', group = gList3, display = display.none)
+sym26 = input.symbol('', '', inline = 'p26', group = gList3, display = display.none)
+use27 = input.bool(false, 'Pair 27', inline = 'p27', group = gList3, display = display.none)
+sym27 = input.symbol('', '', inline = 'p27', group = gList3, display = display.none)
+use28 = input.bool(false, 'Pair 28', inline = 'p28', group = gList3, display = display.none)
+sym28 = input.symbol('', '', inline = 'p28', group = gList3, display = display.none)
+use29 = input.bool(false, 'Pair 29', inline = 'p29', group = gList3, display = display.none)
+sym29 = input.symbol('', '', inline = 'p29', group = gList3, display = display.none)
+use30 = input.bool(false, 'Pair 30', inline = 'p30', group = gList3, display = display.none)
+sym30 = input.symbol('', '', inline = 'p30', group = gList3, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The skip list
+// ---------------------------------------------------------------------------
+// Pairs that are open on the chart but not worth trading right now - typically
+// because their payout at the broker has fallen below what you accept. The
+// scanner still computes them; it just does not print a row for them.
+//
+// Why this is a text box and not something automatic
+// --------------------------------------------------
+// Pine runs on TradingView's servers, not in your browser. It cannot read a
+// file, a cookie, localStorage, or anything else on your machine, and it cannot
+// make a network request. There is no route by which a browser extension can
+// hand it a list. A string input that you paste into is the ONLY bridge that
+// exists, and no amount of cleverness produces another one.
+//
+// Format is whatever the extension puts on the clipboard: bare tickers,
+// separated by commas, spaces optional.
+//
+//   GBPCAD,EURJPY,AUDCAD
+//
+// Declared here, at the very END of every input in this file, and that position
+// is deliberate. TradingView maps saved settings onto inputs BY POSITION, so an
+// input inserted anywhere above would shift every setting after it - all thirty
+// pair slots included - and quietly rearrange a list that took a while to set
+// up. Appended at the bottom, nothing already saved moves.
+gSkip = 'Skip list'
+
+skipList = input.string('', 'Pairs to skip', group = gSkip,
+     tooltip = 'Comma separated, e.g. GBPCAD,EURJPY. These are left out of the table. Paste from the PO Payout Filter extension, which keeps this string on hand.', display = display.none)
+
+// Split once at global scope rather than per row. Uppercased and stripped of
+// spaces so a paste with ', ' between names still matches, and guarded against
+// the empty case - str.split('', ',') does not return an empty array, it returns
+// an array holding one empty string, which would then match nothing but would
+// still be walked thirty times a bar.
+skipArr = skipList == '' ? array.new_string(0) :
+     str.split(str.replace_all(str.upper(skipList), ' ', ''), ',')
+
+// request.security refuses an empty symbol, so a blank slot is pointed at the
+// chart itself and filtered out later by the same blank test.
+//
+// Written out as plain ternaries rather than through a helper on purpose. The
+// symbol argument of request.security must be a SIMPLE string - a value fixed
+// for the whole scan - and Pine infers the qualifier of a user function's return
+// value rather than taking it from the arguments. A helper here would very
+// likely come back as series and be refused at the call site.
+s01 = use01 and sym01 != '' ? sym01 : syminfo.tickerid
+s02 = use02 and sym02 != '' ? sym02 : syminfo.tickerid
+s03 = use03 and sym03 != '' ? sym03 : syminfo.tickerid
+s04 = use04 and sym04 != '' ? sym04 : syminfo.tickerid
+s05 = use05 and sym05 != '' ? sym05 : syminfo.tickerid
+s06 = use06 and sym06 != '' ? sym06 : syminfo.tickerid
+s07 = use07 and sym07 != '' ? sym07 : syminfo.tickerid
+s08 = use08 and sym08 != '' ? sym08 : syminfo.tickerid
+s09 = use09 and sym09 != '' ? sym09 : syminfo.tickerid
+s10 = use10 and sym10 != '' ? sym10 : syminfo.tickerid
+s11 = use11 and sym11 != '' ? sym11 : syminfo.tickerid
+s12 = use12 and sym12 != '' ? sym12 : syminfo.tickerid
+s13 = use13 and sym13 != '' ? sym13 : syminfo.tickerid
+s14 = use14 and sym14 != '' ? sym14 : syminfo.tickerid
+s15 = use15 and sym15 != '' ? sym15 : syminfo.tickerid
+s16 = use16 and sym16 != '' ? sym16 : syminfo.tickerid
+s17 = use17 and sym17 != '' ? sym17 : syminfo.tickerid
+s18 = use18 and sym18 != '' ? sym18 : syminfo.tickerid
+s19 = use19 and sym19 != '' ? sym19 : syminfo.tickerid
+s20 = use20 and sym20 != '' ? sym20 : syminfo.tickerid
+s21 = use21 and sym21 != '' ? sym21 : syminfo.tickerid
+s22 = use22 and sym22 != '' ? sym22 : syminfo.tickerid
+s23 = use23 and sym23 != '' ? sym23 : syminfo.tickerid
+s24 = use24 and sym24 != '' ? sym24 : syminfo.tickerid
+s25 = use25 and sym25 != '' ? sym25 : syminfo.tickerid
+s26 = use26 and sym26 != '' ? sym26 : syminfo.tickerid
+s27 = use27 and sym27 != '' ? sym27 : syminfo.tickerid
+s28 = use28 and sym28 != '' ? sym28 : syminfo.tickerid
+s29 = use29 and sym29 != '' ? sym29 : syminfo.tickerid
+s30 = use30 and sym30 != '' ? sym30 : syminfo.tickerid
+
+// ---------------------------------------------------------------------------
+// The state machine, one instance per requested symbol
+// ---------------------------------------------------------------------------
+// Every line below is maRejection.pine with the drawing, the statistics tables
+// and the alerting removed. What is left is the smallest thing that can answer
+// "is a window open on this pair, and how many entries has it cost so far".
+//
+// The ORDER of what follows is load-bearing and mirrors the order the original
+// executes in, because several of these values read each other mid-bar:
+//
+//   1. geometry, trend and triggers        from this bar and the one before
+//   2. the gate, read from the streak as it stood BEFORE this bar was graded
+//   3. lockedLimit, captured while the streak still reads zero
+//   4. the grading, which updates the streak and the distribution
+//   5. the markers, which read the UPDATED streak - that is what makes a green
+//      diamond a green diamond
+//   6. the window, opened and closed by 5
+//
+// Getting 2 and 5 the wrong way round is the classic way to break this: the gate
+// would then judge a signal by its own outcome.
+
+// Index at which the cumulative distribution of the streak histogram crosses
+// perc. Identical to calculateIndex in maRejection.pine, including the inclusive
+// comparison - a strict one slides the answer one bucket to the right.
+calcIndex(int[] arr, float perc) =>
+    total = 0.0
+    for i = 1 to array.size(arr) - 1
+        total += array.get(arr, i)
+    if total == 0
+        -1
+    else
+        cumSum = 0.0
+        index = -1
+        for i = 1 to array.size(arr) - 1
+            cumSum += array.get(arr, i) / total * 100
+            if cumSum >= perc and index == -1
+                index := i
+        index
+
+// Where a streak sits on maRejection.pine's colour ladder, as a step number.
+//
+// The ladder is what the small diamonds are painted with, and the table now
+// carries the same reading, so a row and the marker that produced it agree at a
+// glance. Reproduced here as a NUMBER rather than a colour because this runs
+// inside request.security, and a colour cannot be returned across that boundary.
+// The colour is put back on in stepColor below, from the same step.
+//
+// The steps mirror streakColor in maRejection.pine line for line:
+//
+//   1  limit - 1     white     one short, the gate is about to open
+//   2  limit         lime      the first streak an entry can happen on
+//   3  limit + 1     orange
+//   4  limit + 2     lilac
+//   5  +3            purple
+//   6  +4            RED       the fifth entry, far past anything expected
+//   8  +5 beyond     WHITE     the sixth entry on - white AGAIN
+//   7  below         faded     carries nothing from this scale
+//
+// One step per colour, and the step is one BEHIND the entry count a row shows.
+// A window opens on the anchor with nothing entered, and each entry that misses
+// moves the streak on - so a window that took four entries reached +3 and is
+// purple, and one that took five reached +4 and is red. That is the reading
+// both tables are for, and it matches the diamonds exactly: there is one purple
+// diamond in a run, and the fifth entry is the first red one.
+//
+// Cyan used to start at +15, which made purple twelve steps wide against one
+// each for orange and lilac. The top of the scale then said nothing: four
+// entries and eleven entries wore the same colour, and the one colour meaning
+// "this is unusual" was reserved for a length nobody ever reaches. See the note
+// on streakColor in maRejection.pine, which carries the full reasoning and has
+// to keep this boundary identical - a purple diamond standing over a red row is
+// a divergence nothing in this project checks for. The hue at each step has to
+// match as well as the boundary; both live in stepColor below and in
+// streakColor there.
+//
+// 0 is not a step. It means the ladder does not exist: with the streak gate Off
+// the limit is zero, there are no green diamonds, and nothing on the chart is
+// wearing a ladder colour for the table to echo.
+ladderStep(int streak, int limit) =>
+    limit <= 0 ? 0 :
+     streak == limit - 1 ? 1 :
+     streak == limit ? 2 :
+     streak > limit ? (streak - limit < 2 ? 3 : streak - limit < 3 ? 4 : streak - limit < 4 ? 5 :
+          streak - limit < 5 ? 6 : 8) :
+     7
+
+// The floor a WINDOW's colour is held to, and the fix for white and pale-silver
+// rows turning up in the closed log.
+//
+// Steps 1 and 7 both sit BELOW the gate: white means "one short of it", faded
+// means "further below than the scale has a name for". A window that exists
+// cannot honestly be below the gate - a window is opened by a green diamond,
+// which is the gate opening, and lime is by definition the first streak an entry
+// can happen on. So a sub-gate step on a live or finished window is never a real
+// ladder position; it is the anchor having moved underneath the run.
+//
+// How it moves. colorLimit is lockedLimit, captured once while the streak reads
+// zero and then held - deliberately, so a run climbs the ladder instead of
+// chasing a threshold that a fresh failure has just pushed up. But gateThreshold
+// itself is recomputed from the streak histogram on every graded signal in
+// Distribution and Max of both, and it can fall as well as rise. Once it has
+// fallen BELOW the captured anchor, a failure lands under the anchor rather than
+// on or above it, and ladderStep reports 1 or 7 for a window that is running
+// perfectly normally.
+//
+// Concretely: the anchor is captured at 5, the distribution later drifts the
+// threshold to 4, a warning fires at streak 3 and misses. The streak is now 4,
+// the anchor is still 5, and 4 == 5 - 1 - white, on a window that has been open
+// for half an hour. That row then closes and hands its white to the log.
+//
+// The floor is applied to the WINDOW's step only. It does not touch the gate,
+// the green diamond, or the streak, and it does not reach maRejection.pine -
+// the chart can still paint a white small diamond in that same rare moment,
+// because it reads the same anchor. What it does guarantee is that the two
+// tables carry only colours a window can actually have.
+//
+// Step 0 is left alone on purpose. That is not a sub-gate reading, it is the
+// gate being Off, where no ladder exists and grey is the right answer.
+windowStep(int step) =>
+    step <= 0 ? 0 : step == 1 or step == 7 ? 2 : step
+
+// The other half of the ladder: a step back into the colour it came from.
+//
+// Kept next to ladderStep on purpose. They are one idea split in two only
+// because a colour cannot cross request.security, and editing either alone is
+// how the table would stop matching the chart it is supposed to echo.
+//
+// The transparency is an argument rather than fixed because the two tables want
+// different weights: an open row is a thing to look at, a closed one is history.
+// Step 6 - the fifth entry, +4 - is BRIGHT RED, and it was
+// deep blue until a run that long stopped being reported by one more colour in
+// a sequence. Blue is a hue you have to have learned; red is not.
+//
+// The same value is in streakColor in maRejection.pine, so the diamond on the
+// chart and the row in both tables here are still one fact seen twice. Change
+// one and change the other - nothing checks it, because CFGSUM folds settings
+// and not colours.
+//
+// It is also given LESS transparency than the step below it, the same way step 7
+// overrides the argument in the other direction. Every other step wears the
+// weight the caller asks for; this one is allowed to be heavier, because a run
+// this long is the one thing on the table that should not blend in.
+stepColor(int step, int transp) =>
+    step == 1 ? color.new(color.white, transp) :
+     step == 2 ? color.new(color.lime, transp) :
+     step == 3 ? color.new(color.orange, transp) :
+     step == 4 ? color.new(color.rgb(121, 119, 236), transp) :
+     step == 5 ? color.new(color.purple, transp) :
+     step == 6 ? color.new(#FF1744, transp > 25 ? transp - 25 : 0) :
+     // STEP 8 IS WHITE AGAIN, the sixth entry and everything past it, and it is
+     // numbered 8 because 7 was already spoken for by the sub-gate reading
+     // directly below. Two whites on one scale, at opposite ends: step 1 is a
+     // gate with nothing open, step 8 is a window six entries deep. Nothing
+     // passes through the first on its way to the second - a window starts at
+     // lime - and windowStep above floors step 1 away on any row that has one.
+     //
+     // Given red's treatment rather than the caller's, for red's reason.
+     step == 8 ? color.new(color.white, transp > 25 ? transp - 25 : 0) :
+     step == 7 ? color.new(color.silver, 80) :
+     color.new(#333333, 60)
+
+// White and lime are light enough that white text on them is unreadable, and a
+// row nobody can read is worse than a row with no colour at all. Every other step
+// is dark enough to take white - except step 8, which is the second white.
+stepText(int step) =>
+    step == 1 or step == 2 or step == 8 ? color.black : color.white
+
+// Returns, in order: state (0 idle, 1 armed, 2 running), entries in the open
+// window, the time the window opened, the current losing streak, the gate
+// threshold that streak is measured against, the side of the last entry, the
+// ladder step of the most recent small diamond, and finally whether the pair is
+// standing on the ladder's white step, with no window open - see preArmed at the
+// end of the body.
+//
+// Every var in here belongs to the call site, so the thirty request.security
+// calls below each get their own independent copy of this state.
+mar1State() =>
+    srcVal = srcName == 'close' ? close :
+         srcName == 'open' ? open :
+         srcName == 'high' ? high :
+         srcName == 'low' ? low :
+         srcName == 'hl2' ? hl2 :
+         srcName == 'hlc3' ? hlc3 :
+         ohlc4
+
+    maValue = maType == 'WMA' ? ta.wma(srcVal, maLength) :
+         maType == 'EMA' ? ta.ema(srcVal, maLength) :
+         maType == 'RMA' ? ta.rma(srcVal, maLength) :
+         ta.sma(srcVal, maLength)
+
+    isBull = open < close
+    isBear = open > close
+
+    bodySize  = math.abs(close - open)
+    atrVal    = ta.atr(atrLen)
+    bodyRef   = ta.sma(bodySize, refLen)[1]
+    rangeSize = high - low
+    upWick    = high - math.max(open, close)
+    dnWick    = math.min(open, close) - low
+    upWickRef = ta.sma(upWick, refLen)[1]
+    dnWickRef = ta.sma(dnWick, refLen)[1]
+
+    // Resolved inside the requested context, so a JPY cross gets its own pip.
+    pipSizeSym = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
+
+    tolVal = atrVal * touchTol
+
+    int belowCount = 0
+    int aboveCount = 0
+    for i = 1 to trendBars
+        sep = atrVal[i] * trendSep
+        belowCount := belowCount + (close[i] <= maValue[i] - sep ? 1 : 0)
+        aboveCount := aboveCount + (close[i] >= maValue[i] + sep ? 1 : 0)
+
+    trendDown = belowCount == trendBars
+    trendUp   = aboveCount == trendBars
+
+    wickRejectDown = upWick >= wickRatio * rangeSize and upWick >= minPips * pipSizeSym
+    wickRejectUp   = dnWick >= wickRatio * rangeSize and dnWick >= minPips * pipSizeSym
+    smallBody      = not na(bodyRef) and bodySize < bodyRef
+    bodyRejectDown = allowBodyInside and open <= maValue and smallBody and upWick > bodySize
+    bodyRejectUp   = allowBodyInside and open >= maValue and smallBody and dnWick > bodySize
+    longWickDown   = allowLongWick and not na(upWickRef) and upWick > upWickRef
+    longWickUp     = allowLongWick and not na(dnWickRef) and dnWick > dnWickRef
+
+    rejectDown = rangeSize > 0 and high >= maValue - tolVal and close <= maValue and (wickRejectDown or bodyRejectDown or longWickDown)
+    rejectUp   = rangeSize > 0 and low  <= maValue + tolVal and close >= maValue and (wickRejectUp or bodyRejectUp or longWickUp)
+
+    counterShort = allowCounterCandle and isBull and isBear[1]
+    counterLong  = allowCounterCandle and isBear and isBull[1]
+
+    // --- MODULE: two counter-trend candles --------------------------- BEGIN
+    //
+    // MAR1's block of the same name, evaluated inside the requested symbol's
+    // context like everything else in this function. The reasoning is written
+    // out there and not repeated here; the switches live at the top of this
+    // file and must hold the same three values MAR1's do, or the scanner will
+    // be answering a different question from the chart. CFGSUM cannot catch
+    // that for you - it only covers inputs.
+    //
+    // Rolling back: DC_ON = false at the top of the file. Removing outright:
+    // delete this block and drop `or dcShort` / `or dcLong` below.
+    dcRef   = DC_REF == 'Open' ? open[DC_BACK] : close[DC_BACK]
+    dcReady = DC_ON and not na(dcRef)
+
+    dcShort = dcReady and isBull and isBull[1] and isBear[2] and close <= dcRef
+    dcLong  = dcReady and isBear and isBear[1] and isBull[2] and close >= dcRef
+    // --- MODULE: two counter-trend candles ----------------------------- END
+
+    triggerShort = trendDown and (rejectDown or counterShort or dcShort)
+    triggerLong  = trendUp and (rejectUp or counterLong or dcLong)
+
+    // UTC+1, the frame the hours filter and every timestamp in this project use.
+    localHour  = (hour + 1) % 24
+    inHoursSym = localHour >= startHour and localHour < endHour
+    hoursOk    = not restrictToHours or inHoursSym
+
+    var int lastLongBar  = -100000
+    var int lastShortBar = -100000
+    canFireLong  = bar_index - lastLongBar >= cooldown
+    canFireShort = bar_index - lastShortBar >= cooldown
+
+    buyFound  = triggerLong[1] and canFireLong and hoursOk
+    sellFound = triggerShort[1] and not triggerLong[1] and canFireShort and hoursOk
+
+    var int[] failHist    = array.new_int(16, 0)
+    var int   curFailRun  = 0
+    var int   streak      = 0
+    var int   distCache   = -1
+    var int   lockedLimit = 0
+
+    // The gate, from the distribution as it stood before this bar was graded.
+    // distCache is refreshed at the end of the grading below rather than
+    // recomputed here every bar: the histogram only changes when a signal is
+    // resolved, so the cached value is the same number for a fraction of the
+    // cost across thirty symbols.
+    gateThreshold = gateMode == 'Off' ? 0 :
+         gateMode == 'Manual' ? minEntriesToStart :
+         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEntriesToStart) :
+         math.max(distCache, minEntriesToStart)
+
+    gateOk = streak >= gateThreshold
+
+    // Captured while the streak reads zero and then held for the whole run, so
+    // the ladder anchor cannot drift underneath a sequence. Same reasoning as
+    // the original, and the same reason greenDiamond below is trustworthy.
+    if streak == 0
+        lockedLimit := gateThreshold
+    colorLimit = gateMode == 'Off' ? 0 : lockedLimit
+
+    buyTaken     = buyFound and gateOk
+    sellTaken    = sellFound and gateOk
+    gateArmedNow = gateMode != 'Off' and streak == gateThreshold - 1
+    buyWarn      = buyFound and gateArmedNow
+    sellWarn     = sellFound and gateArmedNow
+
+    var int  entriesInWindow = 0
+    var bool windowOpen      = false
+    var int  openTimeVal     = na
+    var int  lastSide        = 0
+
+    // The closure report, for the log in the main context.
+    //
+    // closedCount is cumulative rather than a one-bar flag, and that is not a
+    // stylistic choice. request.security with the default gaps_off REPEATS its
+    // last value on any chart bar where the requested symbol printed nothing -
+    // a holiday, a data gap, a pair that trades a shorter session. A flag would
+    // repeat with it and the same closure would be logged on every bar until the
+    // symbol caught up. A counter can only be recognised by having GONE UP,
+    // which a repeat cannot fake, and which also survives two closures in a row
+    // that happen to have identical entry counts.
+    var int closedCount   = 0
+    var int closedEntries = 0
+    var int closedSide    = 0
+    var int closedOpen    = na
+
+    // The ladder step of the most recent small diamond on this pair, and the one
+    // the window carried when it closed.
+    //
+    // They are kept apart for the same reason closedEntries is kept apart from
+    // entriesInWindow: the closed one has to survive the reset that empties the
+    // window, or the log would report the colour of whatever happened next.
+    var int lastStep     = 0
+    var int closedLadder = 0
+
+    // When the FIRST entry of the window was taken, kept apart from openTimeVal
+    // above because the two answer different questions and the answers differ.
+    //
+    //   openTimeVal      when the gate opened. That is what the open table wants:
+    //                    "since when has this pair been demanding attention".
+    //   firstEntryTime   when money first went in. That is what the log wants:
+    //                    "how long did this series actually hold me".
+    //
+    // With the gate on, a green diamond can sit several candles before anything
+    // is entered, so the two are genuinely different times. This one matches
+    // what maRejection.pine prints on its success stamp, which is what makes a
+    // row here and a stamp there describe the same series with the same numbers.
+    var int firstEntryTime = na
+
+    // When this pair ARRIVED on the ladder's white step, so the pale row can say
+    // since when rather than only that it is pending.
+    //
+    // It is the third timestamp in here and it answers a third question, which
+    // is why it is not folded into either of the other two. openTimeVal is when
+    // the gate opened and firstEntryTime is when money first went in; both of
+    // those belong to a window, and a pair standing on the white step has no
+    // window at all. Reusing either would have made a row say "open since" about
+    // something that is not open.
+    //
+    // Cleared the moment the streak steps off white, so it can never date a
+    // waiting period that has already ended.
+    var int whiteSince = na
+
+    // Off by default. When scanBars is 0 this is true everywhere and the whole
+    // history is graded, which is the only way the gate threshold below can equal
+    // the one maRejection.pine computes on the chart - and the gate is what makes
+    // a signal an entry rather than a warning.
+    //
+    // Note what the guard does NOT protect: the averages, the ATR and the
+    // trendBars loop above all run on every bar whether or not this is true. Only
+    // counter bookkeeping and the cached calcIndex sit behind it.
+    active = scanBars <= 0 or bar_index > last_bar_index - scanBars
+
+    if barstate.isconfirmed and active
+        if buyFound
+            lastLongBar := bar_index
+            if not perDirectionCooldown
+                lastShortBar := bar_index
+        if sellFound
+            lastShortBar := bar_index
+            if not perDirectionCooldown
+                lastLongBar := bar_index
+
+        // The grading. A signal is right when the candle it graded went its way,
+        // doji included as a miss - the same complement the original uses, so a
+        // candle closing on its own open cannot be a hit in one script and a miss
+        // in the other.
+        if not na(bodyRef) and (buyFound or sellFound)
+            hit = (buyFound and isBull) or (sellFound and isBear)
+
+            if hit
+                curFailRun := 0
+            else
+                curFailRun += 1
+                // ONCE A STREAK REACHES THE CATCH-ALL, NOTHING MOVES ANY MORE - and this
+                // used to keep moving it, which is the bug this guard fixes rather than a
+                // style choice.
+                //
+                // The transfer is what keeps a LIVE streak in exactly one bucket: as it grows
+                // past n it is added to bucket n and taken back out of n-1. Bucket 15 is a
+                // catch-all, so a streak that reaches 15 has ARRIVED and never leaves. With the
+                // index clamped by math.min, the sixteenth failure ran the transfer AGAIN -
+                // adding a second copy of one live streak to bucket 15 and taking a real one
+                // OUT of bucket 14, which went NEGATIVE by one per extra failure.
+                //
+                // THE TOTAL WAS NEVER AFFECTED, and that is what made it silent for as long as
+                // it was: the +1 and the -1 both sit inside the summed range 1..15, so the one
+                // number anybody could have checked by hand stayed exactly right while the
+                // shape underneath it did not.
+                //
+                // What it cost: calcIndex walks the cumulative distribution and takes the FIRST
+                // crossing of the percentage. A negative bucket 14 drags that cumulative back
+                // DOWN, so a crossing that belonged at 14 was missed and picked up at 15
+                // instead - one rung too high on the gate threshold, in Distribution and in Max
+                // of both. The gate then opens one loss LATER than the distribution says it
+                // should. The error is one-sided and bounded: never earlier, and never any
+                // bucket other than 14 -> 15.
+                //
+                // Worked example, 20 consecutive misses against 19 shorter streaks at 95%:
+                // bucket 14 reads -4 and bucket 15 reads 6 where they should read 1 and 1, the
+                // cumulative falls from 90% to 70% at bucket 14, and the answer comes back 15
+                // instead of 14.
+                //
+                // The same five lines live in SIX files. maRejection.pine is the one where this
+                // feeds the gate that decides real entries.
+                if curFailRun <= 15
+                    array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
+                    array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+
+            streak := hit ? 0 : streak + 1
+            distCache := calcIndex(failHist, basePercentage)
+
+        // The markers, reading the streak the grading just updated. That single
+        // fact is what a green diamond is: a failure that landed exactly on the
+        // anchor, which means the gate is now open.
+        buyFailed    = (buyTaken or buyWarn) and not isBull
+        sellFailed   = (sellTaken or sellWarn) and not isBear
+        greenDiamond = (buyFailed or sellFailed) and colorLimit > 0 and streak == colorLimit
+
+        // A small diamond, and nothing else, moves the row's colour. The step is
+        // read from the streak AFTER the grading above updated it, which is
+        // exactly what failedColor does on the chart - and that ordering is the
+        // whole reason a failure landing on the threshold comes out lime rather
+        // than white.
+        //
+        // A win does not touch it: the row keeps the colour of the last diamond
+        // that was actually drawn, right up to the moment the window closes and
+        // hands that colour to the log.
+        //
+        // Floored through windowStep, which is what keeps white and faded silver
+        // out of both tables. See the note on that function for the anchor drift
+        // that produces them; the short version is that a running window cannot
+        // be standing below the gate that opened it.
+        if buyFailed or sellFailed
+            lastStep := windowStep(ladderStep(streak, colorLimit))
+
+        buySet = successScope == 'All found signals' ? buyFound :
+             successScope == 'Entries and warnings' ? (buyTaken or buyWarn) :
+             buyTaken
+        sellSet = successScope == 'All found signals' ? sellFound :
+             successScope == 'Entries and warnings' ? (sellTaken or sellWarn) :
+             sellTaken
+
+        win        = (buySet and isBull) or (sellSet and isBear)
+        entryTaken = buyTaken or sellTaken
+
+        // The window itself. Entries are counted before either reset can fire,
+        // so an entry taken on the bar that closes the window belongs to the
+        // window it closed rather than to the next one.
+        if entryTaken
+            entriesInWindow += 1
+            lastSide := buyTaken ? 1 : -1
+            if entriesInWindow == 1
+                firstEntryTime := time
+            if not windowOpen
+                windowOpen  := true
+                openTimeVal := time
+
+        // A win closes it and nothing else does. A green diamond on the same bar
+        // is impossible - one needs the marker to have missed, the other needs it
+        // to have hit - so the else is exhaustive rather than a preference.
+        if win
+            // Read before the reset below wipes them - the count and the side
+            // belong to the window that just ended, not to the empty one that
+            // replaces it.
+            closedCount   += 1
+            closedEntries := entriesInWindow
+            closedSide    := lastSide
+            closedOpen    := firstEntryTime
+            closedLadder  := lastStep
+
+            windowOpen      := false
+            entriesInWindow := 0
+            lastSide        := 0
+            openTimeVal     := na
+            firstEntryTime  := na
+            lastStep        := 0
+        else if greenDiamond
+            windowOpen      := true
+            entriesInWindow := 0
+            openTimeVal     := time
+            firstEntryTime  := na
+
+        // Last in the block on purpose: windowOpen and streak are both final for
+        // this bar by now, so the stamp cannot be one bar behind the state it is
+        // dating. Set on arrival and held - the second visit to this line during
+        // the same wait must not restamp it, or the pale row would always read
+        // "just now" and answer nothing.
+        onWhite    = not windowOpen and ladderStep(streak, colorLimit) == 1
+        whiteSince := onWhite ? (na(whiteSince) ? time : whiteSince) : na
+
+    stateCode = not windowOpen ? 0 : entriesInWindow > 0 ? 2 : 1
+
+    // The pale row: this pair is standing on the ladder's WHITE step.
+    //
+    // Read straight off ladderStep, the same function that colours every other
+    // row in both tables and every diamond on the chart. That is the whole point
+    // of writing it this way rather than as a comparison of its own - the pale
+    // row is not a fourth idea, it is step 1 of the one scale, shown for a pair
+    // that has no window instead of for one that has.
+    //
+    // What it means in practice: the next large diamond on this pair would come
+    // out white. A large diamond takes its colour from the streak as it stood
+    // when the signal arrived, so a streak sitting on limit - 1 now is a white
+    // marker the moment anything fires. And a white marker that then misses is
+    // what pushes the streak onto the limit, turns its small companion lime, and
+    // opens the gate. So the pale row is one step further back than ARMED, and
+    // that is exactly the distance that makes it worth watching.
+    //
+    // Measured against colorLimit and NOT against gateThreshold, and the two are
+    // not the same number. gateThreshold is live - recomputed from the histogram
+    // on every graded signal - while colorLimit is the anchor frozen at the start
+    // of the run, which is what the whole ladder is drawn against. Keying this to
+    // the threshold would have painted a row pale on a pair whose diamonds were
+    // not white, which is the one thing the analogy cannot afford.
+    //
+    // The cost of that choice, stated plainly: the Streak / gate column prints
+    // the live threshold, so while the two have drifted apart a pale row can read
+    // N / N+2 rather than N / N+1. The column is not wrong - it is answering the
+    // gate's question - and the row is not wrong either. They are two different
+    // questions, and the row follows the one the colours follow.
+    //
+    // The gate being Off needs no test of its own: colorLimit is zero there,
+    // ladderStep returns 0 for any limit at or below zero, and 0 is not 1.
+    //
+    // not windowOpen because an open window outranks it. Once the gate has
+    // actually opened, "the next one would be white" is no longer the news, and
+    // under a drifting threshold both could otherwise be true at once.
+    //
+    // NOTHING here touches windowOpen, lastStep or any of the closed* values.
+    // This is a reading of state that already exists, not a new event - so it
+    // cannot reach the finished-series log, and it cannot reach stateCode either,
+    // which is what the browser bridge packs.
+    preArmed = not windowOpen and ladderStep(streak, colorLimit) == 1
+
+    // Is there a position on this pair RIGHT NOW, as opposed to a window that is
+    // open but between entries.
+    //
+    // The state codes could not answer this and were never able to. RUNNING says
+    // entries have been taken and none has paid yet - it says nothing about
+    // whether one of them is live on the candle in front of you. In this system
+    // an entry grades exactly ONE candle: taken at that candle's open, settled
+    // at its close. So a position exists for one candle and then it does not,
+    // while RUNNING can stand for an hour across a dozen candles you were flat
+    // for.
+    //
+    // buyTaken and sellTaken are computed at the top of this function rather
+    // than inside the confirmed block, and that is what makes this answerable at
+    // all. Both read triggerLong[1] - the PREVIOUS candle, already closed - so
+    // they are settled from the first tick of the candle they grade. On the last
+    // bar of a live chart that candle is the one now forming, which is exactly
+    // the one a position would be sitting in.
+    //
+    // Deliberately not folded into stateCode. The bridge packs stateCode into
+    // the digits the browser extension parses, and a fifth value there would
+    // shift that alphabet; this rides alongside as its own flag instead.
+    inMarket = buyTaken or sellTaken
+
+    [stateCode, entriesInWindow, openTimeVal, streak, gateThreshold, lastSide, closedCount, closedEntries, closedSide, closedOpen, lastStep, closedLadder, preArmed, whiteSince, inMarket]
+
+// ---------------------------------------------------------------------------
+// The scan
+// ---------------------------------------------------------------------------
+// ignore_invalid_symbol keeps one mistyped ticker from killing the whole script;
+// that slot comes back na and is printed as a dash instead.
+//
+// No lookahead argument: the default is barmerge.lookahead_off, which is the only
+// honest setting here. With lookahead on, every pair would report the state of a
+// candle that has not finished.
+[st01, en01, ot01, sk01, gt01, sd01, cc01, ce01, cs01, co01, ld01, cl01, pa01, wt01, im01] = request.security(s01, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st02, en02, ot02, sk02, gt02, sd02, cc02, ce02, cs02, co02, ld02, cl02, pa02, wt02, im02] = request.security(s02, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st03, en03, ot03, sk03, gt03, sd03, cc03, ce03, cs03, co03, ld03, cl03, pa03, wt03, im03] = request.security(s03, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st04, en04, ot04, sk04, gt04, sd04, cc04, ce04, cs04, co04, ld04, cl04, pa04, wt04, im04] = request.security(s04, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st05, en05, ot05, sk05, gt05, sd05, cc05, ce05, cs05, co05, ld05, cl05, pa05, wt05, im05] = request.security(s05, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st06, en06, ot06, sk06, gt06, sd06, cc06, ce06, cs06, co06, ld06, cl06, pa06, wt06, im06] = request.security(s06, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st07, en07, ot07, sk07, gt07, sd07, cc07, ce07, cs07, co07, ld07, cl07, pa07, wt07, im07] = request.security(s07, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st08, en08, ot08, sk08, gt08, sd08, cc08, ce08, cs08, co08, ld08, cl08, pa08, wt08, im08] = request.security(s08, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st09, en09, ot09, sk09, gt09, sd09, cc09, ce09, cs09, co09, ld09, cl09, pa09, wt09, im09] = request.security(s09, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st10, en10, ot10, sk10, gt10, sd10, cc10, ce10, cs10, co10, ld10, cl10, pa10, wt10, im10] = request.security(s10, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st11, en11, ot11, sk11, gt11, sd11, cc11, ce11, cs11, co11, ld11, cl11, pa11, wt11, im11] = request.security(s11, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st12, en12, ot12, sk12, gt12, sd12, cc12, ce12, cs12, co12, ld12, cl12, pa12, wt12, im12] = request.security(s12, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st13, en13, ot13, sk13, gt13, sd13, cc13, ce13, cs13, co13, ld13, cl13, pa13, wt13, im13] = request.security(s13, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st14, en14, ot14, sk14, gt14, sd14, cc14, ce14, cs14, co14, ld14, cl14, pa14, wt14, im14] = request.security(s14, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st15, en15, ot15, sk15, gt15, sd15, cc15, ce15, cs15, co15, ld15, cl15, pa15, wt15, im15] = request.security(s15, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st16, en16, ot16, sk16, gt16, sd16, cc16, ce16, cs16, co16, ld16, cl16, pa16, wt16, im16] = request.security(s16, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st17, en17, ot17, sk17, gt17, sd17, cc17, ce17, cs17, co17, ld17, cl17, pa17, wt17, im17] = request.security(s17, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st18, en18, ot18, sk18, gt18, sd18, cc18, ce18, cs18, co18, ld18, cl18, pa18, wt18, im18] = request.security(s18, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st19, en19, ot19, sk19, gt19, sd19, cc19, ce19, cs19, co19, ld19, cl19, pa19, wt19, im19] = request.security(s19, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st20, en20, ot20, sk20, gt20, sd20, cc20, ce20, cs20, co20, ld20, cl20, pa20, wt20, im20] = request.security(s20, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st21, en21, ot21, sk21, gt21, sd21, cc21, ce21, cs21, co21, ld21, cl21, pa21, wt21, im21] = request.security(s21, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st22, en22, ot22, sk22, gt22, sd22, cc22, ce22, cs22, co22, ld22, cl22, pa22, wt22, im22] = request.security(s22, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st23, en23, ot23, sk23, gt23, sd23, cc23, ce23, cs23, co23, ld23, cl23, pa23, wt23, im23] = request.security(s23, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st24, en24, ot24, sk24, gt24, sd24, cc24, ce24, cs24, co24, ld24, cl24, pa24, wt24, im24] = request.security(s24, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st25, en25, ot25, sk25, gt25, sd25, cc25, ce25, cs25, co25, ld25, cl25, pa25, wt25, im25] = request.security(s25, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st26, en26, ot26, sk26, gt26, sd26, cc26, ce26, cs26, co26, ld26, cl26, pa26, wt26, im26] = request.security(s26, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st27, en27, ot27, sk27, gt27, sd27, cc27, ce27, cs27, co27, ld27, cl27, pa27, wt27, im27] = request.security(s27, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st28, en28, ot28, sk28, gt28, sd28, cc28, ce28, cs28, co28, ld28, cl28, pa28, wt28, im28] = request.security(s28, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st29, en29, ot29, sk29, gt29, sd29, cc29, ce29, cs29, co29, ld29, cl29, pa29, wt29, im29] = request.security(s29, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+[st30, en30, ot30, sk30, gt30, sd30, cc30, ce30, cs30, co30, ld30, cl30, pa30, wt30, im30] = request.security(s30, timeframe.period, mar1State(), ignore_invalid_symbol = true)
+
+// ---------------------------------------------------------------------------
+// The list
+// ---------------------------------------------------------------------------
+// Twelve parallel arrays rather than one array of objects, for the same reason the
+// signal log in maRejection.pine uses four: it is the shape the table renderer
+// wants, and there is no tuple array in Pine.
+//
+// They are rebuilt from scratch on every last-bar pass, so nothing can accumulate
+// across ticks.
+var array<string> rowSym    = array.new_string(0)
+var array<int>    rowState  = array.new_int(0)
+var array<int>    rowEntry  = array.new_int(0)
+var array<int>    rowOpen   = array.new_int(0)
+var array<int>    rowStreak = array.new_int(0)
+var array<int>    rowGate   = array.new_int(0)
+var array<int>    rowSide   = array.new_int(0)
+var array<int>    rowStep   = array.new_int(0)
+var array<bool>   rowPre    = array.new_bool(0)
+var array<int>    rowWhite  = array.new_int(0)
+var array<bool>   rowMkt    = array.new_bool(0)
+var array<float>  rowKey    = array.new_float(0)
+
+// The exchange prefix is width and nothing else: every row in a one-broker list
+// carries the same one.
+shortName(string raw) =>
+    parts = str.split(raw, ':')
+    array.size(parts) > 1 ? array.get(parts, array.size(parts) - 1) : raw
+
+// Two counters in an array rather than two plain variables, because a Pine
+// function cannot assign to a global - an array is a reference, so mutating its
+// contents is the one way to count something from inside one.
+//
+//   0  slots actually scanned, blanks excluded
+//   1  slots that came back na, which means the ticker did not resolve
+//   2  slots left out because they are on the skip list
+var array<int> tally = array.new_int(3, 0)
+
+// The sort key packs the whole ordering into one number, because Pine sorts one
+// array and reorders the rest by the indices it returns. Running above armed,
+// then most entries first - the pair that has cost the most attempts and still
+// has not paid is the one to look at. The slot index breaks ties so equal rows
+// keep the order they were entered in rather than an arbitrary one.
+// 'on' is the slot's tick box and 'raw' its symbol. Both have to hold for the
+// slot to count: unticked means the pair was deliberately taken out of the scan,
+// and an empty symbol means it was never filled in. Either way the security call
+// behind it was pointed at the chart's own symbol and its answer is about a pair
+// nobody asked for.
+addRow(bool on, string raw, int slotIndex, int st, int en, int ot, int sk, int gt, int sd, int ld, bool pre, int wt, bool mkt) =>
+    live = on and raw != ''
+
+    // A pale row for a pair that does not exist would be a promise about
+    // nothing, so an unresolved ticker has to be excluded here too.
+    //
+    // Tested through st rather than through pre, and not by choice: na() takes a
+    // number and refuses a bool outright - 'an argument of series bool type was
+    // used but a simple float is expected'. There is no na test for a bool in
+    // Pine at all.
+    //
+    // st is the right stand-in rather than a convenient one. Both come out of
+    // the same request.security tuple, and ignore_invalid_symbol makes that
+    // tuple na as a whole - so st being na is exactly the same event as pre
+    // being na, and can never disagree with it.
+    preOk = not na(st) and pre
+
+    // Same na guard, same reason. A live position is the single most urgent
+    // thing this table can say, so it earns a row on its own below - without
+    // that, an entry taken on a pair whose window has not opened yet (which is
+    // the ordinary case with the streak gate Off) would be invisible at exactly
+    // the moment money is in it.
+    mktOk = not na(st) and mkt
+
+    // Counted as scanned even when skipped, because it WAS scanned - the
+    // security call ran and the state machine produced an answer. What the skip
+    // list suppresses is the row, not the work. Keeping the two apart is what
+    // makes the footer honest about where the execution budget went.
+    skipped = live and array.includes(skipArr, shortName(raw))
+
+    if live
+        array.set(tally, 0, array.get(tally, 0) + 1)
+        if na(st)
+            array.set(tally, 1, array.get(tally, 1) + 1)
+        if skipped
+            array.set(tally, 2, array.get(tally, 2) + 1)
+
+    // preOk earns a row on its own. Without it the pale rows would appear only
+    // with 'Also list pairs with nothing open' switched on, which is the setting
+    // that prints every idle pair on the list - so the one row worth seeing
+    // would arrive buried in twenty that are not.
+    if live and not skipped and (nz(st, -1) > 0 or preOk or mktOk or showIdle or na(st))
+        array.push(rowSym, shortName(raw))
+        array.push(rowState, nz(st, -1))
+        array.push(rowEntry, nz(en))
+        array.push(rowOpen, nz(ot))
+        array.push(rowStreak, nz(sk))
+        array.push(rowGate, nz(gt))
+        array.push(rowSide, nz(sd))
+        array.push(rowStep, nz(ld))
+        array.push(rowPre, preOk)
+        array.push(rowWhite, nz(wt))
+        array.push(rowMkt, mktOk)
+        // Pre-armed sorts between idle and armed: below everything that is
+        // actually open, because nothing has started on it, and above plain idle,
+        // because something might. 500 is half a state's worth of key, so it
+        // cannot collide with either neighbour.
+        array.push(rowKey, nz(st, -1) * 1000.0 + (preOk and nz(st, -1) == 0 ? 500.0 : 0.0) +
+             math.min(nz(en), 99) * 10.0 - slotIndex * 0.01)
+
+posFor = tablePos == 'Middle right' ? position.middle_right :
+     tablePos == 'Bottom right' ? position.bottom_right :
+     tablePos == 'Top center' ? position.top_center :
+     tablePos == 'Middle center' ? position.middle_center :
+     tablePos == 'Bottom center' ? position.bottom_center :
+     tablePos == 'Middle left' ? position.middle_left :
+     position.top_right
+
+txtSize = scanTextSize == 'Tiny' ? size.tiny :
+     scanTextSize == 'Small' ? size.small :
+     scanTextSize == 'Large' ? size.large :
+     scanTextSize == 'Huge' ? size.huge :
+     size.normal
+
+// Two header rows plus thirty slots plus a footer, and one spare. The declared
+// count has to exceed the largest index ever written or the cell write is an
+// out-of-bounds error rather than a silent no-op.
+var table scanTable = table.new(posFor, 7, 34, border_width = 2)
+
+if barstate.islast
+    array.clear(rowSym)
+    array.clear(rowState)
+    array.clear(rowEntry)
+    array.clear(rowOpen)
+    array.clear(rowStreak)
+    array.clear(rowGate)
+    array.clear(rowSide)
+    array.clear(rowStep)
+    array.clear(rowPre)
+    array.clear(rowWhite)
+    array.clear(rowMkt)
+    array.clear(rowKey)
+    array.set(tally, 0, 0)
+    array.set(tally, 1, 0)
+    array.set(tally, 2, 0)
+
+    addRow(use01, sym01, 1,  st01, en01, ot01, sk01, gt01, sd01, ld01, pa01, wt01, im01)
+    addRow(use02, sym02, 2,  st02, en02, ot02, sk02, gt02, sd02, ld02, pa02, wt02, im02)
+    addRow(use03, sym03, 3,  st03, en03, ot03, sk03, gt03, sd03, ld03, pa03, wt03, im03)
+    addRow(use04, sym04, 4,  st04, en04, ot04, sk04, gt04, sd04, ld04, pa04, wt04, im04)
+    addRow(use05, sym05, 5,  st05, en05, ot05, sk05, gt05, sd05, ld05, pa05, wt05, im05)
+    addRow(use06, sym06, 6,  st06, en06, ot06, sk06, gt06, sd06, ld06, pa06, wt06, im06)
+    addRow(use07, sym07, 7,  st07, en07, ot07, sk07, gt07, sd07, ld07, pa07, wt07, im07)
+    addRow(use08, sym08, 8,  st08, en08, ot08, sk08, gt08, sd08, ld08, pa08, wt08, im08)
+    addRow(use09, sym09, 9,  st09, en09, ot09, sk09, gt09, sd09, ld09, pa09, wt09, im09)
+    addRow(use10, sym10, 10, st10, en10, ot10, sk10, gt10, sd10, ld10, pa10, wt10, im10)
+    addRow(use11, sym11, 11, st11, en11, ot11, sk11, gt11, sd11, ld11, pa11, wt11, im11)
+    addRow(use12, sym12, 12, st12, en12, ot12, sk12, gt12, sd12, ld12, pa12, wt12, im12)
+    addRow(use13, sym13, 13, st13, en13, ot13, sk13, gt13, sd13, ld13, pa13, wt13, im13)
+    addRow(use14, sym14, 14, st14, en14, ot14, sk14, gt14, sd14, ld14, pa14, wt14, im14)
+    addRow(use15, sym15, 15, st15, en15, ot15, sk15, gt15, sd15, ld15, pa15, wt15, im15)
+    addRow(use16, sym16, 16, st16, en16, ot16, sk16, gt16, sd16, ld16, pa16, wt16, im16)
+    addRow(use17, sym17, 17, st17, en17, ot17, sk17, gt17, sd17, ld17, pa17, wt17, im17)
+    addRow(use18, sym18, 18, st18, en18, ot18, sk18, gt18, sd18, ld18, pa18, wt18, im18)
+    addRow(use19, sym19, 19, st19, en19, ot19, sk19, gt19, sd19, ld19, pa19, wt19, im19)
+    addRow(use20, sym20, 20, st20, en20, ot20, sk20, gt20, sd20, ld20, pa20, wt20, im20)
+    addRow(use21, sym21, 21, st21, en21, ot21, sk21, gt21, sd21, ld21, pa21, wt21, im21)
+    addRow(use22, sym22, 22, st22, en22, ot22, sk22, gt22, sd22, ld22, pa22, wt22, im22)
+    addRow(use23, sym23, 23, st23, en23, ot23, sk23, gt23, sd23, ld23, pa23, wt23, im23)
+    addRow(use24, sym24, 24, st24, en24, ot24, sk24, gt24, sd24, ld24, pa24, wt24, im24)
+    addRow(use25, sym25, 25, st25, en25, ot25, sk25, gt25, sd25, ld25, pa25, wt25, im25)
+    addRow(use26, sym26, 26, st26, en26, ot26, sk26, gt26, sd26, ld26, pa26, wt26, im26)
+    addRow(use27, sym27, 27, st27, en27, ot27, sk27, gt27, sd27, ld27, pa27, wt27, im27)
+    addRow(use28, sym28, 28, st28, en28, ot28, sk28, gt28, sd28, ld28, pa28, wt28, im28)
+    addRow(use29, sym29, 29, st29, en29, ot29, sk29, gt29, sd29, ld29, pa29, wt29, im29)
+    addRow(use30, sym30, 30, st30, en30, ot30, sk30, gt30, sd30, ld30, pa30, wt30, im30)
+
+    runningCount = 0
+    armedCount   = 0
+    preCount     = 0
+    if array.size(rowState) > 0
+        for i = 0 to array.size(rowState) - 1
+            s = array.get(rowState, i)
+            runningCount += s == 2 ? 1 : 0
+            armedCount   += s == 1 ? 1 : 0
+            preCount     += s == 0 and array.get(rowPre, i) ? 1 : 0
+
+    table.clear(scanTable, 0, 0, 6, 33)
+
+    // NOTHING OPEN still means nothing open. A pre-armed pair has no window, so
+    // it cannot change that verdict - it is appended as a separate clause rather
+    // than folded into the count, and the header keeps saying the true thing
+    // while naming what is waiting behind it.
+    preTail = preCount > 0 ? '  ·  ' + str.tostring(preCount) + ' pre-armed ' : ''
+
+    headline = (runningCount == 0 and armedCount == 0 ? ' NOTHING OPEN ' :
+         '  ' + str.tostring(runningCount) + ' RUNNING   ' + str.tostring(armedCount) + ' ARMED  ') + preTail
+
+    // No width argument. table.cell's width is a percentage of the chart, not a
+    // column span, so pinning it here would squeeze the one row that has to stay
+    // readable rather than stretching it across the six columns below.
+    table.cell(scanTable, 0, 0, ' MAR1 SCANNER ' + headline,
+         bgcolor = runningCount > 0 ? color.new(color.orange, 15) : armedCount > 0 ? color.new(color.lime, 15) : color.black,
+         text_color = runningCount > 0 or armedCount > 0 ? color.black : color.silver,
+         text_size = txtSize)
+
+    table.cell(scanTable, 0, 1, ' Pair ',    bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(scanTable, 1, 1, ' State ',   bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - the pair is on the white step of the colour ladder, so the next large diamond on it would come out white. Nothing is open on a pre-armed pair and none of it reaches the closed log. Read against the ladder anchor, not the live gate, so while the two have drifted the Streak / gate column can read more than one apart.')
+    // Its own column rather than a word bolted onto State, because the two are
+    // orthogonal and folding them together would hide that. ARMED with a live
+    // position is the first entry of a window happening right now; RUNNING
+    // without one is a window that is between entries and costing nothing at
+    // this moment. Both are real, and a single combined label could not say so.
+    table.cell(scanTable, 2, 1, ' Market ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Whether a position is live on the candle now forming. An entry in this system grades exactly one candle - taken at its open, settled at its close - so IN lasts one candle and then stops, while RUNNING can stand for an hour across candles you were flat for. wait means the window is open and nothing is in the market until the next trigger.')
+    table.cell(scanTable, 3, 1, ' Entries ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Entries taken since this window opened, none of which has come out right yet.')
+    table.cell(scanTable, 4, 1, ' Open since ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'On an open window: when the gate opened - the green diamond, or the first entry when the streak gate is Off. On a pre-armed row: when the pair reached the white step of the ladder, which is the moment it started waiting. UTC+1.')
+
+    table.cell(scanTable, 5, 1, ' Streak / gate ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Current losing streak against the threshold entries resume at.')
+    table.cell(scanTable, 6, 1, ' Last ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+
+    // Same rule as the closed log: Auto is day and month, on every row. An open
+    // window has no end at all, so how far back its start might be is exactly
+    // the question this column exists to answer - it is the last column in
+    // either table that should be printing a bare time.
+    //
+    // An explicit choice is still honoured, so pinning the format pins it in
+    // both tables rather than in one of them.
+    openStampFmt = journalStamp == 'HH:mm' ? 'HH:mm' :
+         journalStamp == 'dd HH:mm' ? 'dd HH:mm' :
+         journalStamp == 'yyyy-MM-dd HH:mm' ? 'yyyy-MM-dd HH:mm' :
+         'MM-dd HH:mm'
+
+    // Sorting an empty array is safe; looping over one is not. A Pine for loop
+    // whose start exceeds its end counts DOWNWARDS instead of skipping, which
+    // here would index straight off the end of the array and kill the script.
+    // Not named 'order': that is a Pine namespace, and order.descending would
+    // stop resolving the moment a local variable shadowed it.
+    if array.size(rowKey) > 0
+        rank = array.sort_indices(rowKey, order.descending)
+
+        for i = 0 to array.size(rank) - 1
+            k = array.get(rank, i)
+            st = array.get(rowState, k)
+            en = array.get(rowEntry, k)
+            ot = array.get(rowOpen, k)
+            sd = array.get(rowSide, k)
+            ld = array.get(rowStep, k)
+            pre = array.get(rowPre, k) and st == 0
+
+            // The colour of the last SMALL DIAMOND on that pair, not a scale of
+            // this table's own.
+            //
+            // It used to be a heat ramp on the number of entries, on the argument
+            // that "how much has this cost" is a different question from "where
+            // is the streak" and deserved its own colours. That argument was
+            // wrong in practice for one reason: the two scales looked alike -
+            // orange, lilac, purple in both - so a row appeared to be telling you
+            // what the chart was telling you while counting something else. Two
+            // similar scales are worse than one, because nothing on screen says
+            // which one you are reading.
+            //
+            // Now a row wears exactly what the last diamond on that pair wore, so
+            // a purple row and a purple diamond are the same fact. The entry
+            // count is still in its own column, in figures, where a number
+            // belongs.
+            //
+            // Step 0 means the ladder does not exist - the streak gate is Off, so
+            // no diamond on the chart has a ladder colour either - and the row
+            // falls back to plain grey rather than inventing one.
+            // The pre-armed row is deliberately the faintest thing in the table.
+            //
+            // It has to be legible and it must not compete: nothing has started
+            // on this pair, no money is in it, and a row that pulled the eye as
+            // hard as a RUNNING one would turn the table's whole ordering into
+            // noise. So it is white at 88 - a wash rather than a fill - which on
+            // a dark chart reads as a barely-lit line and on a light one as a
+            // barely-darker one.
+            //
+            // White, and not some fourth colour of its own, because white is
+            // already what the ladder calls "one step short of the gate" - the
+            // large diamond this row is reporting is literally a white diamond.
+            // One colour, one meaning, whichever of the two you are looking at.
+            //
+            // stepText is not consulted here. It returns black for the light
+            // ladder steps, and a wash at 88 is not a light background - black
+            // on it would be the one unreadable row in the table.
+            rowBg = pre ? color.new(color.white, 88) :
+                 st < 0 ? color.new(color.red, 75) :
+                 st == 0 ? color.new(#333333, 70) :
+                 stepColor(ld, 55)
+            rowFg = pre ? color.new(color.white, 30) :
+                 st < 0 or st == 0 ? color.white :
+                 stepText(ld)
+
+            // Lower case, like idle and unlike RUNNING and ARMED, and for the
+            // reason those two are shouted: they are states you can act on. This
+            // one is a state you can only watch.
+            stateText = st == 2 ? 'RUNNING' : st == 1 ? 'ARMED' : st == 0 ? (pre ? 'pre-armed' : 'idle') : 'no data'
+
+            // The direction keeps its own colour, but it has to survive a light
+            // row: lime on lime and red on white are both unreadable. Same hue,
+            // darkened, so a long is still green and a short still red wherever
+            // the ladder has put the row.
+            // hot is the top step, and it needs its own pair for one reason: a
+            // red short arrow on a red row is invisible. The row already carries
+            // the alarm, so on that step the direction is carried by the glyph
+            // and by a pale green rather than by red against red.
+            // Step 8 is a LIGHT row, not a hot one - the white above red takes
+            // the dark arrow pair, same as the white and the lime below it.
+            light  = st > 0 and (ld == 1 or ld == 2 or ld == 8)
+            hot    = st > 0 and ld == 6
+            sideFg = sd == 1 ? (light ? color.new(#006622, 0) : hot ? #B9F6CA : color.lime) :
+                 sd == -1 ? (light ? color.new(#991111, 0) : hot ? #FFFFFF : color.red) :
+                 (light ? color.new(#444444, 0) : color.silver)
+
+            table.cell(scanTable, 0, i + 2, ' ' + array.get(rowSym, k) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+            table.cell(scanTable, 1, i + 2, ' ' + stateText + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+
+            // Blank on a pre-armed or idle row, and that is the honest third
+            // value rather than a missing one: with no window there is nothing
+            // to be in and nothing to wait between. Only a pair that has a
+            // window, or is opening one on this very candle, can be either.
+            //
+            // Painted in rowFg like every other cell on the row rather than in a
+            // colour of its own. The ladder already owns colour here, and a
+            // second scale would have to survive lime and white backgrounds -
+            // which is exactly the trap the entry-count heat ramp fell into. The
+            // contrast is carried by the words instead: IN shouted, wait not.
+            mkt = array.get(rowMkt, k)
+            table.cell(scanTable, 2, i + 2,
+                 mkt ? ' ● IN ' : st > 0 ? ' wait ' : '',
+                 bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+
+            table.cell(scanTable, 3, i + 2, st == 2 ? str.tostring(en) : st == 1 ? '-' : '', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+            // Two different answers sharing one column, and they share it
+            // because they are the same question asked of the two states this
+            // table can be in: since when has this pair been asking for
+            // attention. For a window that is the moment the gate opened; for a
+            // pale row it is the moment the ladder reached the white step.
+            //
+            // The column was blank on a pale row before, which made the row
+            // unreadable in the one way that mattered - it said a pair was
+            // waiting and refused to say since when, so nothing on screen could
+            // be lined up against the chart. That is the whole reason this is
+            // here.
+            //
+            // A pale row can never carry an open time and a window can never
+            // carry a white time, so the two can never collide in one cell.
+            wt = array.get(rowWhite, k)
+            table.cell(scanTable, 4, i + 2,
+                 pre ? (wt > 0 ? str.format_time(wt, openStampFmt, 'UTC+1') : '') :
+                 st > 0 and ot > 0 ? str.format_time(ot, openStampFmt, 'UTC+1') : '',
+                 bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+            table.cell(scanTable, 5, i + 2, st >= 0 ? str.tostring(array.get(rowStreak, k)) + ' / ' + str.tostring(array.get(rowGate, k)) : '', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+            table.cell(scanTable, 6, i + 2, sd == 1 ? '▲ long' : sd == -1 ? '▼ short' : '', bgcolor = rowBg, text_color = sideFg, text_size = txtSize)
+
+    // The footer exists because of what the empty case looks like without it.
+    // With the filter doing its job and nothing open, the table would be one
+    // line saying NOTHING OPEN - which is indistinguishable from a script that
+    // was never added, never resolved a symbol, or quietly died. A clock that
+    // moves on every tick and a count of what was actually scanned turns that
+    // into a positive statement: it is working, and the answer is nothing.
+    //
+    // 'unresolved' is the one that catches a mistyped or wrong-exchange ticker.
+    // Those slots come back na and would otherwise be silently absent.
+    scanned    = array.get(tally, 0)
+    unresolved = array.get(tally, 1)
+    skippedNow = array.get(tally, 2)
+
+    // The skip count has to be visible. A pair silently missing from the table
+    // is indistinguishable from a pair with nothing open, and a stale skip list
+    // left over from yesterday would hide a live window with no hint that it
+    // was being hidden on purpose.
+    table.cell(scanTable, 0, 2 + array.size(rowKey),
+         ' scanned ' + str.tostring(scanned) + ' pairs' +
+         (skippedNow > 0 ? '  ·  ' + str.tostring(skippedNow) + ' skipped' : '') +
+         (unresolved > 0 ? '  ·  ' + str.tostring(unresolved) + ' UNRESOLVED' : '') +
+         '  ·  ' + str.format_time(timenow, 'HH:mm:ss', 'UTC+1') + ' ',
+         bgcolor = unresolved > 0 ? color.new(color.red, 60) : color.new(#333333, 60),
+         text_color = unresolved > 0 ? color.white : color.silver, text_size = size.small)
+
+// ---------------------------------------------------------------------------
+// The finished series
+// ---------------------------------------------------------------------------
+// Unlike the table above, this one is written on every bar rather than only the
+// last: a closure is an event, and the only way to have the whole day by the
+// time you look is to record each one as the script walks past it.
+//
+// Newest first, so the row you have not seen yet is the one at the top.
+var array<string> jSym  = array.new_string(0)
+var array<int>    jOpen = array.new_int(0)
+var array<int>    jTime = array.new_int(0)
+var array<int>    jEnt  = array.new_int(0)
+var array<int>    jSide = array.new_int(0)
+var array<int>    jStep = array.new_int(0)
+
+// The window, expressed as two timestamps: the oldest closing time still inside
+// it and the first one past it. Everything is measured against the pair - what
+// gets recorded, what gets thrown away, and what gets written to the Pine Logs
+// panel. One rule rather than four mechanisms, which is what lets a rolling
+// window, a calendar one and a named stretch of the morning share the same code.
+//
+// Only the custom window has a real upper bound. For every other setting the top
+// is put beyond any closing time that can exist, so the same comparison holds
+// without a special case.
+//
+// It is built from timenow, the wall clock, and NOT from the bar's own clock.
+// That is the whole trick. timenow reads the same on a bar from last Tuesday as
+// it does on the live one, so "is this closure still inside the window" has an
+// answer at every point in history - and the current window is therefore
+// complete the moment the script loads, rather than filling up only from the
+// moment you happened to open the tab.
+//
+// UTC+1 for the calendar boundaries, the frame the hours filter and every
+// timestamp in this project already use, rather than the exchange's midnight.
+// Epoch day 0 was a Thursday, hence the 3 in the week arithmetic: it puts the
+// week boundary on Monday.
+utcShift = 3600000
+dayMs    = 86400000
+hourMs   = 3600000
+
+nowDayIdx  = math.floor((timenow + utcShift) / dayMs)
+nowWeekIdx = math.floor((nowDayIdx + 3) / 7)
+
+todayStart = nowDayIdx * dayMs - utcShift
+weekStart  = (7 * nowWeekIdx - 3) * dayMs - utcShift
+
+// Zero means the length is a calendar unit rather than a number of hours, which
+// is also what makes the anchor inapplicable: Day and Week already know where
+// they start.
+//
+// A float rather than an int since Custom arrived: the fixed steps are whole
+// hours, but a typed length is not - 2.5 hours and 0.75 of one are ordinary
+// things to ask for, and rounding them to the hour would silently answer a
+// different question than the one that was typed.
+lengthHours = journalLength == '1 hour' ? 1.0 :
+     journalLength == '2 hours' ? 2.0 :
+     journalLength == '4 hours' ? 4.0 :
+     journalLength == '8 hours' ? 8.0 :
+     journalLength == '12 hours' ? 12.0 :
+     journalLength == '16 hours' ? 16.0 :
+     journalLength == '24 hours' ? 24.0 :
+     journalLength == 'Custom' ? customHours :
+     0.0
+
+lengthMs = int(lengthHours * hourMs)
+
+// Two ways to pin a stretch, and they answer different questions.
+//
+//   Starting at hour   a stretch of TODAY. The hour is all you have to type,
+//                      and the window moves with the calendar - 09:00 means
+//                      this morning, and tomorrow it means tomorrow morning.
+//   Starting at date   a stretch of a NAMED day. The whole point is that it
+//                      does not move: it is how you read back Monday while it
+//                      is Thursday, which the hour anchor cannot do at all.
+//
+// A calendar length now has a SPAN as well as a boundary, and that exists only
+// so the date anchor can use it. This is the fix for a trap the first version
+// walked straight back into - the same one the note on the length dropdown says
+// the old 'Custom window' mode had:
+//
+//   Day, Week and Everything set their own start, so with any other anchor the
+//   date was simply ignored. Pick a date while the length says Day and NOTHING
+//   HAPPENS, because Day means today and always did. Two dropdowns had to agree
+//   before either appeared to work, and nothing on screen said which one was
+//   being overruled.
+//
+// So instead of warning about the combination, every combination now means
+// something, and it means the obvious thing: the date says WHERE the window
+// starts, the length says HOW LONG it runs. A day chosen last Monday with Day
+// gives that Monday, with Week gives that week, and with Everything gives
+// everything from then to now.
+calMs = journalLength == 'Day' ? dayMs :
+     journalLength == 'Week' ? 7 * dayMs :
+     0
+
+// Zero span means unbounded, which only Everything produces. Kept as a separate
+// name from lengthMs because the two are not the same question: lengthMs is what
+// was typed, spanMs is what the window ends up being.
+spanMs = lengthHours > 0 ? lengthMs : calMs
+
+datePinned = journalAnchor == 'Starting at date'
+hourPinned = lengthHours > 0 and journalAnchor == 'Starting at hour'
+pinned     = datePinned or hourPinned
+
+// The Today tick box, resolved once and in one place, so the picked date and its
+// override cannot disagree between the window and the header that prints it.
+customStart = customToday ? todayStart : customFrom
+
+pinFrom    = datePinned ? customStart : todayStart + journalFromHour * hourMs
+
+// The date anchor is read FIRST, so it can no longer be overruled by a calendar
+// length picking its own start behind it.
+periodFrom = datePinned ? customStart :
+     journalLength == 'Day' ? todayStart :
+     journalLength == 'Week' ? weekStart :
+     journalLength == 'Everything' ? 0 :
+     hourPinned ? pinFrom :
+     timenow - lengthMs
+
+// A day past the wall clock is past everything that has closed, since a closure
+// is a candle that has already ended. No magic constant needed, and only a
+// BOUNDED pinned window has a real ceiling - without one, naming 09:00 for an
+// hour would show the morning and everything after it.
+//
+// With a date anchor that ceiling is what makes reading back work at all: the
+// window ends where the length says it ends, so a day chosen last week shows
+// that day rather than that day and everything since. Everything is the one
+// length that deliberately has no ceiling, and there it reads as "from the date
+// you picked, onwards".
+periodTo = pinned and spanMs > 0 ? pinFrom + spanMs : timenow + dayMs
+
+// Confirmed bars only, and this is the one guard the log genuinely cannot do
+// without. Pine does not roll array contents back between realtime ticks, so a
+// closure recorded on an unfinished candle would be recorded again on the next
+// tick, and again, until the bar closed - one real event, fifty rows.
+logClose(bool fired, string raw, int en, int sd, int op, int ld) =>
+    // A closure outside the window is not recorded at all, rather than recorded
+    // and cleaned up afterwards. On the historical pass that is most of them,
+    // and the arrays never hold what they are about to throw away.
+    //
+    // The upper bound is what makes the custom window a window rather than a
+    // cutoff: without it, naming 09:00 for one hour would show the morning and
+    // everything after it.
+    if fired and time_close >= periodFrom and time_close < periodTo
+        // Stored in CLOSING order, which is the order closures arrive in, and
+        // is now also the order the table draws - so the drawing block reads
+        // this array straight through with no sort of its own.
+        //
+        // The order is load-bearing here whatever the table does with it. Rows
+        // leave the log when the window's start passes their CLOSING time, and
+        // the ageing loop pops them off the tail - which is only correct while
+        // the tail holds the oldest close. Storing by opening time would break
+        // exactly that: a window that opened first can close last, so an expired
+        // row would end up in the middle where a tail loop never reaches it, and
+        // the only alternative is sweeping the whole array on every bar.
+        //
+        // Within one bar every closure carries the same time_close, so those tie
+        // and come out in reverse slot order. That is worth knowing rather than
+        // fixing - it is stable, and no sort could do better than an arbitrary
+        // choice between rows that genuinely finished at the same instant.
+        array.unshift(jSym, shortName(raw))
+        array.unshift(jOpen, nz(op))
+        array.unshift(jTime, time_close)
+        array.unshift(jEnt, nz(en))
+        array.unshift(jSide, nz(sd))
+        array.unshift(jStep, nz(ld))
+
+        // journalKeep, not journalCap: the input's 0 means "no cap", and the
+        // resolved value is where that is turned into the hard array ceiling.
+        // Comparing against the raw input would evict every row on the default.
+        if array.size(jSym) > journalKeep
+            array.pop(jSym)
+            array.pop(jOpen)
+            array.pop(jTime)
+            array.pop(jEnt)
+            array.pop(jSide)
+            array.pop(jStep)
+
+        // The full date rather than the time alone: a line copied out of the
+        // panel has to stand on its own, and the panel's own timestamp column
+        // does not come with the text when you select it.
+        //
+        // The opening time is HH:mm while the closing one carries the date, for
+        // the same reason the stamp in maRejection.pine does it that way: the
+        // two are minutes apart, and dating both would repeat the day to say
+        // nothing. Empty when the window closed without an entry to date it
+        // from, which only the widened success scopes can produce.
+        //
+        // "Minutes apart" is an M1 fact, not a general one. On H1 and above a
+        // window can open on Monday and close on Wednesday, and the bare HH:mm
+        // then dates the entry to the closing day - silently, and wrongly, in
+        // the one field a copied line is reconciled by. So the day is carried
+        // whenever the two ends fall on different ones, and only then, which
+        // leaves every intraday line byte-for-byte what it was.
+        openDayLog  = nz(op) > 0 ? str.format_time(op, 'yyyy-MM-dd', 'UTC+1') : ''
+        closeDayLog = str.format_time(time_close, 'yyyy-MM-dd', 'UTC+1')
+        openFmtLog  = openDayLog == closeDayLog ? 'HH:mm' : 'yyyy-MM-dd HH:mm'
+
+        if logClosures
+            log.info('MAR1CLOSE;{0};{1};{2};{3};{4}',
+                 shortName(raw),
+                 nz(op) > 0 ? str.format_time(op, openFmtLog, 'UTC+1') : '',
+                 str.format_time(time_close, 'yyyy-MM-dd HH:mm', 'UTC+1'),
+                 nz(en),
+                 sd == 1 ? 'long' : sd == -1 ? 'short' : '')
+
+// A closure is a counter that went up. See the note on closedCount in the state
+// machine for why it is read this way and not as a flag.
+//
+// Computed once at global scope because two things need it: the log below, and
+// the export plots at the bottom of the file. The export must keep working with
+// the table hidden, so it cannot live inside the log's block.
+fire01 = use01 and nz(cc01) > nz(cc01[1])
+fire02 = use02 and nz(cc02) > nz(cc02[1])
+fire03 = use03 and nz(cc03) > nz(cc03[1])
+fire04 = use04 and nz(cc04) > nz(cc04[1])
+fire05 = use05 and nz(cc05) > nz(cc05[1])
+fire06 = use06 and nz(cc06) > nz(cc06[1])
+fire07 = use07 and nz(cc07) > nz(cc07[1])
+fire08 = use08 and nz(cc08) > nz(cc08[1])
+fire09 = use09 and nz(cc09) > nz(cc09[1])
+fire10 = use10 and nz(cc10) > nz(cc10[1])
+fire11 = use11 and nz(cc11) > nz(cc11[1])
+fire12 = use12 and nz(cc12) > nz(cc12[1])
+fire13 = use13 and nz(cc13) > nz(cc13[1])
+fire14 = use14 and nz(cc14) > nz(cc14[1])
+fire15 = use15 and nz(cc15) > nz(cc15[1])
+fire16 = use16 and nz(cc16) > nz(cc16[1])
+fire17 = use17 and nz(cc17) > nz(cc17[1])
+fire18 = use18 and nz(cc18) > nz(cc18[1])
+fire19 = use19 and nz(cc19) > nz(cc19[1])
+fire20 = use20 and nz(cc20) > nz(cc20[1])
+fire21 = use21 and nz(cc21) > nz(cc21[1])
+fire22 = use22 and nz(cc22) > nz(cc22[1])
+fire23 = use23 and nz(cc23) > nz(cc23[1])
+fire24 = use24 and nz(cc24) > nz(cc24[1])
+fire25 = use25 and nz(cc25) > nz(cc25[1])
+fire26 = use26 and nz(cc26) > nz(cc26[1])
+fire27 = use27 and nz(cc27) > nz(cc27[1])
+fire28 = use28 and nz(cc28) > nz(cc28[1])
+fire29 = use29 and nz(cc29) > nz(cc29[1])
+fire30 = use30 and nz(cc30) > nz(cc30[1])
+
+// The log is kept whatever the display setting says, because Summary only and
+// Hidden still read from it - and because the arrays cost nothing to maintain.
+if barstate.isconfirmed
+    // Ageing out, from the tail. The list is newest first, so the last element
+    // is the oldest one, and a while loop that pops until the tail is inside the
+    // window handles both kinds of setting with the same two lines: a rolling
+    // window drops one row at a time as the clock moves, and a calendar one
+    // empties the whole list at once when midnight moves the cutoff past every
+    // row in it.
+    while array.size(jTime) > 0 and array.get(jTime, array.size(jTime) - 1) < periodFrom
+        array.pop(jSym)
+        array.pop(jOpen)
+        array.pop(jTime)
+        array.pop(jEnt)
+        array.pop(jSide)
+        array.pop(jStep)
+
+    logClose(fire01, sym01, ce01, cs01, co01, cl01)
+    logClose(fire02, sym02, ce02, cs02, co02, cl02)
+    logClose(fire03, sym03, ce03, cs03, co03, cl03)
+    logClose(fire04, sym04, ce04, cs04, co04, cl04)
+    logClose(fire05, sym05, ce05, cs05, co05, cl05)
+    logClose(fire06, sym06, ce06, cs06, co06, cl06)
+    logClose(fire07, sym07, ce07, cs07, co07, cl07)
+    logClose(fire08, sym08, ce08, cs08, co08, cl08)
+    logClose(fire09, sym09, ce09, cs09, co09, cl09)
+    logClose(fire10, sym10, ce10, cs10, co10, cl10)
+    logClose(fire11, sym11, ce11, cs11, co11, cl11)
+    logClose(fire12, sym12, ce12, cs12, co12, cl12)
+    logClose(fire13, sym13, ce13, cs13, co13, cl13)
+    logClose(fire14, sym14, ce14, cs14, co14, cl14)
+    logClose(fire15, sym15, ce15, cs15, co15, cl15)
+    logClose(fire16, sym16, ce16, cs16, co16, cl16)
+    logClose(fire17, sym17, ce17, cs17, co17, cl17)
+    logClose(fire18, sym18, ce18, cs18, co18, cl18)
+    logClose(fire19, sym19, ce19, cs19, co19, cl19)
+    logClose(fire20, sym20, ce20, cs20, co20, cl20)
+    logClose(fire21, sym21, ce21, cs21, co21, cl21)
+    logClose(fire22, sym22, ce22, cs22, co22, cl22)
+    logClose(fire23, sym23, ce23, cs23, co23, cl23)
+    logClose(fire24, sym24, ce24, cs24, co24, cl24)
+    logClose(fire25, sym25, ce25, cs25, co25, cl25)
+    logClose(fire26, sym26, ce26, cs26, co26, cl26)
+    logClose(fire27, sym27, ce27, cs27, co27, cl27)
+    logClose(fire28, sym28, ce28, cs28, co28, cl28)
+    logClose(fire29, sym29, ce29, cs29, co29, cl29)
+    logClose(fire30, sym30, ce30, cs30, co30, cl30)
+
+jrnPos = journalPos == 'Bottom center' ? position.bottom_center :
+     journalPos == 'Middle center' ? position.middle_center :
+     journalPos == 'Top center' ? position.top_center :
+     journalPos == 'Top right' ? position.top_right :
+     journalPos == 'Middle right' ? position.middle_right :
+     journalPos == 'Bottom right' ? position.bottom_right :
+     position.middle_left
+
+// Sized for the largest the DRAWN list can ever be, not for the list in front of
+// you. The table is created once, on the first bar, it cannot be grown later,
+// and a cell written past the declared count is an out-of-bounds error that
+// kills the script rather than a cell quietly going missing.
+//
+// It used to be sized from journalCap, which worked only for as long as the cap
+// and the drawn list were the same number. They stopped being the same when the
+// cap was raised, and they are now not even the same KIND of number - the cap
+// defaults to 0, meaning keep everything, and a table cannot be declared with no
+// height at all. So the drawn list has its own limit and this reads from that.
+//
+// Six blocks of five columns with a blank column between them. The blank is what
+// separates the lists without a border of its own: an unwritten table cell has
+// no background, so the chart shows through and reads as a gap. The last block
+// needs no trailing gap, hence the -1.
+//
+// Six because that is where widening stops helping. At twenty rows a block it
+// holds a hundred and twenty closures, which is more than a day produces, and a
+// seventh block would be off the side of the screen on any chart narrow enough
+// to still be worth reading.
+//
+// The row count is the tallest a SINGLE block can be, not the total: blocks sit
+// beside each other, so adding them costs columns and no rows at all.
+JRN_MAX_BLOCKS = 6
+
+// HOW MANY of those blocks the log may use, where rows per column decides how
+// TALL each one is. Together they are the whole of what the table shows - rows
+// times blocks - and until this existed only one half of that product could be
+// set: the height was yours and the width was always six, so the total was
+// whatever twenty-times-six happened to be. Now it is a number you choose.
+//
+//   0 x 0     auto - twenty tall, blocks added sideways as the rows arrive
+//   20 x 1    one narrow column of twenty
+//   30 x 2    sixty rows in a third of the width
+//   100 x 6   six hundred, which is the most a chart can carry at all
+//
+// Declared HERE rather than beside its partner sixteen hundred lines up, and for
+// two reasons that agree. It needs JRN_MAX_BLOCKS for its own ceiling, and that
+// is the line above. And TradingView maps a saved setting onto an input by
+// POSITION: every other input in this file is declared above this point, so
+// appending here is the one place a new input costs nobody a reset. The dialog
+// lays inputs out by their GROUP rather than by where they sit in the file, so
+// it still appears beside the rows-per-column it belongs with.
+journalCols = input.int(0, 'Closed log: blocks side by side (0 = auto)', minval = 0, maxval = JRN_MAX_BLOCKS, group = gWin,
+     tooltip = 'How many columns of the log stand beside each other. 0 uses all six. One block with a tall rows-per-column gives a single long list; two of thirty is the same sixty rows in half the width. Together with rows per column this is the whole of the layout, and the header says which shape it ended up with whenever either is set by hand. To collapse the table to its summary line instead, use Show the log as.', display = display.none)
+
+var table jrnTable = table.new(jrnPos, JRN_MAX_BLOCKS * 6 - 1, JRN_DRAW_MAX + 2, border_width = 2)
+
+// ---------------------------------------------------------------------------
+// HOW BIG THE CLOSED LOG IS DRAWN
+// ---------------------------------------------------------------------------
+// Its own size, separate from every other table, and the reason is that this one
+// is read differently from the others. The live tables are glanced at - a row
+// appears, you act on it, it goes. The closed log is READ BACK: rows compared
+// against each other, times lined up against the chart, an average at the top
+// that two settings get judged by. Those are opposite needs, and one setting
+// could not serve both - shrinking the log to fit a day of closures shrank the
+// live list with it, and enlarging the live list pushed the log off the screen.
+//
+// 'Same as the tables' is the default and keeps exactly the old behaviour, so
+// nothing moves for anyone who does not go looking for this.
+//
+// DECLARED HERE, at the foot, below every other input in the file. TradingView
+// maps a saved setting onto an input by POSITION, so a new input anywhere above
+// this line slides every setting under it onto a value saved against something
+// else. At the bottom it costs nobody anything. The dialog lays inputs out by
+// their GROUP rather than by file order, so it still appears beside the rest of
+// the log's settings.
+logTxtName = input.string('Same as the tables', 'CLOSED log: text size',
+     options = ['Same as the tables', 'Tiny', 'Small', 'Normal', 'Large'], group = gJrn,
+     tooltip = 'The finished-series log only. Every other table keeps the shared Text size setting above. Use this to fit more rows on screen, or to make a log you are reading back legible without enlarging the live tables with it.', display = display.none)
+
+logTxt = logTxtName == 'Tiny' ? size.tiny : logTxtName == 'Small' ? size.small :
+     logTxtName == 'Normal' ? size.normal : logTxtName == 'Large' ? size.large : txtSize
+
+if barstate.islast and journalShow != 'Hidden'
+    table.clear(jrnTable, 0, 0, JRN_MAX_BLOCKS * 6 - 2, JRN_DRAW_MAX + 1)
+
+    rows = array.size(jSym)
+
+    // Two counts, and keeping them apart is the whole of what the raised cap
+    // bought. rows is everything the log holds and is what the summary is
+    // computed from; shown is what fits in a table and is what the loops below
+    // walk. They were the same number while the cap was 100 or less.
+    //
+    // Written as a ternary rather than math.min so the result is unambiguously
+    // an int - it is a for-loop bound and a table row index, and neither takes
+    // a float.
+    //
+    // How many rows the layout can actually hold, computed here rather than
+    // discovered by the loop, because the header's 'newest N listed' is computed
+    // from it - a cap the loop obeyed silently would have let the header claim
+    // rows that were never on screen.
+    //
+    // Blocks are the way this grows now. The first version wrapped into a second
+    // column and stopped there, which set the ceiling at twice the rows-per-column
+    // - so 20 per column meant 40 listed out of 59 closed, and the log went from
+    // too tall to too short in one step. Now it keeps adding blocks sideways
+    // until the rows run out or the six are used up, and a block costs width,
+    // never height.
+    //
+    // Zero is AUTO, and it used to be the single tall column - which was the
+    // wrong meaning for a zero to have in this dialog. Directly above it, 'Keep
+    // at most N closures' reads 0 as "no limit, keep everything"; a zero that
+    // meant "one narrow column, and stop at a hundred" three lines later was the
+    // same key turning the opposite way, and the only warning was in the label.
+    //
+    // Auto is the shape the list would be given by hand every time: keep the
+    // columns a readable twenty tall and add blocks sideways until the rows run
+    // out. Width is the direction a chart has to spare, so it is spent first.
+    // Only when all six blocks are full does the height start to grow, up to the
+    // hundred one column can hold - and six hundred rows is the point where
+    // nothing can be laid out on a chart at all.
+    //
+    //   59 rows    20 tall, 3 blocks
+    //   180 rows   30 tall, 6 blocks
+    //   900 rows   100 tall, 6 blocks, newest 600 listed and the header says so
+    //
+    // Typing a number still pins the height exactly, which is the way to a
+    // narrower table: 100 gives back the old single column for any log that fits
+    // in one.
+    // The block count is read FIRST, because the automatic row height is derived
+    // from it: asking for two blocks and letting the rows size themselves has to
+    // spread the closures over two, not over six and then draw a third of them.
+    maxBlocks = journalCols <= 0 ? JRN_MAX_BLOCKS : journalCols
+
+    autoRows = rows <= 0 ? 20 : int(math.ceil(rows / (1.0 * maxBlocks)))
+    autoRows := autoRows < 20 ? 20 : autoRows > JRN_DRAW_MAX ? JRN_DRAW_MAX : autoRows
+
+    colRows = journalPerCol <= 0 ? autoRows : journalPerCol
+    drawCap = colRows * maxBlocks
+
+    shown = rows < drawCap ? rows : drawCap
+
+    // Blocks, computed once and used four times below: how many headers to draw,
+    // how far the title stretches, where each row lands, and the shape the
+    // summary line reports. Nothing may disagree with it. Rounded up, since a
+    // block with one row in it is a block.
+    //
+    // math.ceil and an explicit int(), rather than the integer-division trick
+    // that (a + b - 1) / b is in most languages. Pine's / does NOT truncate - it
+    // returns a float even between two ints - so that expression came back as
+    // 2.65 and every column index derived from it drifted a fraction at a time.
+    //
+    // It used to be computed three hundred lines down, beside the header merge
+    // that was its first reader. The summary line now names the layout it ended
+    // up with, and the summary line is written FIRST, so it had to move up here
+    // with the rest of the sizing rather than sit among the things that use it.
+    blocks = shown <= 0 ? 1 : int(math.ceil(shown / math.max(colRows, 1)))
+
+    // Held at the asked-for width. shown is already capped at colRows * maxBlocks
+    // so this cannot bite, and it is here because the header, the column titles
+    // and the row placement all read this number - a layout setting that one of
+    // the three could exceed is a setting that only mostly applied.
+    blocks := blocks > maxBlocks ? maxBlocks : blocks
+
+    // The total is what makes the log more than a list: entries divided by
+    // closures is the average cost of a win across the whole watchlist, which is
+    // the number the streak gate is supposed to be improving.
+    //
+    // Over ALL rows on purpose, not the drawn ones. An average taken over
+    // whatever happened to fit on screen is not an average of anything - it
+    // would move when you changed the table's position or its text size.
+    totalEntries = 0
+
+    // AND THE SHAPE THE AVERAGE HIDES, which is the whole reason this histogram
+    // sits beside it.
+    //
+    // One number cannot describe a recovery ladder. Two settings can both average
+    // 2.3 entries a win and be nothing alike: one that pays two almost every time
+    // is survivable, and one that pays one most of the time and eight
+    // occasionally is not. The ladder dies on the TAIL, and the mean is exactly
+    // where a tail goes to hide - a handful of very deep windows move it by a
+    // tenth and move the account by everything.
+    //
+    // Seven buckets: how many closures cost one entry, two, three, four, five,
+    // and everything past five in one. Six-plus is open-ended on purpose - once a
+    // window is that deep the exact number stops changing the decision.
+    //
+    // ZERO IS A BUCKET TOO, and it is printed only when it is not empty. A window
+    // can open on a green diamond and be closed by the very next signal without
+    // anything having been entered: it costs nothing, it is a real closure, and it
+    // is already pulling the average down. Printing 0x0 on every ordinary day
+    // would be noise, so it appears only when there is something to explain.
+    //
+    // Counted over ALL rows in the window, exactly like the average above it, and
+    // not over the rows that happened to fit on screen.
+    costHist = array.new_int(7, 0)
+    if rows > 0
+        for i = 0 to rows - 1
+            costE = array.get(jEnt, i)
+            totalEntries += costE
+            costB = costE < 0 ? 0 : costE > 6 ? 6 : costE
+            array.set(costHist, costB, array.get(costHist, costB) + 1)
+
+    // EACH BUCKET CARRIES ITS SHARE AS WELL AS ITS COUNT, because a count on its
+    // own is only comparable inside one window. Twelve windows won on the first
+    // entry is most of a quiet morning and a fraction of a busy one, so the count
+    // answers "how much sample is behind this" and the percentage answers "what
+    // is the shape" - and the shape is the half that survives being held against
+    // yesterday, or against the same log with one setting moved.
+    //
+    // Rounded to whole percent, so the buckets can add to 99 or to 101. That is
+    // the rounding and not a miscount: the counts beside them are exact and they
+    // are what sum to the closure total on the left of the line.
+    costTxt = ''
+    if rows > 0
+        costTxt := '  ·  by cost'
+        for cb = 0 to 6
+            costN = array.get(costHist, cb)
+            // Every bucket from one upwards is printed even when it is empty, so
+            // the positions hold still and two logs can be compared by shape
+            // rather than by reading the labels each time. Zero is the exception
+            // and appears only when it has something in it.
+            if cb > 0 or costN > 0
+                costTxt := costTxt + '  ' + (cb == 6 ? '6+' : str.tostring(cb)) + '×' + str.tostring(costN) +
+                     ' (' + str.tostring(100.0 * costN / rows, '#') + '%)'
+
+    // The pinned window names its own bounds rather than saying "custom". That
+    // is not decoration: it is the one place that proves the setting arrived. If
+    // you pin 09:00 and this line still says TODAY, the script is not reading
+    // your setting at all.
+    //
+    // Formatted from the RESULTING timestamps rather than rebuilt from the
+    // inputs, which is what makes it a check instead of an echo. The old version
+    // pasted the hour input back together by hand - it could only ever agree
+    // with itself, it could not express a fractional length, and it had no way
+    // to name a day other than today. Reading periodFrom and periodTo covers all
+    // three, and it is also the only version that can catch the date picker
+    // having landed somewhere other than where you thought: the pair of stamps
+    // below is the window that was actually applied, in UTC+1.
+    //
+    // The day is printed on the left end whenever the window does not start
+    // today, so an ordinary morning slice stays as short as it always was and a
+    // window read back from last week says which week it was.
+    //
+    // And on BOTH ends whenever the window crosses midnight, which is the fix
+    // for the one reading this line could not survive: 09:00 for sixteen hours
+    // printed as '09:00-01:00', which reads as a window running BACKWARDS from
+    // nine in the morning to one in the morning - four hours of the night rather
+    // than sixteen hours across the day. Bare times can only name a window that
+    // begins and ends on the same day, and since the length dropdown learned to
+    // go past a session that is no longer the only kind there is.
+    //
+    // Dated on both ends rather than only on the end that moved, because a date
+    // on one side of a dash and not the other reads as a typo. MM-dd carries the
+    // month with it, so a window that crosses one is named as fully as one that
+    // crosses a day - there is no third, wider format to reach for.
+    //
+    // The right end is a time only while the window is BOUNDED. Everything has
+    // no ceiling, and printing timenow + a day there would have named a moment
+    // tomorrow that nothing can ever fall into.
+    pinFromDay = str.format_time(periodFrom, 'yyyy-MM-dd', 'UTC+1')
+
+    // periodTo is the first moment PAST the window, so a stretch ending exactly
+    // at midnight lands on the next day and would be dated for a day it does not
+    // reach. Backing off a millisecond asks the question about the last moment
+    // the window actually contains, which is the one being named.
+    pinEndDay  = str.format_time(periodTo - 1, 'yyyy-MM-dd', 'UTC+1')
+
+    // The second clause is the whole-day case, which the day comparison alone
+    // gets wrong in the one way that matters: a day starting at midnight ends at
+    // the next midnight, whose last contained moment is still the SAME day, so
+    // the comparison says no crossing and the label comes out '00:00-00:00' -
+    // two identical times for a window twenty-four hours wide. Any span of a day
+    // or more is dated whatever the clock says.
+    pinCrosses = spanMs > 0 and (spanMs >= dayMs or pinEndDay != pinFromDay)
+
+    pinToday   = pinFromDay == str.format_time(timenow, 'yyyy-MM-dd', 'UTC+1')
+    pinLabel   = str.format_time(periodFrom, pinToday and not pinCrosses ? 'HH:mm' : 'MM-dd HH:mm', 'UTC+1') +
+         (spanMs > 0 ? '-' + str.format_time(periodTo, pinCrosses ? 'MM-dd HH:mm' : 'HH:mm', 'UTC+1') : ' ONWARDS')
+
+    // Auto prints the day and the month, always, on every row of both tables.
+    //
+    // It used to measure the rows on screen and print only as much date as they
+    // strictly needed: bare times on a one-day log, the day number once the log
+    // crossed midnight, the month once it crossed a month boundary. Every one of
+    // those answers was correct about the list, and that was the flaw - the
+    // question is not what distinguishes one row from another, it is which day
+    // you are looking at, and that is decided outside the list.
+    //
+    // Under the measuring version the date came and went as the log rolled: the
+    // same screen showed it in the morning and not after a refresh, so nothing
+    // could be compared against anything written down earlier. A format that is
+    // right and unstable is worse here than one that is fixed and slightly
+    // wider, because the whole use of this column is comparison across days.
+    //
+    // The fixed options in the dropdown are unchanged, so 'HH:mm' is still there
+    // for anyone who wants the narrow column back.
+    stampFmt = journalStamp == 'HH:mm' ? 'HH:mm' :
+         journalStamp == 'dd HH:mm' ? 'dd HH:mm' :
+         journalStamp == 'yyyy-MM-dd HH:mm' ? 'yyyy-MM-dd HH:mm' :
+         'MM-dd HH:mm'
+
+    // '#.##' rather than a bare tostring on the rolling label: a float length
+    // prints as 3 and 2.5 rather than as 3.0 and 2.5000000000000004.
+    periodName = journalLength == 'Day' ? 'TODAY' :
+         journalLength == 'Week' ? 'THIS WEEK' :
+         journalLength == 'Everything' ? 'LOGGED' :
+         pinned ? pinLabel :
+         'LAST ' + str.tostring(lengthHours, '#.##') + 'H'
+
+    // The truncation is named rather than left to be noticed. A header saying
+    // 412 above a list of exactly 100 rows, with nothing to explain the gap,
+    // reads as a script that lost 312 of them - and the one thing this log has
+    // to be is trustworthy about what it did and did not keep.
+    //
+    // It appears only when there is truncation to report, so an ordinary day
+    // still has the header it always had.
+    //
+    // The second clause is the one that answers "I moved the date and nothing
+    // changed". The date is read ONLY when the anchor says to read it, so with
+    // any other anchor the picker is inert - and inert silently, which is the
+    // whole problem. Nothing on screen distinguished a date that was applied
+    // from a date that was ignored, and the header said TODAY either way.
+    //
+    // It is compared against the default rather than shown whenever the anchor
+    // is wrong, because otherwise it would be permanent: the date is inert under
+    // two anchors out of three, so everyone who has never opened the picker
+    // would carry the warning forever, and a warning that is always there is one
+    // that stops being read.
+    dateIgnored = not datePinned and customFrom != CUSTOM_FROM_DEFAULT
+
+    table.cell(jrnTable, 0, 0, ' CLOSED ' + periodName + '  ·  ' + str.tostring(rows) + ' closed' +
+         // 1.0 leads the division to keep the average a float no matter what
+         // the two operands are. It is belt and braces rather than a fix: Pine's
+         // / returns a float even between two ints - which is the opposite of
+         // what a note here used to claim, and believing that note is what put
+         // a fractional column index into the row loop below and broke the
+         // table into a staircase.
+         //
+         // Five decimals, and they are for RANKING rather than for reading. One
+         // decimal is all the precision this number has - a few hundred closures
+         // put its own error bar at roughly +/-0.07 - so 2.1 is the honest way to
+         // state it on its own. But the use here is comparing one MA length
+         // against another by changing the setting and reading this line twice,
+         // and at one decimal two settings that differ by 0.09 both print 2.1.
+         // The digits separate them.
+         //
+         // What they cannot do is make that separation real. A gap smaller than
+         // about 0.15 on a few hundred closures is inside the noise however many
+         // digits are shown, and the ordering of two such numbers will not
+         // survive another week of data.
+         (rows > 0 ? '  ·  ' + str.tostring(totalEntries) + ' entries, ' + str.tostring(1.0 * totalEntries / rows, '#.00000') + ' avg' : '') +
+         costTxt +
+         (rows > shown and journalShow == 'Full list' ? '  ·  newest ' + str.tostring(shown) + ' listed' : '') +
+         // The shape, whenever either half of it was typed rather than worked
+         // out. A layout setting that leaves no trace on screen is one you
+         // cannot prove arrived - the same reason the window prints its own
+         // bounds two clauses up.
+         (journalShow == 'Full list' and (journalPerCol > 0 or journalCols > 0) ?
+              '  ·  ' + str.tostring(blocks) + ' x ' + str.tostring(colRows) + ' by hand' : '') +
+         // The hard array ceiling, named out loud on the one occasion it ever
+         // applies. 'Keep at most N closures' at 0 promises the whole window, so
+         // the moment something older is dropped the header has to stop implying
+         // otherwise - a count that silently stops growing is exactly the kind of
+         // quiet the summary line is here to prevent.
+         (journalCap <= 0 and rows >= JRN_KEEP_MAX ? '  ·  AT THE ' + str.tostring(JRN_KEEP_MAX) + ' ROW CEILING - older closures dropped' : '') +
+         (dateIgnored ? "  ·  DATE IGNORED - set 'Window anchored' to Starting at date" : ''),
+         bgcolor = dateIgnored ? color.new(#553300, 15) : color.new(#12261A, 15),
+         text_color = dateIgnored ? color.orange : #7CE0A5, text_size = logTxt,
+         tooltip = 'by cost is the distribution behind the average: 1× is how many windows were won on the first entry, 2× on the second, and so on, with 6+ collecting everything deeper, each followed by its share of the whole window in brackets. The average to its left is the same closures in one number and it cannot show a tail - two settings with an identical average can have completely different shapes here, and it is the tail a recovery ladder dies on. The shares are rounded to whole percent and can sum to 99 or 101; the counts beside them are exact. A 0× bucket appears only when a window closed without anything having been entered.')
+
+    // The header is one long sentence and it used to sit in column 0 alone,
+    // which made column 0 as wide as that sentence. That is the whole reason
+    // the left block's Pair column stood at three times the width of the right
+    // block's on the same six-letter names: the right block has no header cell
+    // above it, so it sized itself from the pairs and looked correct.
+    //
+    // Merging spreads the sentence across the columns the list actually uses.
+    // Column widths go back to being decided by the rows, and the two blocks
+    // match. Cutting the header short would have worked too, but it would pay
+    // for the alignment with the counts, which are the reason it exists.
+    //
+    // The span follows how many blocks were drawn. Stretching it over the empty
+    // columns of blocks that were never filled would leave the title reaching
+    // out across nothing.
+    //
+    // The filler cells are written first because a merge covers cells, not
+    // space - and they are re-created on every pass, since the table.clear
+    // above removes them along with everything else.
+    //
+    // The span follows blocks, which is worked out with the rest of the layout
+    // above the summary line - the header PRINTS it, so it cannot be computed
+    // here where it used to be.
+
+    // shown > 0, so an empty log leaves the title where it always was rather
+    // than stretching it across five columns with one narrow cell underneath.
+    if journalShow == 'Full list' and shown > 0
+        // Block b owns columns b*6 to b*6+4, so the last written column of the
+        // last block is blocks*6-2 - one short of that block's own trailing gap.
+        hdrSpan = blocks * 6 - 2
+        for k = 1 to hdrSpan
+            table.cell(jrnTable, k, 0, '', bgcolor = dateIgnored ? color.new(#553300, 15) : color.new(#12261A, 15), text_size = logTxt)
+        table.merge_cells(jrnTable, 0, 0, hdrSpan, 0)
+
+    // Everything below the summary line is skipped in Summary only. That one
+    // line is the whole of what a working screen needs - the detail is what the
+    // CSV export is for.
+    // Opened before Closed, so a row reads left to right in the order the series
+    // actually happened, and the gap between the two columns is the duration
+    // without anything having to compute it.
+    // One header row per block that has something under it. Drawing all six
+    // unconditionally would leave five sets of column titles standing over
+    // nothing whenever the day was quiet.
+    if journalShow == 'Full list'
+        for b = 0 to blocks - 1
+            // Six, not five: column 5 of each block is the gap. Block 0 owns
+            // columns 0-4, block 1 owns 6-10, and so on.
+            h = b * 6
+            table.cell(jrnTable, h + 0, 1, ' Pair ',    bgcolor = color.gray, text_color = color.white, text_size = logTxt)
+            table.cell(jrnTable, h + 1, 1, ' Opened ',  bgcolor = color.gray, text_color = color.white, text_size = logTxt,
+                 tooltip = 'The candle the first entry of this window was taken on, UTC+1. Blank when the window closed without an entry.')
+            table.cell(jrnTable, h + 2, 1, ' Closed ',  bgcolor = color.gray, text_color = color.white, text_size = logTxt,
+                 tooltip = 'Closing time of the winning candle, UTC+1.')
+            table.cell(jrnTable, h + 3, 1, ' Entries ', bgcolor = color.gray, text_color = color.white, text_size = logTxt,
+                 tooltip = 'How many entries that window cost, the winning one included.')
+            table.cell(jrnTable, h + 4, 1, ' Side ',    bgcolor = color.gray, text_color = color.white, text_size = logTxt)
+
+    // Read in CLOSING order - newest closure first - which is the order the
+    // arrays are already stored in, so there is nothing to sort.
+    //
+    // It used to be read in OPENING order, on the argument that a row should
+    // appear where the trade STARTED. That is the wrong end for this table. This
+    // is the log of what got FINISHED: a row exists here because a window closed,
+    // the window is what the entry count and the ladder colour belong to, and the
+    // question the list answers is "what has settled, most recent first". Ordered
+    // by opening time, the newest row at the top was not the last thing to close -
+    // it was the last thing to have STARTED, which on a set of windows that ran
+    // for different lengths is a different row, and the two orders disagree
+    // exactly when it matters: a long window that opened first and closed last
+    // sank into the middle of the list instead of standing at the top where it
+    // had just landed.
+    //
+    // The Opened column still carries the other end, so the span is still on the
+    // row; it is the ORDER that now follows the event the table is named after.
+    //
+    // Both ends of this are already handled by the storage. logClose unshifts
+    // each closure onto the front as it arrives, so the array is descending by
+    // closing time by construction - see the note there for why that order is
+    // also what the ageing loop depends on. And the fallback the old sort key
+    // needed goes with it: a window that closed without an entry has no opening
+    // time, and that no longer has to be worked around because opening time is
+    // no longer what decides where the row sits.
+    //
+    // The sort was one array.sort_indices per redraw over the whole log, which
+    // is now every closure in the window rather than a few hundred. Reading
+    // storage order costs nothing at all.
+    // shown, not rows: past the drawn cap the loop would write to a table row
+    // that was never declared, which in Pine is an out-of-bounds error that
+    // kills the script rather than a cell quietly going missing.
+    if shown > 0 and journalShow == 'Full list'
+        for k = 0 to shown - 1
+            // The row's place in the list and its place in storage are now the
+            // same number. i is kept as a name of its own rather than folded
+            // into k, because the two still answer different questions - k is
+            // where the row is DRAWN, i is where it is STORED - and the block
+            // placement below reads k for that reason.
+            i  = k
+            en = array.get(jEnt, i)
+            sd = array.get(jSide, i)
+
+            // The colour the window was wearing when it closed - the last small
+            // diamond of that series, exactly as the open table shows it while
+            // the series is still running.
+            //
+            // That is what makes the two tables one story rather than two: a pair
+            // sits in the scanner as a purple row, closes, and reappears here as
+            // the same purple row. Nothing changes colour on the way across, so a
+            // finished series can be recognised as the one you were watching.
+            //
+            // Deeper transparency than the open table on purpose. This is history
+            // and should not compete for attention with a window still open.
+            ld    = array.get(jStep, i)
+            rowBg = stepColor(ld, 62)
+            rowFg = stepText(ld)
+            light = ld == 1 or ld == 2 or ld == 8
+            // Same as the open table: red on red cannot be read, so the top step
+            // hands the side column a pale pair instead.
+            hot   = ld == 6
+
+            op = array.get(jOpen, i)
+
+            // Where this row lands. The list is newest first and it FILLS EACH
+            // BLOCK BEFORE STARTING THE NEXT, so the newest rows are top-left
+            // and reading continues down a column and on to the top of the one
+            // beside it - the same order the single column had, folded rather
+            // than reordered.
+            //
+            // Reading across the blocks instead would have put row 2 beside row
+            // 1, which is a different list wearing the same numbers.
+            //
+            // k, not i: k is the row's place in the list and decides where it
+            // is drawn, while i is where it is stored. The two hold the same
+            // number now that the list is read in storage order, and they are
+            // still written apart - the day another ordering arrives, this line
+            // has to keep following the drawn position rather than the stored
+            // one, and a k spelled i would silently stop doing that.
+            //
+            // math.floor and an explicit int(), and this is the line that broke
+            // the table into a staircase. Pine's / returns a FLOAT even between
+            // two ints, so k / colRows came out as 0.05, 0.30, 1.20 rather than
+            // 0, 0, 1 - and a column index of 1.2 is not one column over, it is
+            // a fifth of the way there. Every few rows the whole row stepped
+            // sideways, which is exactly what the screenshot showed: row five
+            // shifted by one column, row eight by two, row eleven by three.
+            //
+            // The row is derived from the same floored block rather than from
+            // its own % for the same reason - one expression decides both, so
+            // they cannot disagree about which block this row is in.
+            blk = int(math.floor(k / math.max(colRows, 1)))
+            c = blk * 6
+            r = k - blk * colRows + 2
+
+            table.cell(jrnTable, c + 0, r, ' ' + array.get(jSym, i) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
+            table.cell(jrnTable, c + 1, r, op > 0 ? ' ' + str.format_time(op, stampFmt, 'UTC+1') + ' ' : '', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
+            table.cell(jrnTable, c + 2, r, ' ' + str.format_time(array.get(jTime, i), stampFmt, 'UTC+1') + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
+            table.cell(jrnTable, c + 3, r, ' ' + str.tostring(en) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
+            table.cell(jrnTable, c + 4, r, sd == 1 ? '▲' : sd == -1 ? '▼' : '',
+                 bgcolor = rowBg,
+                 text_color = sd == 1 ? (light ? color.new(#006622, 0) : hot ? #B9F6CA : color.lime) :
+                      (light ? color.new(#991111, 0) : hot ? #FFFFFF : color.red),
+                 text_size = logTxt)
+    else if rows == 0 and journalShow == 'Full list'
+        table.cell(jrnTable, 0, 2, ' nothing closed yet ', bgcolor = color.new(#333333, 60), text_color = color.silver, text_size = logTxt)
+
+// ---------------------------------------------------------------------------
+// Alerts
+// ---------------------------------------------------------------------------
+// Counted at global scope rather than from the arrays above, which only exist on
+// the last bar. An alertcondition needs a series that has a value on every bar.
+//
+// The message cannot name the pair - a Pine alert message is a constant string
+// and this one covers thirty of them - so it says how many and sends you to the
+// table. Set it to ONCE PER BAR CLOSE: every state change here is decided at a
+// candle's close.
+open01 = use01 and nz(st01) > 0 ? 1 : 0
+open02 = use02 and nz(st02) > 0 ? 1 : 0
+open03 = use03 and nz(st03) > 0 ? 1 : 0
+open04 = use04 and nz(st04) > 0 ? 1 : 0
+open05 = use05 and nz(st05) > 0 ? 1 : 0
+open06 = use06 and nz(st06) > 0 ? 1 : 0
+open07 = use07 and nz(st07) > 0 ? 1 : 0
+open08 = use08 and nz(st08) > 0 ? 1 : 0
+open09 = use09 and nz(st09) > 0 ? 1 : 0
+open10 = use10 and nz(st10) > 0 ? 1 : 0
+open11 = use11 and nz(st11) > 0 ? 1 : 0
+open12 = use12 and nz(st12) > 0 ? 1 : 0
+open13 = use13 and nz(st13) > 0 ? 1 : 0
+open14 = use14 and nz(st14) > 0 ? 1 : 0
+open15 = use15 and nz(st15) > 0 ? 1 : 0
+open16 = use16 and nz(st16) > 0 ? 1 : 0
+open17 = use17 and nz(st17) > 0 ? 1 : 0
+open18 = use18 and nz(st18) > 0 ? 1 : 0
+open19 = use19 and nz(st19) > 0 ? 1 : 0
+open20 = use20 and nz(st20) > 0 ? 1 : 0
+open21 = use21 and nz(st21) > 0 ? 1 : 0
+open22 = use22 and nz(st22) > 0 ? 1 : 0
+open23 = use23 and nz(st23) > 0 ? 1 : 0
+open24 = use24 and nz(st24) > 0 ? 1 : 0
+open25 = use25 and nz(st25) > 0 ? 1 : 0
+open26 = use26 and nz(st26) > 0 ? 1 : 0
+open27 = use27 and nz(st27) > 0 ? 1 : 0
+open28 = use28 and nz(st28) > 0 ? 1 : 0
+open29 = use29 and nz(st29) > 0 ? 1 : 0
+open30 = use30 and nz(st30) > 0 ? 1 : 0
+
+openTotal = open01 + open02 + open03 + open04 + open05 + open06 + open07 + open08 + open09 + open10 +
+     open11 + open12 + open13 + open14 + open15 + open16 + open17 + open18 + open19 + open20 +
+     open21 + open22 + open23 + open24 + open25 + open26 + open27 + open28 + open29 + open30
+
+// A rise rather than a level. The level is true for as long as any window is
+// open, which on a busy list is most of the day; the rise is the moment one more
+// pair joined the list, which is the only new information.
+alertcondition(openTotal > nz(openTotal[1]), 'MAR1 Scanner: a pair opened',
+     'MAR1 Scanner {{interval}}: one more pair now has an open window - check the table')
+
+alertcondition(openTotal == 0 and nz(openTotal[1]) > 0, 'MAR1 Scanner: all clear',
+     'MAR1 Scanner {{interval}}: every window on the list is now closed')
+
+// The pre-armed count, and why it needed a channel of its own.
+//
+// Until now the white step existed in exactly one place: a pale row in the
+// table. That is enough while you are looking at the table and no use at all
+// while you are not - and "not" is the ordinary case, because the pale row is by
+// design the quietest thing on screen. It says the next large diamond on that
+// pair would come out white, which is one step further back than ARMED, so it is
+// the most interesting row on the list precisely when you have time to prepare
+// and precisely when nothing is asking for you yet.
+//
+// Making the row louder would not have fixed it. The complaint is that you were
+// looking somewhere else, and no amount of colour reaches a screen you are not
+// on. The wash stays as faint as it was - see the note on rowBg above for why a
+// pre-armed row that competed with a RUNNING one would wreck the table's whole
+// ordering - and the reach is added where reach actually lives: an alert and a
+// number in the status line.
+//
+// The symbol test is here and NOT in the open counters above, and that is a real
+// difference rather than a copy that drifted. A blank slot is pointed at the
+// chart's own symbol, so its tuple carries a genuine state - of the chart, not
+// of a pair anyone asked about. addRow has always excluded those with
+// `live = on and raw != ''`; openTotal never has, which is harmless only because
+// the empty slots also ship unticked. This one does it properly.
+//
+// na is tested through st for the reason spelled out at preOk in addRow: Pine's
+// na() takes a number and refuses a bool outright, and st comes out of the same
+// request.security tuple - so st being na is exactly the event of pa being na.
+pre01 = use01 and sym01 != '' and not na(st01) and pa01 ? 1 : 0
+pre02 = use02 and sym02 != '' and not na(st02) and pa02 ? 1 : 0
+pre03 = use03 and sym03 != '' and not na(st03) and pa03 ? 1 : 0
+pre04 = use04 and sym04 != '' and not na(st04) and pa04 ? 1 : 0
+pre05 = use05 and sym05 != '' and not na(st05) and pa05 ? 1 : 0
+pre06 = use06 and sym06 != '' and not na(st06) and pa06 ? 1 : 0
+pre07 = use07 and sym07 != '' and not na(st07) and pa07 ? 1 : 0
+pre08 = use08 and sym08 != '' and not na(st08) and pa08 ? 1 : 0
+pre09 = use09 and sym09 != '' and not na(st09) and pa09 ? 1 : 0
+pre10 = use10 and sym10 != '' and not na(st10) and pa10 ? 1 : 0
+pre11 = use11 and sym11 != '' and not na(st11) and pa11 ? 1 : 0
+pre12 = use12 and sym12 != '' and not na(st12) and pa12 ? 1 : 0
+pre13 = use13 and sym13 != '' and not na(st13) and pa13 ? 1 : 0
+pre14 = use14 and sym14 != '' and not na(st14) and pa14 ? 1 : 0
+pre15 = use15 and sym15 != '' and not na(st15) and pa15 ? 1 : 0
+pre16 = use16 and sym16 != '' and not na(st16) and pa16 ? 1 : 0
+pre17 = use17 and sym17 != '' and not na(st17) and pa17 ? 1 : 0
+pre18 = use18 and sym18 != '' and not na(st18) and pa18 ? 1 : 0
+pre19 = use19 and sym19 != '' and not na(st19) and pa19 ? 1 : 0
+pre20 = use20 and sym20 != '' and not na(st20) and pa20 ? 1 : 0
+pre21 = use21 and sym21 != '' and not na(st21) and pa21 ? 1 : 0
+pre22 = use22 and sym22 != '' and not na(st22) and pa22 ? 1 : 0
+pre23 = use23 and sym23 != '' and not na(st23) and pa23 ? 1 : 0
+pre24 = use24 and sym24 != '' and not na(st24) and pa24 ? 1 : 0
+pre25 = use25 and sym25 != '' and not na(st25) and pa25 ? 1 : 0
+pre26 = use26 and sym26 != '' and not na(st26) and pa26 ? 1 : 0
+pre27 = use27 and sym27 != '' and not na(st27) and pa27 ? 1 : 0
+pre28 = use28 and sym28 != '' and not na(st28) and pa28 ? 1 : 0
+pre29 = use29 and sym29 != '' and not na(st29) and pa29 ? 1 : 0
+pre30 = use30 and sym30 != '' and not na(st30) and pa30 ? 1 : 0
+
+preTotal = pre01 + pre02 + pre03 + pre04 + pre05 + pre06 + pre07 + pre08 + pre09 + pre10 +
+     pre11 + pre12 + pre13 + pre14 + pre15 + pre16 + pre17 + pre18 + pre19 + pre20 +
+     pre21 + pre22 + pre23 + pre24 + pre25 + pre26 + pre27 + pre28 + pre29 + pre30
+
+// A rise, for the same reason the open alert is one: the level is true for as
+// long as any pair is standing on the step, which can be hours, and the rise is
+// the moment one more arrived.
+//
+// ONCE PER BAR CLOSE. The white step is decided inside a barstate.isconfirmed
+// block in the state machine, so on any other trigger setting this reports a
+// streak that the candle has not finished moving.
+//
+// Expect this one to be chattier than the open alert, and that is the nature of
+// what it reports rather than a fault: a pair reaches the white step on the way
+// to every gate opening, and some of them turn back. It is a heads-up, not a
+// call - the message says so.
+alertcondition(preTotal > nz(preTotal[1]), 'MAR1 Scanner: a pair went pre-armed',
+     'MAR1 Scanner {{interval}}: one more pair is one step short of its gate - the next large diamond on it would be white')
+
+// Published beside OPENPAIRS rather than folded into it, because they are
+// different states and a single number could not tell "three open" from "three
+// waiting". Positive, like OPENPAIRS: it is a count, not a sentinel.
+//
+// Deliberately NOT put into the packed STATE1..3 digits. That alphabet is 1..5
+// and the browser extension parses it by position - a sixth value would change
+// what every existing digit means, and the bridge would have to be updated on
+// both sides at once. A plot of its own costs one row in the legend and breaks
+// nothing that already reads the others.
+plot(preTotal, 'PREARMED', color = color.new(color.white, 0),
+  display = display.status_line + display.data_window)
+
+// The count, published to the status line so the browser script - and the panel
+// coming after it - can read it without opening the settings. Positive here on
+// purpose: it is a count, not a sentinel, and it shares no row with the ones in
+// maRejection.pine.
+plot(openTotal, 'OPENPAIRS', color = color.new(color.orange, 0),
+  display = display.status_line + display.data_window)
+
+// ---------------------------------------------------------------------------
+// The export
+// ---------------------------------------------------------------------------
+// The way the log gets off the screen and onto the disk. Pine cannot write a
+// file; TradingView can, through 'Export chart data', which writes one CSV row
+// per candle with every plot as a column. So each slot publishes a column that
+// is empty on every candle except the ones where that pair closed a series.
+//
+//   right-click the chart -> Export chart data -> pick the range -> Export
+//
+// What comes out, per row: the candle's time, then CLOSED 01..30. A number in
+// column CLOSED 07 means slot 7 closed a window on that candle and the number is
+// what it cost - 3 means three entries. The sign carries the direction: positive
+// long, negative short. Every other cell on that row is empty, so sorting or
+// filtering the sheet by any one column gives that pair's day.
+//
+// The slot number is the mapping back to a pair, and it is the settings dialog
+// that holds it - Pine plot titles are fixed strings and cannot be built from an
+// input, so 'CLOSED 07' cannot say EURGBP by itself.
+//
+// na rather than 0 for "nothing happened": a zero would be a real value in the
+// CSV and would need filtering out. An empty cell filters itself.
+//
+// display.data_window keeps all thirty off the chart and out of the status line.
+// They exist for the exporter and for the Data Window, nowhere else.
+signed(bool fired, int en, int sd) =>
+    fired and exportClosures ? (sd == -1 ? -nz(en) : nz(en)) : na
+
+plot(signed(fire01, ce01, cs01), 'CLOSED 01', display = display.data_window)
+plot(signed(fire02, ce02, cs02), 'CLOSED 02', display = display.data_window)
+plot(signed(fire03, ce03, cs03), 'CLOSED 03', display = display.data_window)
+plot(signed(fire04, ce04, cs04), 'CLOSED 04', display = display.data_window)
+plot(signed(fire05, ce05, cs05), 'CLOSED 05', display = display.data_window)
+plot(signed(fire06, ce06, cs06), 'CLOSED 06', display = display.data_window)
+plot(signed(fire07, ce07, cs07), 'CLOSED 07', display = display.data_window)
+plot(signed(fire08, ce08, cs08), 'CLOSED 08', display = display.data_window)
+plot(signed(fire09, ce09, cs09), 'CLOSED 09', display = display.data_window)
+plot(signed(fire10, ce10, cs10), 'CLOSED 10', display = display.data_window)
+plot(signed(fire11, ce11, cs11), 'CLOSED 11', display = display.data_window)
+plot(signed(fire12, ce12, cs12), 'CLOSED 12', display = display.data_window)
+plot(signed(fire13, ce13, cs13), 'CLOSED 13', display = display.data_window)
+plot(signed(fire14, ce14, cs14), 'CLOSED 14', display = display.data_window)
+plot(signed(fire15, ce15, cs15), 'CLOSED 15', display = display.data_window)
+plot(signed(fire16, ce16, cs16), 'CLOSED 16', display = display.data_window)
+plot(signed(fire17, ce17, cs17), 'CLOSED 17', display = display.data_window)
+plot(signed(fire18, ce18, cs18), 'CLOSED 18', display = display.data_window)
+plot(signed(fire19, ce19, cs19), 'CLOSED 19', display = display.data_window)
+plot(signed(fire20, ce20, cs20), 'CLOSED 20', display = display.data_window)
+plot(signed(fire21, ce21, cs21), 'CLOSED 21', display = display.data_window)
+plot(signed(fire22, ce22, cs22), 'CLOSED 22', display = display.data_window)
+plot(signed(fire23, ce23, cs23), 'CLOSED 23', display = display.data_window)
+plot(signed(fire24, ce24, cs24), 'CLOSED 24', display = display.data_window)
+plot(signed(fire25, ce25, cs25), 'CLOSED 25', display = display.data_window)
+plot(signed(fire26, ce26, cs26), 'CLOSED 26', display = display.data_window)
+plot(signed(fire27, ce27, cs27), 'CLOSED 27', display = display.data_window)
+plot(signed(fire28, ce28, cs28), 'CLOSED 28', display = display.data_window)
+plot(signed(fire29, ce29, cs29), 'CLOSED 29', display = display.data_window)
+plot(signed(fire30, ce30, cs30), 'CLOSED 30', display = display.data_window)
+
+// ---------------------------------------------------------------------------
+// The bridge - state published for the browser
+// ---------------------------------------------------------------------------
+// Spec 001, task T1. The scanner knows which pairs have a window open; the
+// browser extension knows which pairs still pay enough. They meet nowhere,
+// because Pine runs on TradingView's servers and cannot read a file, a cookie,
+// localStorage or the network. There is no channel INTO Pine at all.
+//
+// Out of Pine there is exactly one: the status line, which is DOM. So the whole
+// of every slot's state goes out as numbers, and the extension does the merge.
+//
+// The alphabet starts at ONE, and that is not cosmetic
+// ---------------------------------------------------
+// State 0 in the first slot turns 0000102000 into 102000: leading zeros vanish
+// without trace and the ENTIRE parse shifts, rather than one slot going missing.
+// Starting at 1 makes every packed number exactly ten digits and self-describing.
+//
+//   1  not in the scan - tick box off, or the symbol is blank
+//   2  idle
+//   6  idle AND pre-armed - on the white step, nothing open. Out of numerical
+//      order because it was added last, and because it is a refinement of 2
+//      rather than a state between 5 and anything.
+//   3  armed
+//   4  running
+//   5  no data - the ticker did not resolve
+//
+// Maximum 6666666666, against an exact-integer range of 2^53 for a double. The
+// rendering was measured before this was built - see plan.md - and comes out as
+// 1,234,512,345.000: digits intact, separators inserted, decimals inherited from
+// the chart symbol. The reader strips both.
+//
+// Six was added, and adding rather than reassigning is what made it safe
+// ----------------------------------------------------------------------
+// The pale row existed only inside this script. The extension's line is built
+// from these digits and nothing else, and a pre-armed pair came through as 2 -
+// idle - indistinguishable from the twenty others with nothing on them. So the
+// browser could not name those pairs however it was written: the fact was never
+// sent. That is why this is a change here and not only there.
+//
+// Every existing digit keeps its meaning and its position. A pre-armed pair is
+// idle by definition - preArmed requires not windowOpen - so 6 only ever
+// replaces a 2, and 3, 4 and 5 are untouched.
+//
+// The failure mode if only one side is updated is worth knowing, because it is
+// the good one: the reader matches a packed state by SHAPE, ten digits all
+// inside the alphabet. Widen the alphabet here and not there and the match
+// simply fails, and the line says so out loud - 'parse'. It cannot quietly
+// report a pre-armed pair as something else.
+digitFor(bool on, string raw, int st, bool pre) =>
+    not (on and raw != '') ? 1 : na(st) ? 5 : st == 0 ? (pre ? 6 : 2) : st == 1 ? 3 : 4
+
+// Slot 1 is the most significant digit, so the row reads left to right in the
+// same order the settings dialog lists it.
+pack(int d1, int d2, int d3, int d4, int d5, int d6, int d7, int d8, int d9, int d10) =>
+    d1 * 1000000000 + d2 * 100000000 + d3 * 10000000 + d4 * 1000000 + d5 * 100000 +
+     d6 * 10000 + d7 * 1000 + d8 * 100 + d9 * 10 + d10
+
+state1 = pack(digitFor(use01, sym01, st01, pa01), digitFor(use02, sym02, st02, pa02), digitFor(use03, sym03, st03, pa03),
+     digitFor(use04, sym04, st04, pa04), digitFor(use05, sym05, st05, pa05), digitFor(use06, sym06, st06, pa06),
+     digitFor(use07, sym07, st07, pa07), digitFor(use08, sym08, st08, pa08), digitFor(use09, sym09, st09, pa09),
+     digitFor(use10, sym10, st10, pa10))
+
+state2 = pack(digitFor(use11, sym11, st11, pa11), digitFor(use12, sym12, st12, pa12), digitFor(use13, sym13, st13, pa13),
+     digitFor(use14, sym14, st14, pa14), digitFor(use15, sym15, st15, pa15), digitFor(use16, sym16, st16, pa16),
+     digitFor(use17, sym17, st17, pa17), digitFor(use18, sym18, st18, pa18), digitFor(use19, sym19, st19, pa19),
+     digitFor(use20, sym20, st20, pa20))
+
+state3 = pack(digitFor(use21, sym21, st21, pa21), digitFor(use22, sym22, st22, pa22), digitFor(use23, sym23, st23, pa23),
+     digitFor(use24, sym24, st24, pa24), digitFor(use25, sym25, st25, pa25), digitFor(use26, sym26, st26, pa26),
+     digitFor(use27, sym27, st27, pa27), digitFor(use28, sym28, st28, pa28), digitFor(use29, sym29, st29, pa29),
+     digitFor(use30, sym30, st30, pa30))
+
+// The checksum of the pair list, and it exists because the extension has to keep
+// its own copy of the thirty names - Pine plot titles are constant strings and
+// cannot be built from an input, so a plot can be called STATE1 but never
+// EURUSD. The extension therefore knows "slot 7 is running" and not which pair
+// that is until the list is pasted into it once.
+//
+// Checking that paste by LENGTH does not work: 'scanned' counts live slots while
+// the pasted list is all thirty, so unticking one slot would break the check
+// without anything actually being wrong - and length cannot see a reordering at
+// all. This sum is sensitive to both composition and order.
+//
+// Pine has no character-code function, so the position within a known alphabet
+// stands in. The same alphabet string has to be used on the other side.
+LIST_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+symScore(bool on, string raw, int slotIndex) =>
+    total = 0
+    if on and raw != ''
+        name = shortName(raw)
+        for j = 0 to str.length(name) - 1
+            // str.pos returns na for a character outside the alphabet, which nz
+            // turns into 0 - an unknown character contributes nothing rather
+            // than poisoning the whole sum with na.
+            total += nz(str.pos(LIST_ALPHABET, str.substring(name, j, j + 1)))
+    total * slotIndex
+
+// Computed once and held. The list cannot change without the settings changing,
+// and a settings change reloads the script.
+var int listSum = na
+if na(listSum)
+    raw = symScore(use01, sym01, 1) + symScore(use02, sym02, 2) + symScore(use03, sym03, 3) +
+         symScore(use04, sym04, 4) + symScore(use05, sym05, 5) + symScore(use06, sym06, 6) +
+         symScore(use07, sym07, 7) + symScore(use08, sym08, 8) + symScore(use09, sym09, 9) +
+         symScore(use10, sym10, 10) + symScore(use11, sym11, 11) + symScore(use12, sym12, 12) +
+         symScore(use13, sym13, 13) + symScore(use14, sym14, 14) + symScore(use15, sym15, 15) +
+         symScore(use16, sym16, 16) + symScore(use17, sym17, 17) + symScore(use18, sym18, 18) +
+         symScore(use19, sym19, 19) + symScore(use20, sym20, 20) + symScore(use21, sym21, 21) +
+         symScore(use22, sym22, 22) + symScore(use23, sym23, 23) + symScore(use24, sym24, 24) +
+         symScore(use25, sym25, 25) + symScore(use26, sym26, 26) + symScore(use27, sym27, 27) +
+         symScore(use28, sym28, 28) + symScore(use29, sym29, 29) + symScore(use30, sym30, 30)
+    // 99991 is the largest prime under 100000, so the sum always fits in five
+    // digits and cannot be mistaken for a packed state.
+    listSum := raw % 99991
+
+plot(state1, 'STATE1', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)
+plot(state2, 'STATE2', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)
+plot(state3, 'STATE3', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)
+// The sign carries whether this is the LIVE bar, and that is not a trick for
+// its own sake - it closes a hole the status line has by design.
+//
+// TradingView's status line shows the values of the bar under the CROSSHAIR, not
+// of the last bar. Park the mouse anywhere on the chart and the legend reports
+// history: measured 2026-07-27 with the cursor on 19:02, the legend said two
+// pairs running while the table, drawn on the last bar, correctly said nothing
+// was open. Both were right about different bars.
+//
+// A reader parsing that legend has no way to tell the two apart from the digits
+// alone - a state is a state whichever bar it came from - so it would quietly
+// report a four-hour-old picture as current.
+//
+// barstate.islast is false on every bar except the live one, so a negative
+// checksum means "you are looking at history". It costs no extra plot and no
+// extra token to locate: the reader already reads this number, and the sign was
+// free.
+plot(barstate.islast ? listSum : -listSum, 'LISTSUM', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)
+
+// ---------------------------------------------------------------------------
+// The settings checksum - CFGSUM and CFGGRP
+// ---------------------------------------------------------------------------
+// The most expensive failure this pair of scripts has is not a crash. It is the
+// two of them quietly disagreeing.
+//
+// Twenty-two signal settings are duplicated between here and maRejection.pine,
+// and nothing enforces the duplication. Change one on one side and BOTH scripts
+// keep running, neither complains, and the only symptom is that the table stops
+// describing the chart. That already happened once: scanBars was 5000 here while
+// the chart used its whole history, the gate got a different distribution and
+// therefore a different threshold, and rows appeared as ENTRY that never drew a
+// large diamond. It took a week and a pair of screenshots to find.
+//
+// So each script folds its copy of those settings into one number, publishes it,
+// and the browser extension compares the two. Identical settings give identical
+// numbers; any difference at all gives different ones. The check costs one
+// comparison and turns an invisible divergence into a red line on the chart.
+//
+// Two numbers, not one, because they answer different questions
+// --------------------------------------------------------------
+// CFGSUM answers "did anything drift" and is the only one allowed to raise the
+// alarm - a sum mod 99991 is strong enough that a real difference practically
+// never survives it.
+//
+// CFGGRP answers "where do I look", as six digits, one per settings group. A
+// digit is a sum mod 9, so two different groups CAN land on the same digit; that
+// is why it is a hint and never the trigger. When it happens the reader says the
+// group is unknown rather than pointing at the wrong one.
+//
+// The leading digit is an address
+// -------------------------------
+// The reader has to tell the scanner's numbers from MAR1's, and both scripts sit
+// in the same legend. Rather than teach it to find which row is which - which is
+// exactly the markup-guessing that broke findLegendRow twice - each value names
+// its own author:
+//
+//   6xxxxx   this script's CFGSUM        7xxxxx   maRejection.pine's CFGSUM
+//   8xxxxxx  this script's CFGGRP        9xxxxxxx maRejection.pine's CFGGRP
+//
+// Fixed width, fixed leading digit, so the values can be picked out of the whole
+// legend at once and no row has to be identified at all. They cannot collide
+// with a packed state either: those are ten digits long and start with 1 to 6.
+//
+// Every group digit is 1 to 9, never 0, for the same reason the state alphabet
+// starts at one - a leading zero vanishes from the rendered number and shifts
+// the entire parse.
+
+// Strings and enumerations become small integers. The codes are arbitrary; what
+// matters is that maRejection.pine uses the same ones.
+cfgMaType = maType == 'SMA' ? 1 : maType == 'EMA' ? 2 : maType == 'WMA' ? 3 : 4
+cfgSrc    = srcName == 'close' ? 1 : srcName == 'open' ? 2 : srcName == 'high' ? 3 :
+     srcName == 'low' ? 4 : srcName == 'hl2' ? 5 : srcName == 'hlc3' ? 6 : 7
+cfgGate   = gateMode == 'Off' ? 1 : gateMode == 'Manual' ? 2 : gateMode == 'Distribution' ? 3 : 4
+cfgScope  = successScope == 'Entries only' ? 1 : successScope == 'Entries and warnings' ? 2 : 3
+
+// Floats are quantised to integers at the step of their own input, so a value
+// the dialog cannot even produce cannot appear, and no float comparison is ever
+// made. 0.30 * 100 is 30.000000000000004 on both sides, and rounding makes that
+// irrelevant rather than merely harmless.
+//
+// Inside a group the members are weighted by different odd numbers so that a
+// change of +1 here and -1 there cannot cancel out.
+cfgG1 = maLength + cfgMaType * 7 + cfgSrc * 13
+cfgG2 = trendBars + int(math.round(trendSep * 100)) * 3 + int(math.round(wickRatio * 100)) * 5 +
+     int(math.round(touchTol * 100)) * 7 + atrLen * 11
+cfgG3 = (allowBodyInside ? 1 : 0) + (allowLongWick ? 1 : 0) * 3 + (allowCounterCandle ? 1 : 0) * 5 +
+     refLen * 7
+cfgG4 = int(math.round(minPips * 10)) + cooldown * 3 + (perDirectionCooldown ? 1 : 0) * 5 + cfgGate * 7
+cfgG5 = startHour + endHour * 3 + (restrictToHours ? 1 : 0) * 5
+cfgG6 = int(math.round(basePercentage * 100)) + minEntriesToStart * 3 + cfgScope * 5
+
+// Powers of 31, so the groups occupy separate ranges and a value moving between
+// two groups changes the total. The largest term is about 2.5e11 - well inside
+// an exact integer, and reduced to five digits by the prime immediately after.
+cfgRaw = cfgG1 + cfgG2 * 31 + cfgG3 * 961 + cfgG4 * 29791 + cfgG5 * 923521 + cfgG6 * 28629151
+cfgSum = cfgRaw % 99991
+
+cfgGrp = (cfgG1 % 9 + 1) * 100000 + (cfgG2 % 9 + 1) * 10000 + (cfgG3 % 9 + 1) * 1000 +
+     (cfgG4 % 9 + 1) * 100 + (cfgG5 % 9 + 1) * 10 + (cfgG6 % 9 + 1)
+
+plot(600000 + cfgSum, 'CFGSUM', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)
+plot(8000000 + cfgGrp, 'CFGGRP', color = color.new(color.teal, 0),
+  display = display.status_line + display.data_window)

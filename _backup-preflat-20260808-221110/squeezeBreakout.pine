@@ -1,0 +1,474 @@
+//@version=6
+indicator('SB1', overlay = true)
+
+gSig   = 'Signal'
+gFilt  = 'Filters'
+gStats = 'Statistics'
+
+bodyLen = input.int(20, 'Body average length', minval = 5, maxval = 100, group = gSig)
+
+consLen     = input.int(6, 'Consolidation lookback (bars)', minval = 3, maxval = 40, group = gSig)
+squeezeMult = input.float(1.2, 'Max consolidation range (x ATR)', minval = 0.2, maxval = 5.0, step = 0.1, group = gSig)
+atrLen      = input.int(14, 'ATR length', minval = 2, group = gSig)
+
+bodyMult      = input.float(1.5, 'Trigger body (x average body)', minval = 0.5, step = 0.1, group = gSig)
+closeStrength = input.float(0.70, 'Min close position inside candle range', minval = 0.5, maxval = 1.0, step = 0.05, group = gSig)
+
+minPips = input.float(1.0, 'Min trigger body (pips)', minval = 0.0, step = 0.1, group = gFilt)
+
+useTrend = input.bool(true, 'Require EMA trend alignment', group = gFilt)
+trendLen = input.int(50, 'Trend EMA length', minval = 5, group = gFilt)
+
+useVol  = input.bool(true, 'Require above-average tick volume', group = gFilt)
+volLen  = input.int(20, 'Volume average length', minval = 2, group = gFilt)
+volMult = input.float(1.2, 'Volume multiple', minval = 0.5, step = 0.1, group = gFilt)
+
+cooldown = input.int(10, 'Min bars between signals', minval = 1, group = gFilt)
+
+startHour       = input.int(4, "Start indicator's hours", group = gFilt)
+endHour         = input.int(16, "End indicator's hours", group = gFilt)
+restrictToHours = input.bool(false, 'Fire signals only inside those hours', group = gFilt)
+
+showStatsTable = input.bool(true, 'Show statistics table', group = gStats)
+showFailedAfterSuccessTable = input.bool(false, "Show 'Fails After Success' table", group = gStats)
+showSuccessedAfterFailTable = input.bool(false, "Show 'Successes After Fail' table", group = gStats)
+basePercentage    = input.float(99.99, 'Percentage', step = 0.05, group = gStats)
+minEntriesToStart = input.int(10, 'Min entries to start (floor for calculateIndex)', minval = 1, group = gStats)
+
+pipSize = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
+
+isBullishBar = open < close
+isBearishBar = open > close
+
+body    = math.abs(close - open)
+avgBody = ta.sma(body, bodyLen)
+atr     = ta.atr(atrLen)
+span    = high - low
+
+consHigh  = ta.highest(high[1], consLen)
+consLow   = ta.lowest(low[1], consLen)
+isSqueeze = (consHigh - consLow) < atr * squeezeMult
+
+trendEma = ta.ema(close, trendLen)
+volAvg   = ta.sma(volume, volLen)
+volOk    = not useVol or na(volAvg) or volAvg <= 0 or volume > volAvg * volMult
+
+closePosUp = span > 0 ? (close - low) / span : 0.0
+closePosDn = span > 0 ? (high - close) / span : 0.0
+
+bodyOk = body > avgBody * bodyMult and body >= minPips * pipSize
+
+triggerLong  = isSqueeze and close > consHigh and close > open and bodyOk and closePosUp >= closeStrength and volOk and (not useTrend or close > trendEma)
+triggerShort = isSqueeze and close < consLow  and close < open and bodyOk and closePosDn >= closeStrength and volOk and (not useTrend or close < trendEma)
+
+utcOffset = 1
+localHour = (hour + utcOffset) % 24
+inHours   = localHour >= startHour and localHour < endHour
+hoursOk   = not restrictToHours or inHours
+
+var int lastSigBar = -100000
+canFire = bar_index - lastSigBar >= cooldown
+
+buyCondition  = triggerLong[1] and canFire and hoursOk
+sellCondition = triggerShort[1] and not triggerLong[1] and canFire and hoursOk
+
+if (buyCondition or sellCondition) and barstate.isconfirmed
+    lastSigBar := bar_index
+
+isBigBody = body > nz(avgBody[1], 0.0)
+
+var int totalBuySignals      = 0
+var int successfulBuySignals = 0
+var int bigBodyBuySignals    = 0
+var int totalSellSignals      = 0
+var int successfulSellSignals = 0
+var int bigBodySellSignals    = 0
+
+var int consecutiveBuyFalse         = 0
+var int maxConsecutiveBuyFalse      = 0
+var int consecutiveSellFalse        = 0
+var int maxConsecutiveSellFalse     = 0
+var int consecutiveCombinedFalse    = 0
+var int maxConsecutiveCombinedFalse = 0
+
+var int consecutiveBuySuccess         = 0
+var int maxConsecutiveBuySuccess      = 0
+var int consecutiveSellSuccess        = 0
+var int maxConsecutiveSellSuccess     = 0
+var int consecutiveCombinedSuccess    = 0
+var int maxConsecutiveCombinedSuccess = 0
+
+var int totalFalseSignals = 0
+
+var array<string> last15Signals = array.new_string(15, '')
+var array<string> last15Results = array.new_string(15, '')
+var array<string> last15Bodies  = array.new_string(15, '')
+var array<string> last15Times   = array.new_string(15, '')
+
+var int[] combinedFailedAfterSuccess   = array.new_int(20, 0)
+var int[] combinedSuccessesAfterFailed = array.new_int(20, 0)
+
+var int currentCombinedFailedAfterSuccess   = 0
+var int currentCombinedSuccessesAfterFailed = 0
+
+var int barsSeen  = 0
+var int barsUpBig = 0
+var int barsDnBig = 0
+
+recordStreak(int[] arr, int streakLen) =>
+    idx = math.min(streakLen, 19)
+    array.set(arr, idx, array.get(arr, idx) + 1)
+    if idx > 0
+        array.set(arr, idx - 1, array.get(arr, idx - 1) - 1)
+    idx
+
+if barstate.isconfirmed and not na(avgBody[1])
+    barsSeen  += 1
+    barsUpBig += isBigBody and isBullishBar ? 1 : 0
+    barsDnBig += isBigBody and isBearishBar ? 1 : 0
+
+    if buyCondition or sellCondition
+        if buyCondition
+            totalBuySignals += 1
+            array.unshift(last15Signals, 'BUY')
+            array.unshift(last15Results, isBullishBar ? '1' : '0')
+            array.unshift(last15Bodies, isBigBody ? 'Big' : 'Small')
+            array.unshift(last15Times, str.format_time(time, 'yyyy-MM-dd HH:mm', 'UTC+1'))
+            array.pop(last15Signals)
+            array.pop(last15Results)
+            array.pop(last15Bodies)
+            array.pop(last15Times)
+
+            if isBullishBar
+                successfulBuySignals += 1
+                bigBodyBuySignals += isBigBody ? 1 : 0
+
+                currentCombinedSuccessesAfterFailed += 1
+                recordStreak(combinedSuccessesAfterFailed, currentCombinedSuccessesAfterFailed)
+
+                consecutiveBuyFalse := 0
+                consecutiveBuySuccess += 1
+                consecutiveCombinedSuccess += 1
+                maxConsecutiveBuySuccess := math.max(maxConsecutiveBuySuccess, consecutiveBuySuccess)
+                maxConsecutiveCombinedSuccess := math.max(maxConsecutiveCombinedSuccess, consecutiveCombinedSuccess)
+
+                currentCombinedFailedAfterSuccess := 0
+            else
+                currentCombinedSuccessesAfterFailed := 0
+                consecutiveBuyFalse += 1
+                consecutiveBuySuccess := 0
+                consecutiveCombinedSuccess := 0
+                maxConsecutiveBuyFalse := math.max(maxConsecutiveBuyFalse, consecutiveBuyFalse)
+
+                currentCombinedFailedAfterSuccess += 1
+                recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+
+        if sellCondition
+            totalSellSignals += 1
+            array.unshift(last15Signals, 'SELL')
+            array.unshift(last15Results, isBearishBar ? '1' : '0')
+            array.unshift(last15Bodies, isBigBody ? 'Big' : 'Small')
+            array.unshift(last15Times, str.format_time(time, 'yyyy-MM-dd HH:mm', 'UTC+1'))
+            array.pop(last15Signals)
+            array.pop(last15Results)
+            array.pop(last15Bodies)
+            array.pop(last15Times)
+
+            if isBearishBar
+                successfulSellSignals += 1
+                bigBodySellSignals += isBigBody ? 1 : 0
+
+                currentCombinedSuccessesAfterFailed += 1
+                recordStreak(combinedSuccessesAfterFailed, currentCombinedSuccessesAfterFailed)
+
+                consecutiveSellFalse := 0
+                consecutiveSellSuccess += 1
+                consecutiveCombinedSuccess += 1
+                maxConsecutiveSellSuccess := math.max(maxConsecutiveSellSuccess, consecutiveSellSuccess)
+                maxConsecutiveCombinedSuccess := math.max(maxConsecutiveCombinedSuccess, consecutiveCombinedSuccess)
+
+                currentCombinedFailedAfterSuccess := 0
+            else
+                currentCombinedSuccessesAfterFailed := 0
+                consecutiveSellFalse += 1
+                consecutiveSellSuccess := 0
+                consecutiveCombinedSuccess := 0
+                maxConsecutiveSellFalse := math.max(maxConsecutiveSellFalse, consecutiveSellFalse)
+
+                currentCombinedFailedAfterSuccess += 1
+                recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+
+        if (buyCondition and not isBullishBar) or (sellCondition and not isBearishBar)
+            totalFalseSignals += 1
+            consecutiveCombinedFalse += 1
+            maxConsecutiveCombinedFalse := math.max(maxConsecutiveCombinedFalse, consecutiveCombinedFalse)
+        else
+            consecutiveCombinedFalse := 0
+
+bgcolor(inHours ? color.new(color.green, 97) : color.new(color.red, 100), title = 'Trading Hours Background')
+
+plot(useTrend ? trendEma : na, 'Trend EMA', color = color.new(color.gray, 60))
+
+pct(int part, int total) =>
+    total > 0 ? 100.0 * part / total : float(na)
+
+fmtPct(float value) =>
+    na(value) ? 'N/A' : str.tostring(value, '#.##') + '%'
+
+calculateIndex(int[] arr, float perc) =>
+    total = 0.0
+    for i = 1 to array.size(arr) - 1
+        total += array.get(arr, i)
+    if array.size(arr) == 0 or total == 0
+        -1
+    else
+        cumSum = 0.0
+        index = -1
+        for i = 1 to array.size(arr) - 1
+            cumSum += array.get(arr, i) / total * 100
+            if cumSum > perc and index == -1
+                index := i
+        index
+
+var table perfTable = table.new(position.bottom_left, 5, 32, border_width = 2)
+var table failedAfterSuccessTable = table.new(position.top_right, 4, 22, border_width = 2)
+var table successedAfterFailTable = table.new(position.bottom_right, 4, 22, border_width = 2)
+
+if barstate.islast and showStatsTable
+    totalSignals    = totalBuySignals + totalSellSignals
+    totalSuccessful = successfulBuySignals + successfulSellSignals
+    totalBigBody    = bigBodyBuySignals + bigBodySellSignals
+
+    buyAccuracy   = pct(successfulBuySignals, totalBuySignals)
+    sellAccuracy  = pct(successfulSellSignals, totalSellSignals)
+    totalAccuracy = pct(totalSuccessful, totalSignals)
+
+    buyJoint   = pct(bigBodyBuySignals, totalBuySignals)
+    sellJoint  = pct(bigBodySellSignals, totalSellSignals)
+    totalJoint = pct(totalBigBody, totalSignals)
+
+    pUpBig   = pct(barsUpBig, barsSeen)
+    pDnBig   = pct(barsDnBig, barsSeen)
+    baseComb = totalSignals > 0 and not na(pUpBig) and not na(pDnBig) ? (totalBuySignals * pUpBig + totalSellSignals * pDnBig) / totalSignals : float(na)
+    edgeBuy  = na(pUpBig) or pUpBig <= 0 or na(buyJoint) ? float(na) : buyJoint / pUpBig
+    edgeSell = na(pDnBig) or pDnBig <= 0 or na(sellJoint) ? float(na) : sellJoint / pDnBig
+    edgeComb = na(baseComb) or baseComb <= 0 or na(totalJoint) ? float(na) : totalJoint / baseComb
+
+    falseAccuracy = pct(totalFalseSignals, totalSignals)
+
+    cLabel = color.new(#333333, 70)
+    cBuy   = color.new(#005500, 80)
+    cSell  = color.new(#550000, 80)
+    cComb  = color.new(#333399, 80)
+
+    table.cell(perfTable, 0, 0, ' PERFORMANCE ', bgcolor = color.black, text_color = color.white, width = 4)
+
+    table.cell(perfTable, 0, 1, ' Metric ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 1, 1, ' Buy ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 2, 1, ' Sell ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 3, 1, ' Combined ', bgcolor = color.gray, text_color = color.white)
+
+    table.cell(perfTable, 0, 2, ' Bars analysed ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 2, '', bgcolor = cLabel)
+    table.cell(perfTable, 2, 2, '', bgcolor = cLabel)
+    table.cell(perfTable, 3, 2, str.tostring(barsSeen), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 3, ' Signals ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 3, str.tostring(totalBuySignals), bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 3, str.tostring(totalSellSignals), bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 3, str.tostring(totalSignals), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 4, ' Signals per 1000 bars ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 4, '', bgcolor = cLabel)
+    table.cell(perfTable, 2, 4, '', bgcolor = cLabel)
+    table.cell(perfTable, 3, 4, barsSeen > 0 ? str.tostring(1000.0 * totalSignals / barsSeen, '#.#') : 'N/A', bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 5, ' Direction correct ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 5, str.tostring(successfulBuySignals), bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 5, str.tostring(successfulSellSignals), bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 5, str.tostring(totalSuccessful), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 6, ' Direction accuracy ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 6, fmtPct(buyAccuracy), bgcolor = color.new(#00AA00, 80), text_color = color.white)
+    table.cell(perfTable, 2, 6, fmtPct(sellAccuracy), bgcolor = color.new(#AA0000, 80), text_color = color.white)
+    table.cell(perfTable, 3, 6, fmtPct(totalAccuracy), bgcolor = color.new(#5555FF, 80), text_color = color.white)
+
+    table.cell(perfTable, 0, 7, ' Dir + body > avg ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 7, str.tostring(bigBodyBuySignals), bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 7, str.tostring(bigBodySellSignals), bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 7, str.tostring(totalBigBody), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 8, ' Joint accuracy ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 8, fmtPct(buyJoint), bgcolor = color.new(#00AA00, 80), text_color = color.white)
+    table.cell(perfTable, 2, 8, fmtPct(sellJoint), bgcolor = color.new(#AA0000, 80), text_color = color.white)
+    table.cell(perfTable, 3, 8, fmtPct(totalJoint), bgcolor = color.new(#5555FF, 80), text_color = color.white)
+
+    table.cell(perfTable, 0, 9, ' Random baseline ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 9, fmtPct(pUpBig), bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 9, fmtPct(pDnBig), bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 9, fmtPct(baseComb), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 10, ' Edge over chance ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 10, na(edgeBuy) ? 'N/A' : str.tostring(edgeBuy, '#.00') + 'x', bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 10, na(edgeSell) ? 'N/A' : str.tostring(edgeSell, '#.00') + 'x', bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 10, na(edgeComb) ? 'N/A' : str.tostring(edgeComb, '#.00') + 'x', bgcolor = na(edgeComb) or edgeComb < 1.0 ? color.new(#553300, 60) : color.new(#005500, 60), text_color = color.white)
+
+    table.cell(perfTable, 0, 11, ' False Accuracy ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 11, '', bgcolor = cLabel)
+    table.cell(perfTable, 2, 11, '', bgcolor = cLabel)
+    table.cell(perfTable, 3, 11, fmtPct(falseAccuracy), bgcolor = cLabel, text_color = color.white)
+
+    table.cell(perfTable, 0, 12, ' Max False Streak ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 12, str.tostring(maxConsecutiveBuyFalse), bgcolor = cBuy, text_color = color.white)
+    table.cell(perfTable, 2, 12, str.tostring(maxConsecutiveSellFalse), bgcolor = cSell, text_color = color.white)
+    table.cell(perfTable, 3, 12, str.tostring(maxConsecutiveCombinedFalse), bgcolor = cComb, text_color = color.white)
+
+    table.cell(perfTable, 0, 13, ' Max Success Streak ', bgcolor = cLabel, text_color = color.white)
+    table.cell(perfTable, 1, 13, str.tostring(maxConsecutiveBuySuccess), bgcolor = color.new(#00AA00, 80), text_color = color.white)
+    table.cell(perfTable, 2, 13, str.tostring(maxConsecutiveSellSuccess), bgcolor = color.new(#AA0000, 80), text_color = color.white)
+    table.cell(perfTable, 3, 13, str.tostring(maxConsecutiveCombinedSuccess), bgcolor = color.new(#5555FF, 80), text_color = color.white)
+
+    for c = 0 to 4
+        table.cell(perfTable, c, 14, '', bgcolor = color.black)
+
+    table.cell(perfTable, 0, 15, ' Last 15 Signals ', bgcolor = color.black, text_color = color.white, width = 4)
+    table.cell(perfTable, 0, 16, ' # ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 1, 16, ' Date / time (UTC+1) ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 2, 16, ' Type ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 3, 16, ' Dir ', bgcolor = color.gray, text_color = color.white)
+    table.cell(perfTable, 4, 16, ' Body ', bgcolor = color.gray, text_color = color.white)
+
+    for i = 0 to 14
+        signalType = array.get(last15Signals, i)
+        if signalType != ''
+            result = array.get(last15Results, i)
+            bodyTag = array.get(last15Bodies, i)
+            timeTag = array.get(last15Times, i)
+            rowBgColor = result == '1' ? (signalType == 'BUY' ? color.new(#005500, 70) : color.new(#550000, 70)) : color.new(#333333, 70)
+            table.cell(perfTable, 0, 17 + i, str.tostring(i + 1), bgcolor = rowBgColor, text_color = color.white)
+            table.cell(perfTable, 1, 17 + i, timeTag, bgcolor = rowBgColor, text_color = color.white)
+            table.cell(perfTable, 2, 17 + i, signalType, bgcolor = rowBgColor, text_color = color.white)
+            table.cell(perfTable, 3, 17 + i, result, bgcolor = rowBgColor, text_color = color.white)
+            table.cell(perfTable, 4, 17 + i, bodyTag, bgcolor = rowBgColor, text_color = bodyTag == 'Big' ? color.lime : color.silver)
+
+if barstate.islast and showFailedAfterSuccessTable
+    table.cell(failedAfterSuccessTable, 0, 0, ' FAILS AFTER SUCCESS ', bgcolor = color.black, text_color = color.white, width = 7)
+    table.cell(failedAfterSuccessTable, 0, 1, ' Signals After Success ', bgcolor = color.gray, text_color = color.white)
+    table.cell(failedAfterSuccessTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white)
+    table.cell(failedAfterSuccessTable, 2, 1, ' Percentage ', bgcolor = color.gray, text_color = color.white)
+    table.cell(failedAfterSuccessTable, 3, 1, ' Cumulative ', bgcolor = color.gray, text_color = color.white)
+
+    totalFails = 0
+    for i = 1 to 19
+        totalFails += array.get(combinedFailedAfterSuccess, i)
+
+    bestRatioIndex = calculateIndex(combinedFailedAfterSuccess, basePercentage)
+
+    cumulativeFails = 0
+    for i = 1 to 19
+        fails = array.get(combinedFailedAfterSuccess, i)
+        cumulativeFails += fails
+        failPct = pct(fails, totalFails)
+        cumPct  = pct(cumulativeFails, totalFails)
+
+        rowColor = color.new(#333333, 70 - i * 3)
+        ratioCellColor = i == bestRatioIndex ? color.new(color.green, 70) : rowColor
+        ratioTextColor = i == bestRatioIndex ? color.yellow : color.white
+
+        table.cell(failedAfterSuccessTable, 0, i + 1, str.tostring(i), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(failedAfterSuccessTable, 1, i + 1, str.tostring(fails), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(failedAfterSuccessTable, 2, i + 1, fmtPct(failPct), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(failedAfterSuccessTable, 3, i + 1, fmtPct(cumPct), bgcolor = ratioCellColor, text_color = ratioTextColor)
+
+    table.cell(failedAfterSuccessTable, 0, 21, ' Total Fails ', bgcolor = color.gray, text_color = color.white)
+    table.cell(failedAfterSuccessTable, 1, 21, str.tostring(totalFails), bgcolor = color.gray, text_color = color.white)
+    table.cell(failedAfterSuccessTable, 2, 21, '', bgcolor = color.gray)
+    table.cell(failedAfterSuccessTable, 3, 21, totalFails > 0 ? '100%' : '0%', bgcolor = color.gray, text_color = color.white)
+
+if barstate.islast and showSuccessedAfterFailTable
+    table.cell(successedAfterFailTable, 0, 0, ' SUCCESSES AFTER FAIL ', bgcolor = color.black, text_color = color.white, width = 7)
+    table.cell(successedAfterFailTable, 0, 1, ' Signals After Fail ', bgcolor = color.gray, text_color = color.white)
+    table.cell(successedAfterFailTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white)
+    table.cell(successedAfterFailTable, 2, 1, ' Percentage ', bgcolor = color.gray, text_color = color.white)
+    table.cell(successedAfterFailTable, 3, 1, ' Cumulative ', bgcolor = color.gray, text_color = color.white)
+
+    totalSuccessesAfterFail = 0
+    for i = 1 to 19
+        totalSuccessesAfterFail += array.get(combinedSuccessesAfterFailed, i)
+
+    bestRatioIndex = calculateIndex(combinedSuccessesAfterFailed, basePercentage)
+
+    cumulativeSuccesses = 0
+    for i = 1 to 19
+        successes = array.get(combinedSuccessesAfterFailed, i)
+        cumulativeSuccesses += successes
+        successPct = pct(successes, totalSuccessesAfterFail)
+        cumPct     = pct(cumulativeSuccesses, totalSuccessesAfterFail)
+
+        rowColor = color.new(#333333, 70 - i * 3)
+        ratioCellColor = i == bestRatioIndex ? color.new(color.green, 70) : rowColor
+        ratioTextColor = i == bestRatioIndex ? color.yellow : color.white
+
+        table.cell(successedAfterFailTable, 0, i + 1, str.tostring(i), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(successedAfterFailTable, 1, i + 1, str.tostring(successes), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(successedAfterFailTable, 2, i + 1, fmtPct(successPct), bgcolor = ratioCellColor, text_color = color.white)
+        table.cell(successedAfterFailTable, 3, i + 1, fmtPct(cumPct), bgcolor = ratioCellColor, text_color = ratioTextColor)
+
+    table.cell(successedAfterFailTable, 0, 21, ' Total Successes ', bgcolor = color.gray, text_color = color.white)
+    table.cell(successedAfterFailTable, 1, 21, str.tostring(totalSuccessesAfterFail), bgcolor = color.gray, text_color = color.white)
+    table.cell(successedAfterFailTable, 2, 21, '', bgcolor = color.gray)
+    table.cell(successedAfterFailTable, 3, 21, totalSuccessesAfterFail > 0 ? '100%' : '0%', bgcolor = color.gray, text_color = color.white)
+
+getSignalColor(bool isBuy, int streak, int limit) =>
+    baseColor = isBuy ? #008877 : #cc0011
+    if streak == limit - 1
+        color.white
+    else if streak == limit
+        color.lime
+    else if streak > limit
+        if streak - limit < 2
+            color.orange
+        else if streak - limit < 3
+            color.rgb(121, 119, 236)
+        else if streak - limit < 15
+            color.purple
+        else
+            color.rgb(5, 188, 243)
+    else
+        baseColor
+
+getOppositeSignalColor(int streak, int limit) =>
+    if streak == limit - 1
+        color.white
+    else if streak == limit
+        color.lime
+    else if streak > limit
+        if streak - limit < 2
+            color.orange
+        else if streak - limit < 3
+            color.rgb(121, 119, 236)
+        else if streak - limit < 15
+            color.purple
+        else
+            color.rgb(5, 188, 243)
+    else
+        #00aaff
+
+preferedEnterForFails     = minEntriesToStart
+preferedEnterForSuccesses = minEntriesToStart
+
+plotshape(buyCondition, 'Buy Signal', shape.diamond, location.belowbar,
+  color = getSignalColor(true, consecutiveCombinedFalse, preferedEnterForFails), size = size.tiny)
+plotshape(sellCondition, 'Sell Signal', shape.diamond, location.abovebar,
+  color = getSignalColor(false, consecutiveCombinedFalse, preferedEnterForFails), size = size.tiny)
+
+plotshape(buyCondition, 'Buy Signal Streak', shape.diamond, location.abovebar,
+  color = getOppositeSignalColor(consecutiveCombinedSuccess, preferedEnterForSuccesses), size = size.tiny)
+plotshape(sellCondition, 'Sell Signal Streak', shape.diamond, location.belowbar,
+  color = getOppositeSignalColor(consecutiveCombinedSuccess, preferedEnterForSuccesses), size = size.tiny)
+
+plotshape(buyCondition, 'Entry Long', shape.diamond, location.belowbar, color = #00e0c0, size = size.normal, offset = -1)
+plotshape(sellCondition, 'Entry Short', shape.diamond, location.abovebar, color = #ff4757, size = size.normal, offset = -1)
+
+alertcondition(buyCondition, 'SB1 Buy', 'SB1: predicted bullish candle')
+alertcondition(sellCondition, 'SB1 Sell', 'SB1: predicted bearish candle')

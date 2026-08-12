@@ -1,0 +1,156 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>PO Payout Filter</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="title">Payout filter</span>
+    <label class="sw">
+      <input type="checkbox" id="enabled" checked>
+      <span>on</span>
+    </label>
+  </header>
+
+  <section class="main">
+    <label class="lead" for="threshold">Hide assets paying less than</label>
+    <div class="row">
+      <input type="range" id="range" min="30" max="100" step="1" value="70">
+      <div class="num">
+        <input type="number" id="threshold" min="0" max="100" step="1" value="70">
+        <span class="pct">%</span>
+      </div>
+    </div>
+    <div class="resync">
+      <label class="lead" for="resyncSeconds">Full re-check every</label>
+      <input type="number" id="resyncSeconds" min="5" max="600" step="5" value="30">
+      <span class="pct">s</span>
+      <button id="now" class="link">run now</button>
+    </div>
+
+    <div class="resync">
+      <label class="sw" title="Tiles with no payout at all - a closed or unavailable market. Ignored if no row on the page reads, since that means the selector is wrong rather than the tile being empty.">
+        <input type="checkbox" id="hideEmpty" checked>
+        <span>hide empty tiles too</span>
+      </label>
+    </div>
+
+    <div class="resync">
+      <label class="sw" title="How far below the threshold a pair may sit and still stay on the list, outlined in red instead of removed. In percentage points: 70 with a band of 10 keeps 60-69 visible and hides anything under 60. Those pairs are still NOT tradeable - the mark is so you can watch one climb back. Set 0 to hide everything under the threshold, as before.">
+        <span>keep visible until</span>
+        <input type="number" id="graceBand" min="0" max="50" step="1" value="10">
+        <span>% below</span>
+      </label>
+    </div>
+
+    <div class="pinBlock">
+      <div class="pinHead">
+        <label class="lead" for="pinList" title="Comma or newline separated tickers, e.g. GBPCAD,EURJPY. These stay on the list and visible even when their payout is below the threshold - past the grace band too - so you can watch one specific pair without the filter taking it away. Marked with a dashed blue ring instead of the usual red or amber, so it reads as 'you asked for this' rather than as a verdict on the payout.">Always show (ignore threshold)</label>
+        <button id="pinCurrent" class="link" title="Adds the pair you are currently standing on in Pocket Option to the list, one click at a time - no need to type it.">+ pin current</button>
+      </div>
+      <input type="text" id="pinList" spellcheck="false" placeholder="GBPCAD,EURJPY">
+      <p class="status dim" id="pinStatus"></p>
+    </div>
+
+    <div class="resync">
+      <label class="sw" title="Shows a banner naming the nearest pair above the threshold. It does not click anything.">
+        <input type="checkbox" id="warnActive" checked>
+        <span>warn me when the current asset is below</span>
+      </label>
+      <button id="preview" class="link">preview</button>
+    </div>
+
+    <div class="resync">
+      <label class="sw" title="After the warning has been up for the time below, click the first pair in the list that is above the threshold. Clicking the banner cancels it.">
+        <input type="checkbox" id="autoJump" checked>
+        <span>then jump to the first pair above, after</span>
+      </label>
+      <input type="number" id="jumpAfter" min="60" max="600" step="10" value="60">
+      <span class="pct">s</span>
+    </div>
+
+    <p class="status" id="status">…</p>
+    <p class="status dim" id="activeStatus"></p>
+    <p class="status dim" id="resyncStatus"></p>
+  </section>
+
+  <section class="logbox">
+    <p class="status dim" id="logStatus"></p>
+
+    <div class="logrow">
+      <button id="copySkip" class="link" title="Copies the pairs currently hidden, ready to paste into the scanner's Pairs to skip box on TradingView">Copy skip list</button>
+    </div>
+  </section>
+
+  <section class="logbox">
+    <div class="logrow">
+      <label class="sw" title="Once a minute, one second before the minute candle closes, appends one compact line - time PAIR=payout ... - to a log file, in UTC+1 to match TradingView's own timestamps, so it can be compared by eye against what Pine's logs say a window closed at.">
+        <input type="checkbox" id="logEnabled" checked>
+        <span>log payouts to a file</span>
+      </label>
+    </div>
+
+    <div class="logrow">
+      <span class="lead">folder</span>
+      <button id="chooseLogDir" class="link">choose folder</button>
+      <button id="regrantLogDir" class="link" hidden>re-grant access</button>
+    </div>
+    <p class="status dim" id="logDirStatus">No folder chosen - payouts are not being logged.</p>
+
+    <div class="logrow">
+      <span class="lead">only between</span>
+      <input type="number" id="logStartHour" min="0" max="23" step="1" value="8">
+      <span class="pct">:00 and</span>
+      <input type="number" id="logEndHour" min="0" max="24" step="1" value="20">
+      <span class="pct">:00, UTC+1</span>
+    </div>
+
+    <p class="status dim" id="payoutLogStatus"></p>
+  </section>
+
+  <details>
+    <summary>TradingView pair list</summary>
+    <p class="intro small">
+      The scanner's pairs, in slot order, comma or newline separated. Only the
+      non-empty ones — trailing empty slots contribute nothing. Pine cannot tell
+      the browser what its slots are called, so this copy is how the line on the
+      chart puts a name to a slot.
+    </p>
+    <p class="intro small">
+      A gap in the <b>middle</b> must be kept as an empty entry (two commas),
+      or everything after it shifts up a slot.
+    </p>
+    <textarea id="pairList" spellcheck="false" rows="4"
+      placeholder="EURUSD,GBPUSD,USDCAD,…"></textarea>
+    <p class="status dim" id="pairStatus"></p>
+  </details>
+
+  <details>
+    <summary>Selectors</summary>
+    <label class="field">
+      <span>Asset row</span>
+      <input type="text" id="itemSelector" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Payout number inside it</span>
+      <input type="text" id="payoutSelector" spellcheck="false">
+    </label>
+    <label class="field">
+      <span>Marker on the selected row (matched anywhere in a class name)</span>
+      <input type="text" id="activeClass" spellcheck="false">
+    </label>
+    <button id="reset" class="link">Restore defaults</button>
+  </details>
+
+  <footer>
+    <span class="kbd">Alt+Shift+P</span>
+    <span class="dim">turns it off and on</span>
+  </footer>
+
+  <script src="fsdir.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

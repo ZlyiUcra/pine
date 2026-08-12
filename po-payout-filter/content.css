@@ -1,0 +1,136 @@
+/* PO Payout Filter - the whole of the page styling.
+ *
+ * This is now the BACKUP, not the mechanism. The real hiding is an inline style
+ * set from content.js, because CSS injected through content_scripts is placed
+ * near the top of the document: a site rule of equal specificity that is also
+ * !important beats it just by being loaded later. See the note above hide() for
+ * the full reasoning.
+ *
+ * [class] costs nothing and raises specificity from (0,1,0) to (0,2,0), which is
+ * enough to win against a single site class on the same element. It matters on
+ * the one frame between the class being added and the inline style landing, and
+ * on any element whose inline style attribute the site later rewrites wholesale.
+ *
+ * display:none rather than visibility or opacity, because the point is to take
+ * the row out of the list and close the gap, not leave a hole where it was. */
+
+[class].__po-hidden,
+.__po-hidden {
+  display: none !important;
+}
+
+/* The warning. Top centre because it has to be seen without being looked for,
+ * and because the corners of a trading screen are all already occupied.
+ *
+ * pointer-events stays ON - unlike the hiding, this element is meant to be
+ * clickable, since clicking dismisses it. Everything else is defensive: a host
+ * page can and will try to impose its own font, colour and stacking. */
+.__po-alert {
+  position: fixed !important;
+  top: 0 !important;
+  left: 50% !important;
+  transform: translateX(-50%) !important;
+  z-index: 2147483647 !important;
+
+  font: 700 15px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif !important;
+  letter-spacing: 0.01em !important;
+  text-transform: none !important;
+  white-space: nowrap !important;
+
+  background: #d64545 !important;
+  color: #fff !important;
+  padding: 11px 22px !important;
+  border-radius: 0 0 10px 10px !important;
+  box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55) !important;
+  cursor: pointer !important;
+  max-width: 96vw !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+
+  /* It has to survive being glanced past. A slow pulse is the difference
+   * between something the eye files as page furniture and something it comes
+   * back to - and slow enough not to be a strobe on a screen already full of
+   * moving numbers. */
+  animation: __po-pulse 1.6s ease-in-out infinite !important;
+}
+
+@keyframes __po-pulse {
+  0%, 100% { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55), 0 0 0 0 rgba(214, 69, 69, 0.55); }
+  50%      { box-shadow: 0 8px 30px rgba(0, 0, 0, 0.55), 0 0 0 12px rgba(214, 69, 69, 0); }
+}
+
+/* The tile you are standing on, when its payout is under the threshold.
+ *
+ * It is deliberately NOT hidden - see the note in scan() - so this is the mark
+ * that replaces its disappearance. outline rather than border, because a border
+ * changes the box and would shift the row; an outline is drawn over the top and
+ * moves nothing. */
+.__po-bad {
+  outline: 2px solid #d64545 !important;
+  outline-offset: -2px !important;
+  border-radius: 4px !important;
+  background-image: linear-gradient(rgba(214, 69, 69, 0.22), rgba(214, 69, 69, 0.22)) !important;
+  animation: __po-tile 1.6s ease-in-out infinite !important;
+}
+
+@keyframes __po-tile {
+  0%, 100% { outline-color: #d64545; }
+  50%      { outline-color: rgba(214, 69, 69, 0.25); }
+}
+
+/* A tile under the threshold but inside the grace band - kept on the list
+ * instead of removed, so you can watch it come back.
+ *
+ * AMBER, not red, and the reason is that red is not ours to spend here. Pocket
+ * Option's own interface already uses it - a falling quote, the active tile when
+ * it turns - so a red ring drawn by this extension lands in a colour the page is
+ * using to say something else. Two meanings on one colour, on a screen where you
+ * are reading quickly, is worse than a colour nobody uses.
+ *
+ * It also happens to be the more honest colour for what this mark means. Red
+ * reads as refusal, and this tile has not been refused: it is a few points short
+ * and it is on the list precisely because it may come back. Amber is the colour
+ * for that.
+ *
+ * #e0b45c is not a fresh choice - it is exactly what the TradingView line paints
+ * its 'below <threshold>' section, and for the same state. One meaning, one
+ * colour, across the two screens: a pair amber on the broker's board is amber in
+ * the line, and neither needs a legend.
+ *
+ * No animation, and the wash stays lighter than __po-bad's. The pulse is what
+ * says "this is the tile you are STANDING ON", one at a time, and a band of five
+ * flashing rows would drown that out and turn the list into something the eye
+ * slides off.
+ *
+ * outline rather than border, like above: a border changes the box and would
+ * shift every row under it, an outline is drawn over the top and moves nothing.
+ *
+ * If a tile ever carried both classes the pulsing red would win on the outline
+ * colour, which is the right way round - the active tile outranks a warning -
+ * but it cannot happen: the active tile takes __po-bad and is explicitly cleared
+ * of this one on the same pass. */
+.__po-near {
+  outline: 2px solid rgba(224, 180, 92, 0.85) !important;
+  outline-offset: -2px !important;
+  border-radius: 4px !important;
+  background-image: linear-gradient(rgba(224, 180, 92, 0.12), rgba(224, 180, 92, 0.12)) !important;
+}
+
+/* A pair forced onto the list despite paying under the threshold, because you
+ * typed it into 'always show' in the popup - see markPinned in content.js.
+ * Every other mark here answers a question about the PAYOUT; this one answers
+ * a question about YOU, so it gets a colour neither Pocket Option nor the rest
+ * of this extension has already spent: #05bcf3, the extension's own accent
+ * colour from popup.css, rather than the red/amber the payout verdicts use.
+ *
+ * Dashed rather than solid, for the one moment the two marks could otherwise
+ * be confused at a glance: a pinned pair sitting just under the threshold
+ * would draw the exact ring __po-near draws, in a similar weight, if this one
+ * were solid too. The dash reads as "held here on purpose" against the solid
+ * ring's "sitting here for now". */
+.__po-pinned {
+  outline: 2px dashed #05bcf3 !important;
+  outline-offset: -2px !important;
+  border-radius: 4px !important;
+  background-image: linear-gradient(rgba(5, 188, 243, 0.14), rgba(5, 188, 243, 0.14)) !important;
+}

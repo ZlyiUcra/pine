@@ -1,0 +1,2062 @@
+//@version=6
+// MAR1 MA Sweep, across the watchlist - which MA Length to trade, on ALL pairs.
+//
+// One row per MA Length, and each row is the line the scanner prints at the top
+// of its finished-series log:
+//
+//   CLOSED LOGGED  ·  210  ·  450 entries, 2.14286 avg
+//
+// closed windows, entries spent, and the average of the two - summed across
+// every ticked pair, over the whole loaded history. The scanner answers that
+// question for the MA Length you happen to have set. This one asks it forty
+// times at once and puts the answers side by side, which is the only way to see
+// whether the length you are trading is the one the watchlist actually likes.
+//
+// It also answers the question the average cannot. An average is paid out of the
+// short windows and taken away by the long ones, so two lengths can average the
+// same and be nothing alike: one closes almost everything on the second entry,
+// the other alternates cheap wins with runs that go five, six, nine deep. The
+// RED column counts the deep ones - windows that reached the entry where the
+// diamond ladder turns red - so the tail is on the table next to the mean, and
+// the table can be sorted on it. Read that column, not Avg, when the stake
+// climbs the ladder: a ladder does not die of a high average, it dies of a
+// single long run.
+//
+// And the LINKS column answers the question Red cannot. Red counts deep windows;
+// it does not say whether they arrived together. Evenly spaced deep runs let a
+// recovery ladder return to its base stake between them; two deep runs back to
+// back do not, and that is the shape a ladder actually dies in. Links counts how
+// often one deep window opened shortly after another closed ON THE SAME PAIR.
+// It is a tripwire rather than a scale - blank on most rows by design. The table
+// CAN be sorted on it: 'Links, then Score' puts the rows with fewest links on
+// top and settles the ties - which on ordinary data is every row - on Score, so
+// it reads exactly like Balanced until some length actually stacks deep windows,
+// and then sinks that length whatever its average says. Note the two thresholds
+// are separate: Red counts at redAt, Links at deepAt, so unless you set them
+// equal the two columns describe different sets of windows.
+//
+// Its companion is maSweep.pine, which asks the same question on ONE symbol at
+// thirty-three lengths and costs almost nothing, because it needs no
+// request.security at all. Use that one to comb a pair; use this one to decide
+// what the whole list wants.
+//
+// THE LOCAL VARIABLE BUDGET - read this before changing either number
+// --------------------------------------------------------------------
+// TradingView allows a script 1200 local variables in its main scope, and this
+// file spends nearly all of them on one thing: every pair hands back one packed
+// value per length, so SLOTS x LENGTHS names come out of the request.security
+// calls and every one of them is counted.
+//
+//     slots  x  lengths  +  about 40 others   <=   1200
+//
+// The product is the part that matters; the constant is everything else in the
+// main scope and it grows slowly as the table does - it measured 24 before the
+// Red column and its ranking switch were added, so treat 40 as a rough current
+// figure rather than a fixed one.
+//
+// The product is measured, not guessed. Thirty slots at sixty lengths was
+// compiled and refused:
+//
+//     Script has too many local variables (1824) in "#main" ... limit is 1200
+//
+// 30 x 60 is 1800, so the twenty-four is the whole rest of the file put
+// together. The split now is twenty-five slots by forty lengths - 1024, with
+// room to spare. Other splits that fit:
+//
+//     lengths    45     40     35     30     25
+//     slots      26     29     33     39     47   (40 is the request ceiling)
+//
+// Raising one means lowering the other and then regenerating the four blocks
+// marked GENERATED below. Nothing warns you at runtime: the compiler refuses
+// the whole script before the first bar.
+//
+// AND IT IS SLOW ON PURPOSE
+// -------------------------
+// Twenty-five pairs at forty lengths is a THOUSAND copies of MAR1's state
+// machine, each walked over that pair's whole loaded history. That is the most
+// expensive thing in this project by a very wide margin, and the execution time
+// limit is a second ceiling underneath the variable one - fitting the compiler
+// does not mean finishing in time.
+//
+// If it refuses to run, the levers are these, in the order worth trying:
+//
+//   1. untick pairs. The big one for TIME, and the only half of the product the
+//      dialog can change. It does NOT help the variable budget - an unticked
+//      slot still declares its forty names - so it fixes a timeout and never a
+//      compile error.
+//   2. run it on a higher timeframe. Fewer bars, same logic, same answer shape.
+//   3. narrow First / Last. It does not save a thing - all forty call sites run
+//      whatever the range says - but it makes the point that the range and the
+//      cost are unrelated, so there is no reason to sweep wider than you read.
+//   4. 'Bars of history per pair'. Last, and it changes the ANSWER rather than
+//      the cost - a shorter history gives the streak gate a different threshold,
+//      so the entries it counts are not the entries the chart takes.
+//
+// If it fails to COMPILE rather than timing out, none of those help: that is
+// the variable budget above, and the fix is to lower SWEEP_N or the slot count
+// and regenerate.
+//
+// What is NOT multiplied by forty is everything the moving average does not
+// enter into: the ATR, both wick averages, the body average, the geometry, both
+// counter-trend paths. Those are computed once per pair and shared. What is
+// multiplied is one moving average, a three-step trend loop, a handful of
+// comparisons and the counter bookkeeping.
+//
+// The count cannot be a setting
+// -----------------------------
+// ta.ema demands a SIMPLE int, so a length has to be fixed before the first bar,
+// and independent state per length needs a separate CALL SITE - a `var` inside a
+// function belongs to the call site rather than to the function, so a loop would
+// run one machine forty times and end with one answer. The forty are written
+// out, and changing SWEEP_N means regenerating the four blocks marked GENERATED
+// below rather than editing them by hand.
+//
+// Computed once, in the sense that matters
+// ----------------------------------------
+// The table is written on the last bar only. The state machines themselves have
+// to run on every bar - that is what walking the history means, and there is no
+// Pine in which it is otherwise - but nothing is drawn, ranked or totalled until
+// the chart is done loading. Changing a setting reruns the whole thing; ticks
+// arriving on the live bar do not.
+//
+// Keep the signal settings identical to maRejection.pine or the table describes
+// a strategy you are not trading. There is no CFGSUM here to catch a divergence.
+indicator('MAR1 MA Sweep - pairs', overlay = true, max_bars_back = 200)
+
+// Forty lengths, and the number is not a preference - it is what the compiler
+// allows. See THE LOCAL VARIABLE BUDGET in the header: slots times lengths is
+// counted, the ceiling is 1200, and forty by twenty-five is 1024.
+//
+// Sixty was tried and refused by TradingView outright, before a single bar ran:
+//
+//   Script has too many local variables (1824) in "#main" ... The limit is 1200
+//
+// Thirty slots times sixty lengths is 1800 of those 1824. That error is why the
+// pair list came down to twenty-five at the same time this went up to forty,
+// and it is the arithmetic to redo before changing either.
+SWEEP_N = 40
+
+// ---------------------------------------------------------------------------
+// The range
+// ---------------------------------------------------------------------------
+// First in the dialog, because it and the output block below it are the only
+// two things touched between one run and the next. Everything under them is set
+// up once, to match maRejection.pine, and then left alone.
+// NOTHING BELOW PRINTS ITSELF IN THE STATUS LINE except three settings, and
+// that is what display = display.none on the rest of this file buys.
+//
+// TradingView prints an indicator's ARGUMENTS after its name in the legend, in
+// declaration order. This file has eighty-five inputs - twenty-five pair slots with their tick boxes are fifty of them, and the line ran the width
+// of the chart as a wall of bare numbers with nothing saying which number was
+// which. A legend that has to be decoded is worse than no legend.
+//
+// display.none removes an input from that line and from the Data Window and
+// changes NOTHING ELSE: the input is fully live, fully editable, and sits in the
+// settings dialog exactly where it did. It is a display flag, not a switch, and
+// it does not touch the saved-settings POSITION that everything in this file has
+// to be careful about.
+//
+// THREE ARE VISIBLE, and the third one differs from the other files in this
+// project on purpose:
+//
+//   MA Type        THE ONE THE OTHER FILES HIDE. Everywhere else the visible
+//                  setting is MA Length, because there is one length and it
+//                  defines the indicator. Here the LENGTHS ARE THE ROWS OF THE
+//                  TABLE - they say themselves, in ink, forty at a time. What
+//                  nothing on screen says is which KIND of average every one of
+//                  them is, and a sweep run on SMA describes a strategy that is
+//                  not being traded: maRejection.pine sits on EMA with this
+//                  setting hidden, and the whole point of this table is to feed
+//                  numbers back into that file. Wrong type here and every row is
+//                  an answer to a question nobody asked.
+//   Streak gate    with Off there is no gate at all, nothing is ever held back,
+//                  and every signal counts as an entry. Every column in the
+//                  table is then measuring something else.
+//   Fire signals   whether the hours filter is actually biting. It runs BEFORE
+//   only inside    the streak is counted, so it moves the distribution and
+//   those hours    therefore the gate threshold - it is not a cosmetic filter.
+//
+// Everything else - the sweep range, the ranking, the payout, the block layout,
+// the whole signal mirror - is either already printed by the table itself or is
+// one dialog click away. There is no CFGSUM in this file to catch a divergence
+// from maRejection.pine, so nothing was lost from the legend that the legend was
+// ever going to catch.
+//
+// TO BRING ANY OTHER ONE BACK: delete ', display = display.none' from its line.
+// To hide one of the three above: add it. There is nothing to keep in sync - the
+// flag is per input and reaches no logic.
+gSwp = 'Sweep range'
+
+// All three are typed. Nothing here is inferred from anything else: First says
+// where the sweep starts, Step says how far apart the lengths sit, Last says
+// where it stops.
+//
+//   10, step 1, to 49    every length from 10 to 49 - the default, and exact
+//   10, step 1, to 20    10, 11, 12 ... 20 - eleven rows, the other slots idle
+//   10, step 2, to 88    10, 12, 14 ... 88 - exact, forty of them
+//   10, step 1, to 200   10, 11, 12 ... 49 - the slots run out at 49
+//
+// The one thing the three of them cannot override is SWEEP_N. There are exactly
+// forty call sites and there is no Pine in which there are forty-one, so:
+//
+//   fewer than forty lengths fit in the range   the extra slots are computed
+//                                               anyway, because a call site
+//                                               cannot be made conditional,
+//                                               and simply not drawn
+//   more than forty fit                         the sweep stops at
+//                                               First + 39·Step, short of Last
+//
+// Neither case is left to be worked out from the last row. The header prints the
+// range that was actually swept and, when it is not the one that was typed, says
+// so in amber - and says which of the two reasons it was.
+//
+// Nothing here changes the cost. All forty machines run whatever the range says,
+// so a narrow range is not cheaper - it just draws fewer rows.
+//
+// Both minimums are 1 so that First + i·Step can never reach zero, which is what
+// lets the lengths be built from inputs at all: ta.ema needs a SIMPLE int, and
+// arithmetic on inputs stays simple.
+// 10 to 49 rather than 3 to 42, and the two have the same SHAPE - forty lengths
+// at step 1, exactly filling the forty slots. What moved is where the window
+// sits: the short end went from 3 to 10.
+//
+// The three lengths gate A actually runs on are 30 and 28 on M1 and 34 on M3, so
+// the interesting part of the range was crowded into its top third while the
+// bottom third held lengths nothing has ever chosen. Moving the window up spends
+// the same forty machines on the part of the range that decides anything.
+//
+// The single-digit lengths are not gone, they are one setting away: type 3 back
+// into First and the old sweep is back, at the cost of the top end.
+sweepFrom = input.int(10, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
+     tooltip = 'The shortest moving average in the sweep. Type 3 to get the old range back - it costs the top end, since forty lengths is forty lengths.', display = display.none)
+sweepStep = input.int(1, 'Step', minval = 1, maxval = 50, group = gSwp,
+     tooltip = 'The gap between one swept length and the next. Forty lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between.', display = display.none)
+sweepTo = input.int(49, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
+     tooltip = 'Where the sweep stops. Forty lengths exist, so if First, Step and this ask for more than forty the sweep ends at First + 39 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 10 to 49 at step 1 is exactly forty and fills the table.', display = display.none)
+
+// How many of the forty call sites land inside the requested range. Guarded on
+// both ends: a Last at or below First gives one row rather than a negative
+// count, and the cap keeps a wide range from claiming rows that do not exist.
+//
+// int() rather than math.floor() - a cast keeps the SIMPLE qualifier that
+// ta.ema demands of the length, and the division is over positive numbers, so
+// truncation and floor are the same thing here.
+sweepSpan = sweepTo > sweepFrom ? sweepTo - sweepFrom : 0
+sweepFit  = int(sweepSpan / sweepStep) + 1
+usedN     = sweepFit > SWEEP_N ? SWEEP_N : sweepFit
+sweepLast = sweepFrom + (usedN - 1) * sweepStep
+
+// True when the range asked for is wider than forty slots can carry. Kept apart
+// from "the step did not land on Last exactly", because the two have different
+// fixes: this one is raise the Step, the other one is nothing worth doing.
+slotsShort = sweepFit > SWEEP_N
+
+// ---------------------------------------------------------------------------
+// Gate and window - the three settings the averages answer to
+// ---------------------------------------------------------------------------
+// Second in the dialog, directly under the range, because these and the range
+// are the only settings touched between one run and the next. Everything below
+// them is set once to match maRejection.pine and then left alone.
+//
+// The same three sit in the same place in mar1Scanner.pine, under a header of
+// the same name, and the first two of them do in maRejection.pine as well - so
+// the dialog reads the same way whichever of the three files is open. That is
+// the point of the arrangement: a setting that has to be kept identical across
+// files should not have to be hunted for in a different place in each.
+//
+//   Percentage            the cumulative cutoff the streak distribution is read
+//                         at, which becomes the gate threshold in Distribution
+//                         and in Max of both
+//   Min entries to start  the manual floor under that threshold
+//   A window is closed by which successes close a window - the definition every
+//                         number in the table is counted against
+//
+// They belong to Filters in every sense that matters to the signal, and they
+// must hold maRejection.pine's values or the table ranks lengths for a strategy
+// nobody trades. Only the header above them is different.
+gTune = 'Gate and window (must match MAR1)'
+
+// 98 / 6 and not 95 / 5, and this is the one place in the file where the header
+// above is now OUT OF DATE about its own defaults.
+//
+// maRejection.pine and mar1Scanner.pine still ship 95 / 5. That gate was dropped
+// after this sweeper measured the watchlist: the three that survived are 98/6,
+// 99/8 and 99.5/9, and A is the one these lengths are being ranked for. Ranking
+// them at 95 / 5 would be measuring a gate nobody opens any more.
+//
+// So "must match MAR1" now means match whichever gate you are sweeping for, and
+// the two files disagree out of the box on purpose. If a sweep is ever run
+// against MAR1 as shipped, these two have to come back to 95 / 5 first.
+basePercentage    = input.float(98.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+minEntriesToStart = input.int(6, 'Min entries to start', minval = 1, group = gTune, display = display.none)
+
+// Which successes close a window. 'Entries only' is the strict reading and the
+// default on all three sides: a window is closed by a trade that was actually
+// taken, not by a signal the gate held back.
+successScope = input.string('Entries only', 'A window is closed by',
+     options = ['Entries only', 'Entries and warnings', 'All found signals'], group = gTune, display = display.none)
+
+// ---------------------------------------------------------------------------
+// Output
+// ---------------------------------------------------------------------------
+gOut = 'Sweep output'
+
+// The payout the AVG columns are judged against. It changes no arithmetic; it
+// decides where green stops and red starts, which is what turns 2.14 from a
+// number into a verdict.
+//
+// At a FLAT stake and a payout of r, a length pays only while
+//
+//     avg  <  1 + r
+//
+// so 92% needs an average under 1.92. If the stake climbs the colour ladder
+// instead, AVG is the wrong column and WORST is the right one: a recovery ladder
+// earns a fixed amount per closed window whatever it cost, and dies on the one
+// window that ran too long.
+payoutPct = input.float(92.0, 'Broker payout %', minval = 10.0, maxval = 200.0, step = 1.0, group = gOut,
+     tooltip = 'At a flat stake a length pays only while its average is below 1 + payout. 92% gives a break-even average of 1.92.', display = display.none)
+
+// A length that closed six windows has an average that means nothing, and left
+// unmarked it would sit at the top of the ranking. Rows under this are greyed,
+// cannot be best or worst, and do not stretch the bars.
+//
+// They are still SORTED, and they did not used to be - see sortKey. 'Ignore' is
+// about trust, not about order: a row nobody should act on is still a row, and
+// leaving a block of them in length order made a sorted table look broken
+// exactly when the history was too short for anything else to be on screen.
+minClosures = input.int(30, 'Ignore lengths with fewer wins than', minval = 1, maxval = 5000, group = gOut,
+     tooltip = 'Below this a row is greyed and cannot be marked best or worst - an average over a handful of windows is not a finding. It is still placed in order among the other untrusted rows, so the table is sorted whatever the history has managed to produce.', display = display.none)
+
+// The line between a window that cost something and a window that hurt, and five
+// is not a round number chosen for tidiness - it is where the colour ladder
+// turns RED in maRejection.pine and in both of the scanner's tables.
+//
+// A window opens on its anchor with nothing entered and every entry that misses
+// moves the streak one step along, so the fourth entry is still purple and the
+// FIFTH is the first red diamond in the run. Counting windows that reached it is
+// exactly counting the runs that went red at least once.
+//
+// It counts WINDOWS, not diamonds. A window that took nine entries is one red
+// window here and its nine is in the Worst column - the two answer "how often"
+// and "how bad", and neither substitutes for the other.
+//
+// Lower it to 4 or 3 to ask a softer question, raise it to 6 and up to ask only
+// about the runs a recovery ladder would not have survived. Below about 3 the
+// count stops being a tail and becomes most of the table; it also becomes the
+// one field of the packed format that can genuinely overflow - see the packing
+// block. That is reported in the footer rather than hidden.
+// Four, and the label is now a NAME rather than a claim. The ladder still turns
+// red at FIVE - a window of five entries is +4 past its anchor - so at four this
+// column counts one rung earlier, on purple.
+//
+// That is the more useful question when choosing a length. Not "how often did
+// this end in disaster", which is rare enough that two lengths can go a week
+// without separating, but "how often did it reach one step short of disaster",
+// which happens often enough to tell them apart. Set it back to 5 to count only
+// the genuinely red ones.
+redAt = input.int(4, 'A window is RED at this many entries', minval = 2, maxval = 50, group = gOut,
+     tooltip = 'How deep a window has to go before the Red column counts it. FIVE is where the diamond ladder actually turns red - a window of five entries is +4 past its anchor - so the default of four counts one rung earlier, on purple. That is the more useful question when ranking lengths: not how often a length ended in disaster, but how often it got to one step short of it, which happens often enough to separate two lengths that look alike on the average alone. Set it to 5 to count only the red ones.', display = display.none)
+
+// What the table is ORDERED and RANKED by. The ★ ☆ ▽ ▼ marks follow this too -
+// they are the top two and bottom two of whatever is chosen here, not of a fixed
+// column, so the marks and the order can never disagree.
+//
+// BALANCED is the default and it is the one that answers the real question: put
+// at the top the length whose pessimistic average is low AND whose deep runs are
+// few. Neither column alone can say that. A length can carry the best average in
+// the table and get there by paying for a wall of cheap wins with the occasional
+// nine-entry run, and Avg +1σ will happily rank it first.
+//
+// The two cannot simply be added - one is entries per window, the other is a
+// proportion - so each is stretched onto 0..1 across the rows that qualify and
+// the two are then mixed by Tail weight. A score of 0 is best in the table on
+// both, 1 is worst on both, and the arithmetic is spelled out where it happens.
+//
+// The cost of that, stated: a 0..1 score is RELATIVE to the rows on screen.
+// Changing the range or the win threshold changes what 0 and 1 mean, so the
+// score compares lengths against each other and never against a fixed standard.
+// The three plain columns are all absolute; this one is not.
+//
+// The other three are unchanged and each answers one question outright:
+// Avg +1σ for a flat stake, Avg for the raw mean, Red share for the tail alone.
+//
+// LINKS, THEN SCORE is the fifth, THE DEFAULT, and the only THREE-LEVEL key.
+// It is not a blend and there is no weight to set - it is a strict hierarchy:
+//
+//   1. the raw link count - a HARD GATE. Two lengths with different counts are
+//      ALWAYS ordered by the count alone, whatever the other two levels say.
+//   2. a sample-size-aware reading of that count - the SAME caution Avg gets
+//      turned into Avg +1σ and Red gets turned into redHi, reused rather than
+//      reinvented, now applied to Links. It refines the order AMONG rows that
+//      tie on the raw count - which on ordinary data is most of them, because
+//      Links is a tripwire and reads zero everywhere. A length with 400 wins
+//      and zero links is a more trustworthy zero than one with 40 wins and
+//      zero links, and this level ranks the second one worse.
+//   3. Score, the same Balanced number as everywhere else - the final
+//      tie-break, for whatever level 2 still cannot separate.
+//
+// What to expect: with every row at zero raw links, level 1 never speaks, so
+// the order runs on level 2 (bigger, more convincing samples first) with
+// level 3 settling anything still tied. It differs from Balanced only where a
+// length has actually stacked deep windows back to back - level 1 then drops
+// that length to the bottom no matter how good its average or its sample is.
+//
+// All five read low-is-better, so the order is always ascending and ★ is always
+// the top row.
+rankBy = input.string('Links, then Score', 'Rank and sort by',
+     options = ['Balanced (+1σ & Red)', 'Avg +1σ', 'Avg', 'Red share', 'Links, then Score'], group = gOut,
+     tooltip = 'Balanced puts a length at the top only if it is good on BOTH the pessimistic average and the deep runs - each is scaled 0..1 across the visible rows and mixed by Tail weight. Avg +1σ, Avg and Red share sort on one column outright.\n\nLinks, then Score - THE DEFAULT - is a three-level hierarchy, not a blend: raw link count first (a hard gate - a real difference in links always wins), then a sample-size-aware reading of that count (the same caution behind Avg +1σ and Red\'s pessimistic share, reused for Links), then Score as the final tie-break. Since Links reads zero on most rows, the raw count rarely speaks and the order runs on sample-size confidence, settled by Score - it differs from Balanced only where a length actually stacked deep windows back to back, and then it sinks that length whatever its average says.', display = display.none)
+
+// How much of the Balanced score is the tail. 50 is an even split; 0 makes it
+// Avg +1σ exactly and 100 makes it Red share exactly, so the two endpoints
+// reproduce two of the other options and everything between is a blend.
+//
+// Raise it as position size climbs the ladder. A flat stake cares about the mean
+// and barely about the tail; a ladder is the other way round, because it earns a
+// fixed amount per closed window whatever that window cost and dies on the one
+// run that went too far.
+//
+// It does nothing unless Rank and sort by is Balanced.
+tailWeight = input.int(50, 'Tail weight in the Balanced score, %', minval = 0, maxval = 100, step = 5, group = gOut,
+     tooltip = 'The share of the Balanced score that comes from the Red column rather than from Avg +1σ. 0 is pure Avg +1σ, 100 is pure Red, 50 weighs them evenly. Ignored unless Balanced is the chosen ranking.', display = display.none)
+
+// When the list is longer than this it wraps into another block BESIDE the
+// first, exactly the way the scanner's closed log does - same columns repeated,
+// a blank column between them, each block picking up where the last ran out.
+// Height is the direction a chart has least of, so the list grows sideways.
+//
+// Twenty puts forty lengths into two columns of twenty, which is about as tall
+// as a table can be and still sit beside the price rather than over it. Ten
+// gives four shorter blocks; forty gives one very tall column.
+rowsPerBlock = input.int(20, 'Rows per block (wraps sideways past this)', minval = 2, maxval = 40, group = gOut,
+     tooltip = 'Up to four blocks stand side by side, so 10 here holds all 40 lengths in four short columns and 20 holds them in two. Anything that does not fit in four blocks is not drawn, and the footer says so rather than letting rows go missing quietly.', display = display.none)
+
+tablePos    = input.string('Middle right', 'Table position',
+     options = ['Middle right', 'Middle left', 'Middle center', 'Top right', 'Bottom right', 'Top center', 'Bottom center'], group = gOut, display = display.none)
+txtSizeName = input.string('Small', 'Text size', options = ['Tiny', 'Small', 'Normal'], group = gOut, display = display.none)
+
+// Four, so forty rows fit as four columns of ten as well as two of twenty. Each
+// block is ten columns wide including its trailing gap, so four of them is
+// forty - wide, but the alternative is a table taller than any chart window.
+MAX_BLOCKS = 4
+
+// The palette, and every one of these is OPAQUE on purpose - a table has to be a
+// surface, not a tint. Two row shades alternating, because a wall of one colour
+// is one the eye loses its place in.
+C_ROW_A  = #1F242D
+C_ROW_B  = #171B22
+C_ROW_NO = #101317   // below the win threshold - present, and not competing
+C_TXT    = #F2F6FA
+C_TXT_NO = #7C8792
+C_HEAD   = #3B404A
+C_FOOT   = #1A1E25
+
+// The four ranked rows. Two greens and two reds, and within each pair second
+// place is the darker one - so the ladder reads as intensity rather than as four
+// unrelated colours, and a glance finds both ends of the table without reading a
+// number.
+//
+// The winner and the loser are solid and carry dark text; the runners-up are
+// deep enough to take light text. That is deliberate: solid-with-dark-text is
+// the loudest thing this table can do, and only the two extremes earn it.
+C_BEST     = #7CE23F
+C_BEST_T   = #0A1400
+C_BEST2    = #2E5E2A
+C_BEST2_T  = #D8F5C8
+C_WORST    = #C7442F
+C_WORST_T  = #1A0500
+C_WORST2   = #5E2A22
+C_WORST2_T = #F5D8D0
+
+// ---------------------------------------------------------------------------
+// Five numbers through one hole
+// ---------------------------------------------------------------------------
+// Every pair has to hand back five totals per length - closures, entries, the
+// worst single window, how many windows went RED, and how many times one deep
+// window followed another - and there are forty lengths. As a plain tuple that
+// is two hundred values crossing request.security, twenty-five times over: five
+// thousand names in the main scope against a ceiling of twelve hundred. See THE
+// LOCAL VARIABLE BUDGET in the header - unpacked, this file could not be
+// compiled at any useful size at all.
+//
+// So the five are packed into one number and unpacked on the other side. Forty
+// values cross instead of two hundred, and that is what buys the forty.
+//
+//   value  =  entries · 1e12 + closures · 1e8 + red · 1e4 + links · 1e2 + worst
+//
+// A double holds integers exactly up to 2^53, which is 9007199254740992, and
+// this layout was built backwards from that number rather than from what looks
+// tidy. Sixteen digits is one more than the fifteen that always fit, so the top
+// field is capped short of its full width: entries stops at 8999 and the
+// largest value that can be produced is 8999999999999999 - under 2^53, and
+// therefore carried across exactly. That maximum is unchanged by the Links
+// column: the layout was re-cut, not widened.
+//
+// What each ceiling means, and the honesty of the answer differs by field now:
+//
+//   entries  < 9000    an entry is at most one per bar, so 90000 used to be a
+//                      PROOF - longer than any history TradingView hands out.
+//                      9000 is not that proof, and the comment must not pretend
+//                      it is. It is an OBSERVATION: measured on the live gated
+//                      configuration (checks/log-0208.csv, 88 pair-and-gate
+//                      machines over Mon-Fri), the busiest single machine spent
+//                      31 entries in 6459 minutes, which is about 96 entries per
+//                      20000 bars. That is roughly 94x of headroom against a
+//                      threshold nothing has approached - but it is a
+//                      measurement on one regime, not a bound
+//   closures < 10000   the same measurement gives ~50 closures per 20000 bars on
+//                      that machine, about 200x
+//   red      < 10000   deliberately the SAME width as closures, and that is what
+//                      retires an old warning. Red is a subset of closures, so
+//                      with equal widths red can no longer be the first field to
+//                      break - it used to be, because closures had five digits
+//                      against its four
+//   links    < 100     the narrowest field in the layout, and the only one whose
+//                      ceiling is justified by measurement rather than by its own
+//                      contract. At the hostile corner the dialog allows -
+//                      threshold 2, tolerance 480 - the worst single machine in
+//                      the log carried 3 links, about 9 per 20000 bars. Roughly
+//                      11x. CLAMPED rather than overflowed, see below
+//   worst    <= 99     CLAMPED rather than overflowed - see below
+//
+// Fields have been narrowed twice before. Adding the red count cost entries one
+// digit (it was < 1e6) and worst two (it was < 1e4). Adding links cost entries
+// and closures one digit each. What was given up the first two times was
+// headroom nothing can reach; this time it is headroom nothing has BEEN SEEN to
+// reach, and the difference is written above rather than smoothed over.
+//
+// What makes this honest rather than merely clever: if a field DID reach its
+// ceiling the packing would silently corrupt its neighbours, so it does not pack
+// at all - it returns -1, that pair-and-length is counted as overflowed, left
+// out of every total, and named in the footer. A number that cannot be trusted
+// is never shown as one that can.
+//
+// Worst and links are the deliberate exceptions: they CLAMP instead of taking
+// the whole pair-and-length down with them. A single window that cost a hundred
+// entries is past every question this table is asked - no ladder survives it and
+// the difference between 100 and 140 changes no decision - so it is shown as 99
+// rather than destroying four good numbers standing next to it.
+//
+// Links clamps for a sharper reason, and the asymmetry is the whole argument.
+// The -1 is a sentinel for the WHOLE row: a hundred links would erase Wins,
+// Entries, Avg, Avg +1σ, Red, Worst and Pairs, and take the row out of the
+// ranking with them. Clamping costs only the difference between 99 links and
+// 140, which no decision here rests on.
+//
+// That argument originally ran "Links decides nothing, so it must not be able
+// to delete the fields that decide everything". THAT LEG IS GONE - the Links,
+// then Score ranking makes this column something the table is sorted on. The
+// conclusion survives and is in fact stronger. A row that stacked a hundred
+// links is the worst row in the table on precisely the column now doing the
+// ranking, and the right thing to do with the worst row is SHOW it at the
+// bottom, not delete it. A sentinel would remove exactly the row the ranking
+// was switched on to find.
+//
+// What the clamp costs once the column is ranked on, stated so it is not
+// discovered: a pair-and-length at 99 links and one at 400 are indistinguishable
+// here, so two rows can tie at the bottom that are not really equal. At the
+// bottom of the table that changes nothing anybody acts on.
+PACK_W  = 100            // worst window, the low two digits - a clamp, not a ceiling
+PACK_D  = 100            // links, the next two - also a clamp, not a ceiling
+PACK_R  = 10000          // red windows, the next four
+PACK_C  = 10000          // closures, the next four
+PACK_E  = 9000           // entries, the top four - capped so the total stays under 2^53
+
+// Where each field sits, and every one of these is the product of the widths
+// below it. Written out rather than multiplied so the layout can be read off
+// the numbers.
+//
+// INTEGER literals, not 1e12 and friends. The unpacking below builds its
+// exactness on int(v) % POS_x being an INTEGER modulo; a float constant would
+// quietly turn every one of those into a float modulo on values reaching 9e15,
+// which is exactly the hair's width the comment above unpW warns about.
+POS_D = 100              // PACK_W
+POS_R = 10000            // PACK_W * PACK_D
+POS_C = 100000000        // PACK_W * PACK_D * PACK_R
+POS_E = 1000000000000    // PACK_W * PACK_D * PACK_R * PACK_C
+
+// ---------------------------------------------------------------------------
+// Signal settings - mirrors of maRejection.pine
+// ---------------------------------------------------------------------------
+// MA Length is absent on purpose: it is what this file sweeps. Everything else
+// must hold the values maRejection.pine holds, or the table ranks lengths for a
+// strategy nobody is trading.
+gSig  = 'Signal (must match MAR1)'
+gFilt = 'Filters (must match MAR1)'
+
+maType = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig)
+
+// A string rather than input.source, and the difference is not cosmetic. An
+// input.source is bound to the series of the CHART's symbol, so passing one into
+// request.security would feed every pair the price of whatever chart this script
+// happens to sit on.
+srcName = input.string('ohlc4', 'Source', options = ['close', 'open', 'high', 'low', 'hl2', 'hlc3', 'ohlc4'], group = gSig, display = display.none)
+
+trendBars = input.int(3, 'Bars that must close on the trend side of MA', minval = 2, maxval = 10, group = gSig, display = display.none)
+trendSep  = input.float(0.30, 'Min distance of trend closes from MA (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+wickRatio = input.float(0.60, 'Min wick share of candle range', minval = 0.30, maxval = 0.95, step = 0.05, group = gSig, display = display.none)
+touchTol  = input.float(0.30, 'Almost-reached tolerance (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+atrLen    = input.int(8, 'ATR length', minval = 2, group = gSig, display = display.none)
+
+allowBodyInside    = input.bool(true, 'Accept small body fully on the trend side', group = gSig, display = display.none)
+allowLongWick      = input.bool(true, 'Accept wick longer than its running average', group = gSig, display = display.none)
+allowCounterCandle = input.bool(true, 'Accept a single counter-trend candle', group = gSig, display = display.none)
+
+// The two-candle module. Constants rather than inputs, for the reason spelled
+// out in maRejection.pine: an input declared mid-file shifts every setting under
+// it on every chart already carrying the script. These three must match the
+// block of the same name in the other two files - CFGSUM covers inputs only, so
+// nothing checks them for you.
+DC_ON   = true
+DC_BACK = 4
+DC_REF  = 'Close'
+
+refLen = input.int(200, 'Average window (candles)', minval = 10, maxval = 200, group = gSig, display = display.none)
+
+minPips              = input.float(1.0, 'Min wick length (pips)', minval = 0.0, step = 0.1, group = gFilt, display = display.none)
+cooldown             = input.int(1, 'Min bars between signals', minval = 1, group = gFilt, display = display.none)
+perDirectionCooldown = input.bool(true, 'Cooldown per direction', group = gFilt, display = display.none)
+gateMode             = input.string('Max of both', 'Streak gate', options = ['Off', 'Manual', 'Distribution', 'Max of both'], group = gFilt)
+
+// The most important filter in this file, and not for the usual reason. A sweep
+// over the whole day answers "which length is best across hours you do not
+// trade". Narrow these to the session you actually sit in first.
+startHour       = input.int(4, "Start indicator's hours", group = gFilt, display = display.none)
+endHour         = input.int(16, "End indicator's hours", group = gFilt, display = display.none)
+
+// OFF by default here, and true in maRejection.pine and mar1Scanner.pine. The
+// note above says to narrow this to the session first, and that is still the
+// right advice for a sweep you are about to trade on - but it is the wrong thing
+// to have as the DEFAULT, because the two uses of this file ask different
+// questions.
+//
+// Narrowed, the ranking answers "which length is best in the hours I sit in",
+// which is what you want before committing to one. Wide open, it answers "what
+// does this length do", which is what you want when you are still finding out -
+// and it is the answer with four times the sample behind it, so it is the one
+// that should be there before anything has been chosen.
+//
+// Turn it on and read the table twice. A length that only wins wide open is a
+// length that wins in hours you are asleep for.
+restrictToHours = input.bool(false, 'Fire signals only inside those hours', group = gFilt)
+
+// ---------------------------------------------------------------------------
+// Cost
+// ---------------------------------------------------------------------------
+gScan = 'Cost'
+
+// 20000 rather than 0, and the change is about REPRODUCIBILITY rather than cost.
+// It is worth reading before setting it back, because the old default was not
+// wrong - it answered a different question.
+//
+// What 0 buys, and it is real: maRejection.pine builds its streak distribution
+// from the ENTIRE loaded history, so a window here means a different sample, a
+// different percentile, and therefore a different gate threshold - and the gate
+// is what decides whether a signal becomes an ENTRY or merely a warning. A
+// shorter history does not just blur the statistic, it changes which candles
+// were counted as entries at all. At 0 this file measures exactly what the chart
+// measures.
+//
+// What 0 costs, and it is why the default moved: how much history TradingView
+// hands out is not a setting and not a constant. It depends on the plan, the
+// timeframe, how far the chart has been scrolled, and what the server felt like
+// returning. Two runs of this table an hour apart can therefore disagree with
+// each other, and there is no way to tell that from a run where something
+// actually changed. A calibration table nobody can re-run and reproduce is a
+// table whose numbers cannot be checked - and this file exists precisely to have
+// its numbers copied into the headers of mar1Gates.pine.
+//
+// So the default is now a FIXED window. Every run sees the same 20000 bars per
+// pair, the same gate threshold comes out of them, and two runs differ only when
+// something real differed. The footer still prints CAPPED AT ... BARS PER PAIR
+// on every run, so the window is never silent.
+//
+// 20000 and not something smaller because it is the maxval - the longest window
+// that can be asked for, and past what most plans return anyway, so on a plan
+// that hands out less this setting changes nothing at all and the two defaults
+// are identical in effect.
+//
+// SET IT BACK TO 0 when the question is "what does the chart actually do",
+// rather than "which of these forty lengths is best". Those are different
+// questions and the gate threshold is what separates them.
+//
+// It remains the LAST lever to reach for when this script times out, behind
+// unticking pairs and raising the timeframe, because it is still the only one of
+// the three that changes the answer rather than the cost.
+scanBars = input.int(20000, 'Bars of history per pair (0 = all)', minval = 0, maxval = 20000, group = gScan,
+     tooltip = 'A FIXED window, so two runs of this table can be compared against each other. How much history TradingView hands out varies with the plan, the timeframe and how far the chart has been scrolled, so at 0 the same settings can produce different numbers an hour apart with nothing saying why - and this table exists to have its numbers copied into other files.\n\nSet it to 0 when you want what the chart itself sees: maRejection.pine builds its streak distribution from the whole loaded history, so a window here gives a different gate threshold and therefore a different set of entries. That is the honest setting for "what does the chart do" and the wrong one for "which length is best".\n\nThe footer says CAPPED AT whenever this is not 0.', display = display.none)
+
+// ---------------------------------------------------------------------------
+// The slots
+// ---------------------------------------------------------------------------
+// Twenty-five of the 40 request calls TradingView allows, and the count is set
+// by the variable budget rather than by the call ceiling: twenty-five slots at
+// forty lengths is 1024 names against a limit of 1200. See the header.
+//
+// Blank or unticked means "skip this slot" - it still spends a call, because
+// Pine cannot make one conditional, but it is pointed at the chart's own
+// symbol, which is already loaded, and its numbers are thrown away.
+//
+// These tick boxes are the TIME lever and only that. An unticked slot still
+// declares its forty names, so it saves nothing at compile time - it only stops
+// that pair's history from being walked.
+//
+// The defaults are the same watchlist mar1Scanner.pine ships with, in the same
+// order, so the two files describe the same set of pairs out of the box.
+//
+// display = display.none on every slot keeps fifty widgets out of the status
+// line. The footer of the table says how many pairs were actually scanned.
+gList1 = 'Pairs 1-10'
+gList2 = 'Pairs 11-20'
+gList3 = 'Pairs 21-25'
+
+use01 = input.bool(true,  'Pair 1',  inline = 'p01', group = gList1, display = display.none,
+     tooltip = 'The tick is the off switch, and on this file it is also the main performance lever: each ticked slot is forty state machines over that pair\'s whole history.')
+sym01 = input.symbol('FX:EURUSD', '', inline = 'p01', group = gList1, display = display.none)
+use02 = input.bool(true,  'Pair 2',  inline = 'p02', group = gList1, display = display.none)
+sym02 = input.symbol('FX:GBPUSD', '', inline = 'p02', group = gList1, display = display.none)
+use03 = input.bool(true,  'Pair 3',  inline = 'p03', group = gList1, display = display.none)
+sym03 = input.symbol('FX:USDCAD', '', inline = 'p03', group = gList1, display = display.none)
+use04 = input.bool(true,  'Pair 4',  inline = 'p04', group = gList1, display = display.none)
+sym04 = input.symbol('FX:USDCHF', '', inline = 'p04', group = gList1, display = display.none)
+use05 = input.bool(true,  'Pair 5',  inline = 'p05', group = gList1, display = display.none)
+sym05 = input.symbol('FX:USDJPY', '', inline = 'p05', group = gList1, display = display.none)
+use06 = input.bool(true,  'Pair 6',  inline = 'p06', group = gList1, display = display.none)
+sym06 = input.symbol('FX:AUDUSD', '', inline = 'p06', group = gList1, display = display.none)
+use07 = input.bool(true,  'Pair 7',  inline = 'p07', group = gList1, display = display.none)
+sym07 = input.symbol('FX:EURGBP', '', inline = 'p07', group = gList1, display = display.none)
+use08 = input.bool(true,  'Pair 8',  inline = 'p08', group = gList1, display = display.none)
+sym08 = input.symbol('FX:EURCHF', '', inline = 'p08', group = gList1, display = display.none)
+use09 = input.bool(true,  'Pair 9',  inline = 'p09', group = gList1, display = display.none)
+sym09 = input.symbol('FX:EURJPY', '', inline = 'p09', group = gList1, display = display.none)
+use10 = input.bool(true,  'Pair 10', inline = 'p10', group = gList1, display = display.none)
+sym10 = input.symbol('FX:EURAUD', '', inline = 'p10', group = gList1, display = display.none)
+
+use11 = input.bool(true,  'Pair 11', inline = 'p11', group = gList2, display = display.none)
+sym11 = input.symbol('FX:EURCAD', '', inline = 'p11', group = gList2, display = display.none)
+use12 = input.bool(true,  'Pair 12', inline = 'p12', group = gList2, display = display.none)
+sym12 = input.symbol('FX:GBPAUD', '', inline = 'p12', group = gList2, display = display.none)
+use13 = input.bool(true,  'Pair 13', inline = 'p13', group = gList2, display = display.none)
+sym13 = input.symbol('FX:GBPJPY', '', inline = 'p13', group = gList2, display = display.none)
+use14 = input.bool(true,  'Pair 14', inline = 'p14', group = gList2, display = display.none)
+sym14 = input.symbol('FX:GBPCHF', '', inline = 'p14', group = gList2, display = display.none)
+use15 = input.bool(true,  'Pair 15', inline = 'p15', group = gList2, display = display.none)
+sym15 = input.symbol('FX:GBPCAD', '', inline = 'p15', group = gList2, display = display.none)
+use16 = input.bool(true,  'Pair 16', inline = 'p16', group = gList2, display = display.none)
+sym16 = input.symbol('FX:CHFJPY', '', inline = 'p16', group = gList2, display = display.none)
+use17 = input.bool(true,  'Pair 17', inline = 'p17', group = gList2, display = display.none)
+sym17 = input.symbol('FX:CADCHF', '', inline = 'p17', group = gList2, display = display.none)
+use18 = input.bool(true,  'Pair 18', inline = 'p18', group = gList2, display = display.none)
+sym18 = input.symbol('FX:CADJPY', '', inline = 'p18', group = gList2, display = display.none)
+use19 = input.bool(true,  'Pair 19', inline = 'p19', group = gList2, display = display.none)
+sym19 = input.symbol('FX:AUDJPY', '', inline = 'p19', group = gList2, display = display.none)
+use20 = input.bool(true,  'Pair 20', inline = 'p20', group = gList2, display = display.none)
+sym20 = input.symbol('FX:AUDCHF', '', inline = 'p20', group = gList2, display = display.none)
+
+use21 = input.bool(true,  'Pair 21', inline = 'p21', group = gList3, display = display.none)
+sym21 = input.symbol('FX:AUDCAD', '', inline = 'p21', group = gList3, display = display.none)
+use22 = input.bool(false, 'Pair 22', inline = 'p22', group = gList3, display = display.none)
+sym22 = input.symbol('', '', inline = 'p22', group = gList3, display = display.none)
+use23 = input.bool(false, 'Pair 23', inline = 'p23', group = gList3, display = display.none)
+sym23 = input.symbol('', '', inline = 'p23', group = gList3, display = display.none)
+use24 = input.bool(false, 'Pair 24', inline = 'p24', group = gList3, display = display.none)
+sym24 = input.symbol('', '', inline = 'p24', group = gList3, display = display.none)
+use25 = input.bool(false, 'Pair 25', inline = 'p25', group = gList3, display = display.none)
+sym25 = input.symbol('', '', inline = 'p25', group = gList3, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The Links column - and why these two sit here, at the very bottom
+// ---------------------------------------------------------------------------
+// They belong to the 'Sweep output' group and every other member of that group
+// is declared four hundred lines above. They are down here anyway, and the
+// reason is not taste.
+//
+// TradingView maps SAVED settings BY POSITION. An input inserted into the middle
+// of the list shifts every input after it, and after it here are fifty pair
+// slots - twenty-five tick boxes and twenty-five symbols. Adding these next to
+// redAt, where they read best, would silently rotate the entire watchlist. So
+// new inputs go at the END of the file, always. What that costs is only the
+// order of two fields inside one dialog group, because the order of fields
+// within a group follows the order of first appearance in the FILE. That is a
+// property of the platform, and this project has already shipped one input this
+// way (mar1GatesScanner.pine's logToPanel sits at the foot of that file for the
+// same reason).
+//
+// They still have to be declared BEFORE sweepOne, which reads them - Pine has no
+// use-before-declaration. sym25 is the last input in the file and sweepOne is
+// the next thing after this block, so this is the one spot that satisfies both.
+//
+// display.none on both, like almost everything else here: the legend prints an
+// indicator's arguments in declaration order, and three bare numbers is already
+// the most this file is willing to put there.
+
+// The threshold this column calls DEEP, and it is deliberately its own setting
+// rather than a second reader of redAt.
+//
+// They answer neighbouring questions and default one rung apart. redAt is 4 -
+// one step short of the red diamond, which is where two lengths separate often
+// enough to be worth ranking on. This is 5 - the rung the ladder actually turns
+// red on, because a run that goes red TWICE in quick succession is the event
+// this column exists to catch, and asking that question about purple runs
+// answers a different one.
+//
+// The cost of two thresholds, stated plainly: Red and Links describe DIFFERENT
+// populations of windows unless these two numbers are equal. Set this to 4 and
+// they describe the same one, and Links becomes a strict refinement of Red -
+// "of the windows Red counted, how many arrived on the heels of another".
+deepAt = input.int(5, 'A window is DEEP at this many entries', minval = 2, maxval = 50, group = gOut, display = display.none,
+     tooltip = 'How deep a window has to go before the Links column will pair it with another. Five is where the diamond ladder actually turns red. Set it equal to the Red threshold to make the two columns describe the same set of windows - then Links reads as a refinement of Red rather than as a separate question.')
+
+// How long after a deep window closes another deep window may open on THAT SAME
+// PAIR and still be called a follower.
+//
+// THE DEFAULT IS 180 AND IT IS NOT THE 2 FROM closed-chains.js. This is the one
+// number on this column that cannot be copied across from the reference script,
+// and copying it is exactly the mistake that would make the column useless.
+//
+// The reference reads the whole watchlist on ONE timeline: every pair and every
+// gate config together, so a deep window can be followed by a deep window on a
+// different pair a minute later. Measured on checks/log-0208.csv, windows arrive
+// on that merged timeline about every 15.6 minutes, and a two-minute tolerance
+// is a sensible fraction of it.
+//
+// This column reads ONE pair at a time. On a single machine windows arrive about
+// every 1370 minutes - eighty-eight times further apart, because that is how many
+// machines were merged. The per-pair equivalent of the reference's two minutes is
+// therefore around 2 x 88 = 176 minutes, and 180 is that number rounded. At 2 the
+// column is not strict, it is DEAD: on the measured log it reads zero on every
+// machine at every threshold, and would go on reading zero up to a tolerance of
+// sixteen hours.
+//
+// So the tooltip has to say, and does, that this number is NOT comparable to
+// --within in the script. Comparing them is comparing a merged timeline to a
+// single one.
+chainWithin = input.int(180, 'A follower may open this many minutes after the close', minval = 1, maxval = 480, group = gOut, display = display.none,
+     tooltip = 'The gap the Links column allows between one deep window closing and the next deep window opening ON THE SAME PAIR. Shallow windows in the gap are ignored.\n\nThis is NOT the same number as --within in checks/closed-chains.js and must not be copied from it. That script merges every pair onto one timeline, where windows arrive roughly every 16 minutes and two minutes is a tight tolerance. One pair on its own sees a window every 23 hours or so, so the equivalent tolerance scales by the number of pairs - around 180 minutes on a full watchlist. Set it to 2 and the column reads zero everywhere, which looks like a finding and is not.\n\nminval is 1 rather than 0 because the smallest gap this can ever measure is one bar: an entry taken on the bar that closed a window belongs to the window it closed.')
+
+// request.security refuses an empty symbol, so a blank slot is pointed at the
+// chart itself and filtered out later by the same blank test.
+//
+// Written out as plain ternaries rather than through a helper on purpose. The
+// symbol argument must be a SIMPLE string, and Pine infers the qualifier of a
+// user function's return value rather than taking it from the arguments - a
+// helper here would very likely come back as series and be refused.
+s01 = use01 and sym01 != '' ? sym01 : syminfo.tickerid
+s02 = use02 and sym02 != '' ? sym02 : syminfo.tickerid
+s03 = use03 and sym03 != '' ? sym03 : syminfo.tickerid
+s04 = use04 and sym04 != '' ? sym04 : syminfo.tickerid
+s05 = use05 and sym05 != '' ? sym05 : syminfo.tickerid
+s06 = use06 and sym06 != '' ? sym06 : syminfo.tickerid
+s07 = use07 and sym07 != '' ? sym07 : syminfo.tickerid
+s08 = use08 and sym08 != '' ? sym08 : syminfo.tickerid
+s09 = use09 and sym09 != '' ? sym09 : syminfo.tickerid
+s10 = use10 and sym10 != '' ? sym10 : syminfo.tickerid
+s11 = use11 and sym11 != '' ? sym11 : syminfo.tickerid
+s12 = use12 and sym12 != '' ? sym12 : syminfo.tickerid
+s13 = use13 and sym13 != '' ? sym13 : syminfo.tickerid
+s14 = use14 and sym14 != '' ? sym14 : syminfo.tickerid
+s15 = use15 and sym15 != '' ? sym15 : syminfo.tickerid
+s16 = use16 and sym16 != '' ? sym16 : syminfo.tickerid
+s17 = use17 and sym17 != '' ? sym17 : syminfo.tickerid
+s18 = use18 and sym18 != '' ? sym18 : syminfo.tickerid
+s19 = use19 and sym19 != '' ? sym19 : syminfo.tickerid
+s20 = use20 and sym20 != '' ? sym20 : syminfo.tickerid
+s21 = use21 and sym21 != '' ? sym21 : syminfo.tickerid
+s22 = use22 and sym22 != '' ? sym22 : syminfo.tickerid
+s23 = use23 and sym23 != '' ? sym23 : syminfo.tickerid
+s24 = use24 and sym24 != '' ? sym24 : syminfo.tickerid
+s25 = use25 and sym25 != '' ? sym25 : syminfo.tickerid
+
+// Index at which the cumulative distribution of the streak histogram crosses
+// perc. Identical to calculateIndex in maRejection.pine, including the inclusive
+// comparison - a strict one slides the answer one bucket to the right.
+calcIndex(int[] arr, float perc) =>
+    total = 0.0
+    for i = 1 to array.size(arr) - 1
+        total += array.get(arr, i)
+    if total == 0
+        -1
+    else
+        cumSum = 0.0
+        index = -1
+        for i = 1 to array.size(arr) - 1
+            cumSum += array.get(arr, i) / total * 100
+            if cumSum >= perc and index == -1
+                index := i
+        index
+
+// ---------------------------------------------------------------------------
+// One MA length, on one pair, over that pair's whole loaded history
+// ---------------------------------------------------------------------------
+// MAR1 with the drawing, the statistics tables and the alerting removed. What is
+// left is the smallest thing that can answer "how many windows did this length
+// close on this pair, and what did they cost".
+//
+// The block order is load-bearing and mirrors the order the original executes
+// in: the gate reads the streak BEFORE this bar is graded, the markers read it
+// AFTER. Swapping those is how a gate ends up judging a signal by its own
+// result.
+//
+// Everything MA-independent arrives as an argument rather than being recomputed.
+// That is the whole reason forty lengths fit in one budget at all - see the
+// header, and read it before raising the count again.
+// The raw candle - close, open, high, low - is read directly, because a function
+// called inside request.security evaluates in the REQUESTED symbol's context and
+// those builtins already carry that pair's prices.
+//
+// atrVal[i] in the trend loop is a historical reference to a function PARAMETER,
+// which Pine allows: a series argument keeps its history across the call.
+//
+// Returns ONE number, the five totals packed - see the packing block above.
+sweepOne(simple int len, float srcVal, float atrVal, float bodyRef, float rangeSize,
+     float bodySize, float upWick, float dnWick, float tolVal,
+     bool isBull, bool isBear, bool wickRejectDown, bool wickRejectUp, bool smallBody,
+     bool longWickDown, bool longWickUp, bool counterShort, bool counterLong,
+     bool dcShort, bool dcLong, bool hoursOk, bool active) =>
+    maValue = maType == 'WMA' ? ta.wma(srcVal, len) :
+         maType == 'EMA' ? ta.ema(srcVal, len) :
+         maType == 'RMA' ? ta.rma(srcVal, len) :
+         ta.sma(srcVal, len)
+
+    int belowCount = 0
+    int aboveCount = 0
+    for i = 1 to trendBars
+        sep = atrVal[i] * trendSep
+        belowCount := belowCount + (close[i] <= maValue[i] - sep ? 1 : 0)
+        aboveCount := aboveCount + (close[i] >= maValue[i] + sep ? 1 : 0)
+
+    trendDown = belowCount == trendBars
+    trendUp   = aboveCount == trendBars
+
+    bodyRejectDown = allowBodyInside and open <= maValue and smallBody and upWick > bodySize
+    bodyRejectUp   = allowBodyInside and open >= maValue and smallBody and dnWick > bodySize
+
+    rejectDown = rangeSize > 0 and high >= maValue - tolVal and close <= maValue and (wickRejectDown or bodyRejectDown or longWickDown)
+    rejectUp   = rangeSize > 0 and low  <= maValue + tolVal and close >= maValue and (wickRejectUp or bodyRejectUp or longWickUp)
+
+    triggerShort = trendDown and (rejectDown or counterShort or dcShort)
+    triggerLong  = trendUp and (rejectUp or counterLong or dcLong)
+
+    var int lastLongBar  = -100000
+    var int lastShortBar = -100000
+    canFireLong  = bar_index - lastLongBar >= cooldown
+    canFireShort = bar_index - lastShortBar >= cooldown
+
+    buyFound  = triggerLong[1] and canFireLong and hoursOk
+    sellFound = triggerShort[1] and not triggerLong[1] and canFireShort and hoursOk
+
+    var int[] failHist    = array.new_int(16, 0)
+    var int   curFailRun  = 0
+    var int   streak      = 0
+    var int   distCache   = -1
+    var int   lockedLimit = 0
+
+    gateThreshold = gateMode == 'Off' ? 0 :
+         gateMode == 'Manual' ? minEntriesToStart :
+         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEntriesToStart) :
+         math.max(distCache, minEntriesToStart)
+
+    gateOk = streak >= gateThreshold
+
+    if streak == 0
+        lockedLimit := gateThreshold
+    colorLimit = gateMode == 'Off' ? 0 : lockedLimit
+
+    buyTaken     = buyFound and gateOk
+    sellTaken    = sellFound and gateOk
+    gateArmedNow = gateMode != 'Off' and streak == gateThreshold - 1
+    buyWarn      = buyFound and gateArmedNow
+    sellWarn     = sellFound and gateArmedNow
+
+    var int  entriesInWindow = 0
+    var bool windowOpen      = false
+
+    var int totClosures = 0
+    var int totEntries  = 0
+    var int worstWindow = 0
+    var int totRed      = 0
+
+    // The Links column's whole memory: when the current window opened, and when
+    // the last DEEP window closed. Both are bar-opening stamps, and that
+    // symmetry is a condition of correctness rather than a coincidence - the
+    // difference between them is only a true gap while both ends sit on the same
+    // grid. Swap either one for a bar-closing stamp and every gap moves by a bar
+    // with nothing complaining.
+    //
+    // lastDeepMs starts at -1 rather than na so the "no deep window yet" test is
+    // an integer comparison and not a na check - the first deep window of a run
+    // has no predecessor and must not count as a follower.
+    var int winOpenMs  = 0
+    var int lastDeepMs = -1
+    var int totLinks   = 0
+
+    if barstate.isconfirmed and active
+        if buyFound
+            lastLongBar := bar_index
+            if not perDirectionCooldown
+                lastShortBar := bar_index
+        if sellFound
+            lastShortBar := bar_index
+            if not perDirectionCooldown
+                lastLongBar := bar_index
+
+        // Doji is a miss on both sides, matching the original exactly.
+        if not na(bodyRef) and (buyFound or sellFound)
+            hit = (buyFound and isBull) or (sellFound and isBear)
+
+            if hit
+                curFailRun := 0
+            else
+                curFailRun += 1
+                // ONCE A STREAK REACHES THE CATCH-ALL, NOTHING MOVES ANY MORE - and this
+                // used to keep moving it, which is the bug this guard fixes rather than a
+                // style choice.
+                //
+                // The transfer is what keeps a LIVE streak in exactly one bucket: as it grows
+                // past n it is added to bucket n and taken back out of n-1. Bucket 15 is a
+                // catch-all, so a streak that reaches 15 has ARRIVED and never leaves. With the
+                // index clamped by math.min, the sixteenth failure ran the transfer AGAIN -
+                // adding a second copy of one live streak to bucket 15 and taking a real one
+                // OUT of bucket 14, which went NEGATIVE by one per extra failure.
+                //
+                // THE TOTAL WAS NEVER AFFECTED, and that is what made it silent for as long as
+                // it was: the +1 and the -1 both sit inside the summed range 1..15, so the one
+                // number anybody could have checked by hand stayed exactly right while the
+                // shape underneath it did not.
+                //
+                // What it cost: calcIndex walks the cumulative distribution and takes the FIRST
+                // crossing of the percentage. A negative bucket 14 drags that cumulative back
+                // DOWN, so a crossing that belonged at 14 was missed and picked up at 15
+                // instead - one rung too high on the gate threshold, in Distribution and in Max
+                // of both. The gate then opens one loss LATER than the distribution says it
+                // should. The error is one-sided and bounded: never earlier, and never any
+                // bucket other than 14 -> 15.
+                //
+                // Worked example, 20 consecutive misses against 19 shorter streaks at 95%:
+                // bucket 14 reads -4 and bucket 15 reads 6 where they should read 1 and 1, the
+                // cumulative falls from 90% to 70% at bucket 14, and the answer comes back 15
+                // instead of 14.
+                //
+                // The same five lines live in SIX files. maRejection.pine is the one where this
+                // feeds the gate that decides real entries.
+                if curFailRun <= 15
+                    array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
+                    array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+
+            streak := hit ? 0 : streak + 1
+            distCache := calcIndex(failHist, basePercentage)
+
+        buyFailed    = (buyTaken or buyWarn) and not isBull
+        sellFailed   = (sellTaken or sellWarn) and not isBear
+        greenDiamond = (buyFailed or sellFailed) and colorLimit > 0 and streak == colorLimit
+
+        // Which successes close a window, exactly as the scanner reads it.
+        buySet = successScope == 'All found signals' ? buyFound :
+             successScope == 'Entries and warnings' ? (buyTaken or buyWarn) :
+             buyTaken
+        sellSet = successScope == 'All found signals' ? sellFound :
+             successScope == 'Entries and warnings' ? (sellTaken or sellWarn) :
+             sellTaken
+
+        win        = (buySet and isBull) or (sellSet and isBear)
+        entryTaken = buyTaken or sellTaken
+
+        // Entries are counted before either reset can fire, so an entry taken on
+        // the bar that closes a window belongs to the window it closed.
+        if entryTaken
+            entriesInWindow += 1
+            // When this window OPENED, for the Links column.
+            //
+            // The guard is entriesInWindow == 1, tested AFTER the increment
+            // above - deliberately NOT the `if not windowOpen` sitting on the
+            // next line, which looks like the same test and is the smaller
+            // diff. windowOpen is only ever set back to false in the `win`
+            // branch, so after the first green diamond abandons a window it
+            // stays true for the rest of the history and a guard hung on it
+            // would never fire again. The entry counter is the one that
+            // genuinely restarts, and the diamond restarts it too.
+            //
+            // Getting this wrong does not fail to compile. It makes every gap
+            // read from a stale opening, which only ever makes gaps LOOK
+            // longer, so the column silently under-counts - and its expected
+            // value is already low.
+            if entriesInWindow == 1
+                winOpenMs := time
+            if not windowOpen
+                windowOpen := true
+
+        if win
+            totClosures += 1
+            totEntries  += entriesInWindow
+            worstWindow := math.max(worstWindow, entriesInWindow)
+
+            // The tail, counted on the same event as everything else. A window
+            // that reached the red threshold is one red window however much
+            // further it ran - how far is the Worst column's job.
+            //
+            // It is counted HERE, on the close, and not the moment the fifth
+            // entry is taken, and that is not an oversight: entries and closures
+            // are both counted on the close too, so a window abandoned by a
+            // green diamond or still open at the last bar contributes to none of
+            // the three. Counting red on the entry instead would make it the one
+            // number on the row describing a different set of windows from the
+            // average standing next to it.
+            if entriesInWindow >= redAt
+                totRed += 1
+
+            // The Links column, counted on the same event as everything else.
+            //
+            // The rule is closed-chains.js's WITHIN reading, narrowed to one
+            // pair: this window is deep, and it OPENED no later than
+            // chainWithin minutes after the last deep window CLOSED. Shallow
+            // windows in between are ignored, and they are ignored for free -
+            // lastDeepMs is only ever written here, on a deep close, so
+            // anything cheaper in the gap simply never touches it.
+            //
+            // What this cannot see, and the tooltip says so: a deep window on
+            // ANOTHER pair. The reference script counts those, this cannot -
+            // one packed number crosses request.security per pair-and-length
+            // and there is no shared timeline on the other side. The result is
+            // a strict lower bound on the cross-pair count, because the next
+            // deep window anywhere always opens no later than the next deep
+            // window on this pair.
+            if entriesInWindow >= deepAt
+                if lastDeepMs >= 0 and winOpenMs - lastDeepMs <= chainWithin * 60000
+                    totLinks += 1
+                lastDeepMs := time
+
+            windowOpen      := false
+            entriesInWindow := 0
+        else if greenDiamond
+            windowOpen      := true
+            entriesInWindow := 0
+
+    // -1 rather than a packed number the moment any field could corrupt its
+    // neighbours. See the packing block: a total that cannot be trusted must not
+    // be handed over as one that can.
+    //
+    // Worst and links are not in that test because they do not overflow - they
+    // clamp. Both clamps are here rather than at the top so the two columns keep
+    // their real values inside this function, where math.max and += are still
+    // comparing and counting rather than saturating.
+    //
+    // Why links clamps and red does not, when both are counts of windows: red is
+    // ranked on, links is not. See the packing block - a sentinel is a sentinel
+    // for the WHOLE row, so a field nobody acts on must never be able to delete
+    // the fields everybody acts on.
+    totEntries >= PACK_E or totClosures >= PACK_C or totRed >= PACK_R ? -1.0 :
+         1.0 * totEntries * POS_E + totClosures * POS_C + totRed * POS_R +
+         (totLinks < PACK_D ? totLinks : PACK_D - 1) * POS_D +
+         (worstWindow < PACK_W ? worstWindow : PACK_W - 1)
+
+// ---------------------------------------------------------------------------
+// One pair, all forty lengths
+// ---------------------------------------------------------------------------
+// The shared block first - everything a moving average does not enter into -
+// then forty call sites of the machine above. Forty call sites is what buys
+// forty independent state machines: a `var` inside a function belongs to the
+// call site, so a loop would give one machine run forty times.
+//
+// Called once per slot through request.security, so each of the twenty-five
+// calls gets its own copy of all forty.
+pairState() =>
+    srcVal = srcName == 'close' ? close :
+         srcName == 'open' ? open :
+         srcName == 'high' ? high :
+         srcName == 'low' ? low :
+         srcName == 'hl2' ? hl2 :
+         srcName == 'hlc3' ? hlc3 :
+         ohlc4
+
+    isBull = open < close
+    isBear = open > close
+
+    bodySize  = math.abs(close - open)
+    atrVal    = ta.atr(atrLen)
+    bodyRef   = ta.sma(bodySize, refLen)[1]
+    rangeSize = high - low
+    upWick    = high - math.max(open, close)
+    dnWick    = math.min(open, close) - low
+    upWickRef = ta.sma(upWick, refLen)[1]
+    dnWickRef = ta.sma(dnWick, refLen)[1]
+
+    // Resolved inside the requested context, so a JPY cross gets its own pip.
+    pipSizeSym = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
+    tolVal     = atrVal * touchTol
+
+    wickRejectDown = upWick >= wickRatio * rangeSize and upWick >= minPips * pipSizeSym
+    wickRejectUp   = dnWick >= wickRatio * rangeSize and dnWick >= minPips * pipSizeSym
+    smallBody      = not na(bodyRef) and bodySize < bodyRef
+    longWickDown   = allowLongWick and not na(upWickRef) and upWick > upWickRef
+    longWickUp     = allowLongWick and not na(dnWickRef) and dnWick > dnWickRef
+
+    counterShort = allowCounterCandle and isBull and isBear[1]
+    counterLong  = allowCounterCandle and isBear and isBull[1]
+
+    dcRef   = DC_REF == 'Open' ? open[DC_BACK] : close[DC_BACK]
+    dcReady = DC_ON and not na(dcRef)
+    dcShort = dcReady and isBull and isBull[1] and isBear[2] and close <= dcRef
+    dcLong  = dcReady and isBear and isBear[1] and isBull[2] and close >= dcRef
+
+    // UTC+1, the frame the hours filter and every timestamp in this project use.
+    localHour = (hour + 1) % 24
+    inHours   = localHour >= startHour and localHour < endHour
+    hoursOk   = not restrictToHours or inHours
+
+    // Off by default. Note what it does NOT protect: the averages, the ATR and
+    // the forty moving averages all run on every bar whatever this says. Only
+    // the counter bookkeeping sits behind it.
+    active = scanBars <= 0 or bar_index > last_bar_index - scanBars
+
+    // GENERATED - forty call sites and the tuple they feed.
+    q1 = sweepOne(sweepFrom + 0 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q2 = sweepOne(sweepFrom + 1 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q3 = sweepOne(sweepFrom + 2 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q4 = sweepOne(sweepFrom + 3 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q5 = sweepOne(sweepFrom + 4 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q6 = sweepOne(sweepFrom + 5 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q7 = sweepOne(sweepFrom + 6 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q8 = sweepOne(sweepFrom + 7 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q9 = sweepOne(sweepFrom + 8 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q10 = sweepOne(sweepFrom + 9 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q11 = sweepOne(sweepFrom + 10 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q12 = sweepOne(sweepFrom + 11 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q13 = sweepOne(sweepFrom + 12 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q14 = sweepOne(sweepFrom + 13 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q15 = sweepOne(sweepFrom + 14 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q16 = sweepOne(sweepFrom + 15 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q17 = sweepOne(sweepFrom + 16 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q18 = sweepOne(sweepFrom + 17 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q19 = sweepOne(sweepFrom + 18 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q20 = sweepOne(sweepFrom + 19 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q21 = sweepOne(sweepFrom + 20 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q22 = sweepOne(sweepFrom + 21 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q23 = sweepOne(sweepFrom + 22 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q24 = sweepOne(sweepFrom + 23 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q25 = sweepOne(sweepFrom + 24 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q26 = sweepOne(sweepFrom + 25 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q27 = sweepOne(sweepFrom + 26 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q28 = sweepOne(sweepFrom + 27 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q29 = sweepOne(sweepFrom + 28 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q30 = sweepOne(sweepFrom + 29 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q31 = sweepOne(sweepFrom + 30 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q32 = sweepOne(sweepFrom + 31 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q33 = sweepOne(sweepFrom + 32 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q34 = sweepOne(sweepFrom + 33 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q35 = sweepOne(sweepFrom + 34 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q36 = sweepOne(sweepFrom + 35 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q37 = sweepOne(sweepFrom + 36 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q38 = sweepOne(sweepFrom + 37 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q39 = sweepOne(sweepFrom + 38 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+    q40 = sweepOne(sweepFrom + 39 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, active)
+
+    [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19, q20, q21, q22, q23, q24, q25, q26, q27, q28, q29, q30, q31, q32, q33, q34, q35, q36, q37, q38, q39, q40]
+
+// ---------------------------------------------------------------------------
+// The scan
+// ---------------------------------------------------------------------------
+// ignore_invalid_symbol keeps one mistyped ticker from killing the whole script;
+// that slot comes back na and is counted as unresolved in the footer.
+//
+// No lookahead argument: the default is barmerge.lookahead_off, which is the
+// only honest setting here.
+//
+// GENERATED - twenty-five destructurings of forty packed values each.
+[v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39, v01_40] = request.security(s01, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39, v02_40] = request.security(s02, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39, v03_40] = request.security(s03, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39, v04_40] = request.security(s04, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39, v05_40] = request.security(s05, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39, v06_40] = request.security(s06, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39, v07_40] = request.security(s07, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39, v08_40] = request.security(s08, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39, v09_40] = request.security(s09, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39, v10_40] = request.security(s10, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39, v11_40] = request.security(s11, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39, v12_40] = request.security(s12, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39, v13_40] = request.security(s13, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39, v14_40] = request.security(s14, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39, v15_40] = request.security(s15, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39, v16_40] = request.security(s16, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39, v17_40] = request.security(s17, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39, v18_40] = request.security(s18, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39, v19_40] = request.security(s19, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39, v20_40] = request.security(s20, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39, v21_40] = request.security(s21, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v22_1, v22_2, v22_3, v22_4, v22_5, v22_6, v22_7, v22_8, v22_9, v22_10, v22_11, v22_12, v22_13, v22_14, v22_15, v22_16, v22_17, v22_18, v22_19, v22_20, v22_21, v22_22, v22_23, v22_24, v22_25, v22_26, v22_27, v22_28, v22_29, v22_30, v22_31, v22_32, v22_33, v22_34, v22_35, v22_36, v22_37, v22_38, v22_39, v22_40] = request.security(s22, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v23_1, v23_2, v23_3, v23_4, v23_5, v23_6, v23_7, v23_8, v23_9, v23_10, v23_11, v23_12, v23_13, v23_14, v23_15, v23_16, v23_17, v23_18, v23_19, v23_20, v23_21, v23_22, v23_23, v23_24, v23_25, v23_26, v23_27, v23_28, v23_29, v23_30, v23_31, v23_32, v23_33, v23_34, v23_35, v23_36, v23_37, v23_38, v23_39, v23_40] = request.security(s23, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v24_1, v24_2, v24_3, v24_4, v24_5, v24_6, v24_7, v24_8, v24_9, v24_10, v24_11, v24_12, v24_13, v24_14, v24_15, v24_16, v24_17, v24_18, v24_19, v24_20, v24_21, v24_22, v24_23, v24_24, v24_25, v24_26, v24_27, v24_28, v24_29, v24_30, v24_31, v24_32, v24_33, v24_34, v24_35, v24_36, v24_37, v24_38, v24_39, v24_40] = request.security(s24, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v25_1, v25_2, v25_3, v25_4, v25_5, v25_6, v25_7, v25_8, v25_9, v25_10, v25_11, v25_12, v25_13, v25_14, v25_15, v25_16, v25_17, v25_18, v25_19, v25_20, v25_21, v25_22, v25_23, v25_24, v25_25, v25_26, v25_27, v25_28, v25_29, v25_30, v25_31, v25_32, v25_33, v25_34, v25_35, v25_36, v25_37, v25_38, v25_39, v25_40] = request.security(s25, timeframe.period, pairState(), ignore_invalid_symbol = true)
+
+// ---------------------------------------------------------------------------
+// The totals
+// ---------------------------------------------------------------------------
+// Parallel arrays rather than one array of records, for the same reason the
+// scanner's log uses them: it is the shape the table renderer wants, and Pine
+// has no tuple array.
+//
+//   agC    closed windows, summed over every ticked pair
+//   agE    entries spent, summed the same way
+//   agR    closed windows that cost redAt entries or more, summed the same way
+//   agD    deep windows that opened on the heels of another deep window on the
+//          same pair, summed the same way - the Links column
+//   agW    the worst SINGLE window any pair had at this length
+//   agWho  the pair that worst window happened on
+//   agP    how many pairs contributed at least one closure
+//   agX    how many pairs came back overflowed and were left out entirely
+//
+// agR is a sum and agW is a maximum, and that is the whole difference between
+// them: one says how often this length went deep across the watchlist, the other
+// says how deep the single worst run got and where. A length can be quiet on one
+// and alarming on the other, which is exactly when it is worth knowing both.
+//
+// agP is the column that catches a length which looks good because ONE pair
+// carried it. An average of 1.8 over twenty pairs and an average of 1.8 over
+// three are not the same finding, and nothing else on the row says which it is.
+//
+// agWho exists because the worst window is the number a recovery ladder dies on,
+// and a number with no pair attached cannot be acted on: eleven entries is a
+// warning about SOMETHING, and until it names the pair there is nothing to go
+// and look at. It is the pair that set the current maximum, so a later tie does
+// not steal the credit.
+var int[]    agC   = array.new_int(SWEEP_N, 0)
+var int[]    agE   = array.new_int(SWEEP_N, 0)
+var int[]    agR   = array.new_int(SWEEP_N, 0)
+var int[]    agD   = array.new_int(SWEEP_N, 0)
+var int[]    agW   = array.new_int(SWEEP_N, 0)
+var string[] agWho = array.new_string(SWEEP_N, '')
+var int[]    agP   = array.new_int(SWEEP_N, 0)
+var int[]    agX   = array.new_int(SWEEP_N, 0)
+
+// The order the rows are DRAWN in, rebuilt every last-bar pass.
+//
+// FOUR BANDS, and the offsets between them are what keeps a row from climbing
+// out of the one it belongs to. Within every band the rows are ordered on the
+// same column the table is sorted by, so there is no block anywhere that looks
+// unsorted:
+//
+//     0     cleared the win threshold - the ranking proper
+//   1e6     has closed windows, but fewer than the threshold asks for
+//   1e8     has closed nothing at all: no column exists to sort it on, so
+//           length order is the only order left, and it is the honest one
+//   2e9     outside the requested range, never touched by either pass
+//
+// The bands are wide enough that no key can cross one, and this is worth
+// re-deriving rather than assuming, because the Links ranking broke the old
+// justification. Four of the five keys are an average or a share - single
+// digits at worst. The fifth is links · 4 + nL · 2 + score, and links is a SUM
+// over the slots: twenty-five pairs, each clamped at 99, is 2475, so that key
+// tops out at 2475 · 4 + 2 + 1 = 9903. Band 1 starts at 1e6, which leaves a
+// factor of about a hundred. Safe - but it is arithmetic now, not an obvious
+// truth, so widen the bands before widening PACK_D, the slot count, or either
+// multiplier in the Links key.
+var float[] sortKey = array.new_float(SWEEP_N, 0.0)
+
+// The Balanced score per length, 0 best to 1 worst, na where the row does not
+// qualify. It is held in an array rather than recomputed in the drawing loop for
+// one reason: the number that is SHOWN in the Score column and the number the
+// table was SORTED on have to be the same number, and the only way to guarantee
+// that is for there to be one of them.
+var float[] agScore = array.new_float(SWEEP_N, float(na))
+
+// Two counters in an array rather than two plain variables, because a Pine
+// function cannot assign to a global - an array is a reference, so mutating its
+// contents is the one way to count something from inside one.
+//
+//   0  slots actually scanned, blanks and unticked excluded
+//   1  slots that came back na, which means the ticker did not resolve
+var int[] tally = array.new_int(2, 0)
+
+// Unpacking, the exact inverse of the expression at the end of sweepOne - and
+// exact in the arithmetic sense as well, which took some care.
+//
+// The obvious way to write this is divide, then floor. It survives this layout,
+// and only just. v reaches 9e15, so v / 100 reaches 9e13, where the gap between
+// one representable double and the next is 0.015625 - and rounding can move a
+// true quotient of q + 0.99 by half of that, 0.0078, against the 0.01 that
+// separates it from q + 1. The margin is 0.0022. Nothing is wrong with the
+// answer today; what is wrong is that it depends on a hair's width of a field
+// width nobody would think to re-derive before widening one.
+//
+// So every division here is applied to a number the modulo has already made an
+// exact multiple of the divisor. IEEE division of two exactly-representable
+// values whose true quotient is representable returns that quotient exactly, so
+// each step is exact by construction and the margin above stops mattering.
+//
+// int() first, not math.floor: Pine's int is 64-bit and holds 9e15 without loss,
+// and integer % is exact where a float one would not have to be.
+//
+// Five readers now, and the one thing that can go wrong here is invisible.
+// unpD is a copy of unpR's SHAPE, and the two differ only in which constants
+// they name. Copy unpR and forget to swap PACK_R for PACK_D and the result is
+// not an error - it is red's two low digits leaking into the Links column, so
+// a packed 300020000370406 (300 entries, 200 closures, 37 red, 4 links, 6
+// worst) reads 3704 instead of 4. Small, plausible, and nothing on screen says
+// otherwise. Both constants change in both readers, or neither does.
+unpW(float v) => int(v) % PACK_W
+unpD(float v) => int((v - int(v) % POS_D) / POS_D) % PACK_D
+unpR(float v) => int((v - int(v) % POS_R) / POS_R) % PACK_R
+unpC(float v) => int((v - int(v) % POS_C) / POS_C) % PACK_C
+unpE(float v) => int((v - int(v) % POS_E) / POS_E)
+
+// The red share read pessimistically, and it is the exact analogue of Avg +1σ:
+// what this length's tail would look like if the run had been one error bar
+// lucky. Ranking on the raw share instead would let a small sample win by not
+// having lived long enough to go deep.
+//
+// The share is a proportion, so its error bar is the binomial sqrt(p(1-p)/n) -
+// and at p = 0 that is exactly zero, which would hand a length that closed forty
+// windows without a deep one the same flawless tail as one that closed four
+// thousand. So the error is taken at a SMOOTHED proportion, (red + 0.5) /
+// (wins + 1), which is never zero and shrinks as the sample grows: no deep runs
+// in forty windows is charged about 1.7%, no deep runs in four hundred about
+// 0.2%. The centre stays the real share, so what the Red column prints is still
+// what happened - only the error bar is smoothed.
+redHi(int red, int wins) =>
+    if wins <= 0
+        float(na)
+    else
+        p = (red + 0.5) / (wins + 1.0)
+        1.0 * red / wins + math.sqrt(p * (1.0 - p) / wins)
+
+// The exchange prefix is width and nothing else: every row in a one-broker list
+// carries the same one.
+shortName(string raw) =>
+    parts = str.split(raw, ':')
+    array.size(parts) > 1 ? array.get(parts, array.size(parts) - 1) : raw
+
+// One length of one pair, folded into the totals. A negative value is the
+// overflow sentinel and contributes nothing at all - counted, and left out of
+// every sum, so no average is quietly built on a corrupted number.
+//
+// The worst window is the one field that is a MAXIMUM rather than a sum, so it
+// carries the pair that set it. Strictly greater, not greater-or-equal: a later
+// pair that merely ties keeps the earlier one's name, which makes the column
+// stable across a redraw instead of showing whichever slot happened to be last.
+accum(int k, float v, string pair) =>
+    if v < 0
+        array.set(agX, k, array.get(agX, k) + 1)
+    else
+        c = unpC(v)
+        w = unpW(v)
+        array.set(agC, k, array.get(agC, k) + c)
+        array.set(agE, k, array.get(agE, k) + unpE(v))
+        array.set(agR, k, array.get(agR, k) + unpR(v))
+        array.set(agD, k, array.get(agD, k) + unpD(v))
+        if w > array.get(agW, k)
+            array.set(agW, k, w)
+            array.set(agWho, k, pair)
+        if c > 0
+            array.set(agP, k, array.get(agP, k) + 1)
+
+// One pair, all forty lengths. 'on' is the slot's tick box and 'raw' its
+// symbol: both have to hold, because an unticked or blank slot was pointed at
+// the chart's own symbol and its answer is about a pair nobody asked for.
+//
+// na is tested through the first value alone: ignore_invalid_symbol makes the
+// whole tuple na at once, so one test settles all forty.
+//
+// GENERATED signature and body.
+addPair(bool on, string raw,
+     float v1, float v2, float v3, float v4, float v5, float v6,
+     float v7, float v8, float v9, float v10, float v11, float v12,
+     float v13, float v14, float v15, float v16, float v17, float v18,
+     float v19, float v20, float v21, float v22, float v23, float v24,
+     float v25, float v26, float v27, float v28, float v29, float v30,
+     float v31, float v32, float v33, float v34, float v35, float v36,
+     float v37, float v38, float v39, float v40) =>
+    live = on and raw != ''
+    if live
+        array.set(tally, 0, array.get(tally, 0) + 1)
+        if na(v1)
+            array.set(tally, 1, array.get(tally, 1) + 1)
+        else
+            nm = shortName(raw)
+            accum(0, v1, nm)
+            accum(1, v2, nm)
+            accum(2, v3, nm)
+            accum(3, v4, nm)
+            accum(4, v5, nm)
+            accum(5, v6, nm)
+            accum(6, v7, nm)
+            accum(7, v8, nm)
+            accum(8, v9, nm)
+            accum(9, v10, nm)
+            accum(10, v11, nm)
+            accum(11, v12, nm)
+            accum(12, v13, nm)
+            accum(13, v14, nm)
+            accum(14, v15, nm)
+            accum(15, v16, nm)
+            accum(16, v17, nm)
+            accum(17, v18, nm)
+            accum(18, v19, nm)
+            accum(19, v20, nm)
+            accum(20, v21, nm)
+            accum(21, v22, nm)
+            accum(22, v23, nm)
+            accum(23, v24, nm)
+            accum(24, v25, nm)
+            accum(25, v26, nm)
+            accum(26, v27, nm)
+            accum(27, v28, nm)
+            accum(28, v29, nm)
+            accum(29, v30, nm)
+            accum(30, v31, nm)
+            accum(31, v32, nm)
+            accum(32, v33, nm)
+            accum(33, v34, nm)
+            accum(34, v35, nm)
+            accum(35, v36, nm)
+            accum(36, v37, nm)
+            accum(37, v38, nm)
+            accum(38, v39, nm)
+            accum(39, v40, nm)
+
+posFor = tablePos == 'Middle left' ? position.middle_left :
+     tablePos == 'Middle center' ? position.middle_center :
+     tablePos == 'Top right' ? position.top_right :
+     tablePos == 'Bottom right' ? position.bottom_right :
+     tablePos == 'Top center' ? position.top_center :
+     tablePos == 'Bottom center' ? position.bottom_center :
+     position.middle_right
+
+txtSize = txtSizeName == 'Small' ? size.small : txtSizeName == 'Normal' ? size.normal : size.tiny
+
+// How much history this actually saw. The answer to "is it using everything" is
+// not a setting - it is how many bars TradingView loaded, which depends on the
+// plan and the timeframe, and it is printed in the footer so it can be checked
+// rather than assumed.
+var int firstBarTime = na
+if na(firstBarTime)
+    firstBarTime := time
+
+// Four blocks of ten columns with a blank between them, and the tallest a
+// single block can be plus two header rows and two footer rows. The declared
+// size has to exceed every index ever written, or the write is an out-of-bounds
+// error that kills the script rather than a cell quietly going missing.
+//
+// The stride is 11 and it appears in five places - this declaration, the clear,
+// hdrSpan, and the two placements. They have to move together. It was 9 until
+// the Score column, 10 until the Links column, and both times all five moved at
+// once; a half-applied change here draws a table that looks almost right.
+//
+// Nothing else carries the literal. merge_cells, the footer and the verdict row
+// all ride on hdrSpan and follow it by themselves - checked, not assumed.
+var table swTable = table.new(posFor, MAX_BLOCKS * 11 - 1, 50, border_width = 1)
+
+if barstate.islast
+    // Rebuilt from zero on every last-bar pass. The state machines accumulate
+    // across the whole history and are read here, so the totals must not
+    // accumulate a second time on top of themselves as ticks arrive.
+    for k = 0 to SWEEP_N - 1
+        array.set(agC, k, 0)
+        array.set(agE, k, 0)
+        array.set(agR, k, 0)
+        array.set(agD, k, 0)
+        array.set(agW, k, 0)
+        array.set(agWho, k, '')
+        array.set(agP, k, 0)
+        array.set(agX, k, 0)
+        // Parked above even the unrankable rows, so a length outside the
+        // requested range can never surface at the top of a sorted table on the
+        // strength of a key nobody set.
+        array.set(sortKey, k, 2000000000.0 + k)
+    array.set(tally, 0, 0)
+    array.set(tally, 1, 0)
+
+    // GENERATED - twenty-five addPair calls of forty-two arguments.
+    addPair(use01, sym01, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39, v01_40)
+    addPair(use02, sym02, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39, v02_40)
+    addPair(use03, sym03, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39, v03_40)
+    addPair(use04, sym04, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39, v04_40)
+    addPair(use05, sym05, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39, v05_40)
+    addPair(use06, sym06, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39, v06_40)
+    addPair(use07, sym07, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39, v07_40)
+    addPair(use08, sym08, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39, v08_40)
+    addPair(use09, sym09, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39, v09_40)
+    addPair(use10, sym10, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39, v10_40)
+    addPair(use11, sym11, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39, v11_40)
+    addPair(use12, sym12, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39, v12_40)
+    addPair(use13, sym13, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39, v13_40)
+    addPair(use14, sym14, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39, v14_40)
+    addPair(use15, sym15, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39, v15_40)
+    addPair(use16, sym16, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39, v16_40)
+    addPair(use17, sym17, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39, v17_40)
+    addPair(use18, sym18, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39, v18_40)
+    addPair(use19, sym19, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39, v19_40)
+    addPair(use20, sym20, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39, v20_40)
+    addPair(use21, sym21, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39, v21_40)
+    addPair(use22, sym22, v22_1, v22_2, v22_3, v22_4, v22_5, v22_6, v22_7, v22_8, v22_9, v22_10, v22_11, v22_12, v22_13, v22_14, v22_15, v22_16, v22_17, v22_18, v22_19, v22_20, v22_21, v22_22, v22_23, v22_24, v22_25, v22_26, v22_27, v22_28, v22_29, v22_30, v22_31, v22_32, v22_33, v22_34, v22_35, v22_36, v22_37, v22_38, v22_39, v22_40)
+    addPair(use23, sym23, v23_1, v23_2, v23_3, v23_4, v23_5, v23_6, v23_7, v23_8, v23_9, v23_10, v23_11, v23_12, v23_13, v23_14, v23_15, v23_16, v23_17, v23_18, v23_19, v23_20, v23_21, v23_22, v23_23, v23_24, v23_25, v23_26, v23_27, v23_28, v23_29, v23_30, v23_31, v23_32, v23_33, v23_34, v23_35, v23_36, v23_37, v23_38, v23_39, v23_40)
+    addPair(use24, sym24, v24_1, v24_2, v24_3, v24_4, v24_5, v24_6, v24_7, v24_8, v24_9, v24_10, v24_11, v24_12, v24_13, v24_14, v24_15, v24_16, v24_17, v24_18, v24_19, v24_20, v24_21, v24_22, v24_23, v24_24, v24_25, v24_26, v24_27, v24_28, v24_29, v24_30, v24_31, v24_32, v24_33, v24_34, v24_35, v24_36, v24_37, v24_38, v24_39, v24_40)
+    addPair(use25, sym25, v25_1, v25_2, v25_3, v25_4, v25_5, v25_6, v25_7, v25_8, v25_9, v25_10, v25_11, v25_12, v25_13, v25_14, v25_15, v25_16, v25_17, v25_18, v25_19, v25_20, v25_21, v25_22, v25_23, v25_24, v25_25, v25_26, v25_27, v25_28, v25_29, v25_30, v25_31, v25_32, v25_33, v25_34, v25_35, v25_36, v25_37, v25_38, v25_39, v25_40)
+
+    scanned    = array.get(tally, 0)
+    unresolved = array.get(tally, 1)
+
+    // Everything the table needs to know about the field, in one pass over the
+    // lengths. Two different questions are answered here and they use two
+    // different numbers, which is worth stating plainly because mixing them up
+    // is the easy mistake:
+    //
+    //   the RANKING and the ORDER run on whichever column 'Rank and sort by'
+    //   names, held in bestKey and its three companions. By default that is
+    //   Avg +1σ, the pessimistic average - the column the flat-stake decision
+    //   should be made on, because it has already paid for the size of the
+    //   sample it came from, so a length with forty wins cannot outrank one with
+    //   four hundred on luck alone. On Red share it is the tail that decides
+    //   instead, which is the right question when the stake climbs the ladder.
+    //
+    //   the HEADLINE numbers - bestAvg, bestHi, bestCls - describe the row that
+    //   WON, whatever it won on. They are kept apart from the key deliberately:
+    //   the header sentence has to be able to say that the length with the
+    //   fewest deep runs is also above break-even, and it could not if the two
+    //   were the same variable.
+    //
+    //   the SPREAD, printed in the footer and judged in the verdict line, runs
+    //   on plain Avg. It answers "how far apart are these lengths really", and
+    //   the error bar it is compared against is the same one +1σ already added -
+    //   measuring the spread on +1σ would be counting that twice.
+    //
+    // Best two and worst two use the standard two-slot idiom: a new leader
+    // pushes the old one into second place, and a value that only beats second
+    // place lands there directly.
+    float bestKey    = na
+    float best2Key   = na
+    float worstKey   = na
+    float worst2Key  = na
+    int   bestLen    = 0
+    int   best2Len   = 0
+    int   worstLen   = 0
+    int   worst2Len  = 0
+    float bestAvg    = na
+    float bestHi     = na
+    float bestScore  = na
+    int   bestCls    = 0
+    float avgMin     = na
+    float avgMax     = na
+    float hiMin      = na
+    float hiMax      = na
+    float rMin       = na
+    float rMax       = na
+    float lMin       = na
+    float lMax       = na
+    int   trusted    = 0
+    int   overflowed = 0
+    int   redFree    = 0
+
+    // FIRST PASS - the extremes, and nothing else.
+    //
+    // The Balanced score mixes two quantities that share no unit: entries per
+    // window and a proportion. There is no honest constant that converts one
+    // into the other, so each is stretched onto 0..1 across the rows that
+    // qualify - and a stretch cannot be applied until both ends of it are known.
+    // Hence two passes over the same lengths rather than one.
+    //
+    // Everything summed rather than compared lives here too, so the second pass
+    // is purely about ranking.
+    for k = 0 to usedN - 1
+        overflowed += array.get(agX, k)
+        c = array.get(agC, k)
+        if c >= minClosures
+            a  = 1.0 * array.get(agE, k) / c
+            h  = a + math.sqrt(math.max(a * a - a, 0.0)) / math.sqrt(c)
+            rh = redHi(array.get(agR, k), c)
+            // redHi reused rather than reinvented: links, like red windows, is
+            // a count of closures, and "a length with a bigger sample earns
+            // more trust in an equally clean record" is exactly the question
+            // redHi already answers for Red.
+            lh = redHi(array.get(agD, k), c)
+            trusted += 1
+            if array.get(agR, k) == 0
+                redFree += 1
+
+            avgMin := na(avgMin) or a < avgMin ? a : avgMin
+            avgMax := na(avgMax) or a > avgMax ? a : avgMax
+            hiMin  := na(hiMin) or h < hiMin ? h : hiMin
+            hiMax  := na(hiMax) or h > hiMax ? h : hiMax
+            rMin   := na(rMin) or rh < rMin ? rh : rMin
+            rMax   := na(rMax) or rh > rMax ? rh : rMax
+            lMin   := na(lMin) or lh < lMin ? lh : lMin
+            lMax   := na(lMax) or lh > lMax ? lh : lMax
+
+    // The mix, resolved once. 0 leaves the score identical to the Avg +1σ order
+    // and 100 to the Red one, which is worth knowing: the two endpoints of this
+    // setting reproduce two of the other three rankings exactly.
+    tailW = tailWeight / 100.0
+
+    // SECOND PASS - the key every row is ranked and ordered on.
+    for k = 0 to usedN - 1
+        c = array.get(agC, k)
+        array.set(agScore, k, float(na))
+        if c <= 0
+            // Nothing closed at this length, so there is no column to sort it on
+            // and length order is the only order left. Above the untrusted band
+            // and below the out-of-range one.
+            array.set(sortKey, k, 100000000.0 + k)
+        else
+            a  = 1.0 * array.get(agE, k) / c
+            h  = a + math.sqrt(math.max(a * a - a, 0.0)) / math.sqrt(c)
+            rh = redHi(array.get(agR, k), c)
+            lh = redHi(array.get(agD, k), c)
+            d  = array.get(agD, k)
+            l  = sweepFrom + k * sweepStep
+
+            // Each column onto 0..1, best end at 0. A degenerate range - every
+            // qualifying length identical on that column, which is exactly what
+            // happens when none of them has a single deep run - collapses to 0
+            // for every row rather than to a division by zero, so that column
+            // simply stops having an opinion and the other one decides.
+            nH = na(hiMax) or hiMax <= hiMin ? 0.0 : (h - hiMin) / (hiMax - hiMin)
+            nR = na(rMax) or rMax <= rMin ? 0.0 : (rh - rMin) / (rMax - rMin)
+            nL = na(lMax) or lMax <= lMin ? 0.0 : (lh - lMin) / (lMax - lMin)
+            score = (1.0 - tailW) * nH + tailW * nR
+
+            // Whether this row is allowed to compete. Everything below reads it,
+            // and it is the ONLY thing the threshold decides now: the row is
+            // drawn, ordered and greyed either way.
+            qual = c >= minClosures
+
+            // The score is stored only for a row that qualifies, and that is not
+            // an oversight. It is a position within the 0..1 stretch built across
+            // the qualifying rows; a row outside that population has no position
+            // in it, and printing one would invite a comparison the number cannot
+            // support. The column shows '-' there, as it always has.
+            if qual
+                array.set(agScore, k, score)
+
+            // The one number the whole ranking can be switched onto.
+            //
+            // Red share carries a millionth of Avg +1σ on its back as a
+            // tiebreak. The shares step by 1/wins, a thousandth at best, so the
+            // tiebreak can never reorder two lengths that genuinely differ - it
+            // only settles rows that are dead level, which without it would fall
+            // in whatever order sort_indices happened to produce.
+            //
+            // Balanced falls back to Avg +1σ for an untrusted row, for the same
+            // reason its score is not stored: the score does not exist outside
+            // the qualifying population. Avg +1σ does, it is on the row, and it
+            // is the column Balanced is mostly made of anyway.
+            //
+            // Links, then Score is the one THREE-LEVEL key here: d · 4 + nL · 2
+            // + score. Each multiplier exists to keep the level above it from
+            // ever being overruled by the levels below, and the proof is the
+            // same shape at each step - both nL and score live in [0, 1], so:
+            //
+            //   worst combination at a given d   =  d·4 + 2·1 + 1  =  4d + 3
+            //   best combination at d + 1        =  (d+1)·4        =  4d + 4
+            //
+            // 4d + 4 exceeds 4d + 3 for every d, margin exactly 1, so a real
+            // difference in raw links ALWAYS decides the order - level 2 and 3
+            // only get a say when d ties, which on ordinary data is nearly
+            // always, since Links reads zero on most rows.
+            //
+            // It falls back to h for an untrusted row for the same reason
+            // Balanced does - Score does not exist outside the qualifying
+            // population, and those rows are ordered on Avg +1σ instead.
+            key = rankBy == 'Avg' ? a :
+                 rankBy == 'Avg +1σ' ? h :
+                 rankBy == 'Red share' ? rh + h / 1000000.0 :
+                 rankBy == 'Links, then Score' ? (qual ? d * 4.0 + nL * 2.0 + score : h) :
+                 qual ? score : h
+            array.set(sortKey, k, qual ? key : 1000000.0 + key)
+
+            // Best and worst are the qualifying rows' business alone. An
+            // untrusted row now has a place in the order, and a place is not a
+            // verdict - it must never wear a star.
+            if qual
+                if na(bestKey) or key < bestKey
+                    best2Key := bestKey
+                    best2Len := bestLen
+                    bestKey := key
+                    bestLen := l
+                    bestAvg := a
+                    bestHi  := h
+                    bestScore := score
+                    bestCls := c
+                else if na(best2Key) or key < best2Key
+                    best2Key := key
+                    best2Len := l
+
+                if na(worstKey) or key > worstKey
+                    worst2Key := worstKey
+                    worst2Len := worstLen
+                    worstKey := key
+                    worstLen := l
+                else if na(worst2Key) or key > worst2Key
+                    worst2Key := key
+                    worst2Len := l
+
+    breakEven = 1.0 + payoutPct / 100.0
+    span      = na(avgMin) or na(avgMax) ? 0.0 : avgMax - avgMin
+
+    // Best first. Not named 'order': that is a Pine namespace, and
+    // order.ascending would stop resolving the moment a local shadowed it.
+    rank = array.sort_indices(sortKey, order.ascending)
+
+    table.clear(swTable, 0, 0, MAX_BLOCKS * 11 - 2, 49)
+
+    // The layout is settled BEFORE the rows are drawn, and the order matters:
+    // clipping afterwards could leave the header naming a best length whose row
+    // was never drawn, which is the one way a highlight can lie.
+    blocks = int(math.ceil(usedN / math.max(rowsPerBlock, 1)))
+    blocks := math.min(math.max(blocks, 1), MAX_BLOCKS)
+    shown  = math.min(usedN, blocks * rowsPerBlock)
+
+    hdrSpan = blocks * 11 - 2
+    footRow = rowsPerBlock + 2
+    verdRow = rowsPerBlock + 3
+
+    // The winner, named in words at the top. The highlighted row answers it too,
+    // but a highlight has to be found and a sentence does not.
+    // The range that was actually swept, and why it is not the one that was
+    // typed when it is not. First, Step and Last are all settings now and
+    // nothing reconciles them, so the two ways they can fall short each get
+    // named - one has a fix and the other does not.
+    rangeMissed = sweepLast != sweepTo
+    rangeText = ' MA ' + str.tostring(sweepFrom) + '-' + str.tostring(sweepLast) +
+         ' step ' + str.tostring(sweepStep) +
+         (not rangeMissed ? '' :
+          slotsShort ? '  ·  ASKED ' + str.tostring(sweepTo) + ', ONLY ' + str.tostring(SWEEP_N) + ' SLOTS - raise Step to reach it' :
+          '  ·  asked ' + str.tostring(sweepTo) + ', the step does not land on it')
+
+    // Three verdicts rather than two, because the +1σ column earns one. A length
+    // whose average pays and whose pessimistic average does not is a real state
+    // and the most common one worth knowing about: it means the edge is there in
+    // this sample and has not yet been shown to survive another.
+    bestPays = bestLen > 0 and bestHi < breakEven
+    bestThin = bestLen > 0 and not bestPays and bestAvg < breakEven
+
+    headBg = #0E2A1B
+    table.cell(swTable, 0, 0,
+         ' MA SWEEP · PAIRS  ' + timeframe.period + '  ·  ' + str.tostring(scanned) + ' pairs  · ' + rangeText +
+         (restrictToHours ? '  ·  ' + str.tostring(startHour) + '-' + str.tostring(endHour) + ' UTC+1' : '  ·  all hours') +
+         '  ·  break-even ' + str.tostring(breakEven, '#.00') +
+         (bestLen > 0 ?
+              '  ·  ★ BEST ON ' + rankBy + ': MA ' + str.tostring(bestLen) + ' at ' + str.tostring(bestAvg, '#.00000') +
+              ' avg, ' + str.tostring(bestHi, '#.00000') + ' +1σ' +
+              (na(bestScore) ? '' : ', score ' + str.tostring(bestScore, '#.000')) +
+              (bestPays ? ' - pays even at +1σ' :
+               bestThin ? ' - pays on avg, NOT at +1σ' :
+               ' - ABOVE break-even, none of these pay') :
+              '  ·  NO LENGTH HAS ' + str.tostring(minClosures) + '+ WINS YET') + ' ',
+         bgcolor = headBg, text_color = bestPays and not rangeMissed ? #6EF0A5 : #FFC163, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, 0, '', bgcolor = headBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, 0, hdrSpan, 0)
+
+    // One header row per block that has something under it.
+    for b = 0 to blocks - 1
+        h = b * 11
+        table.cell(swTable, h + 0, 1, ' MA ',   bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Rows are ordered best first, on ' + rankBy + ' - change that in Sweep output. ★ best   ☆ second best   ▽ second worst   ▼ worst, over the rows that clear the win threshold. The rows under it follow, greyed and unmarked, in the same order on the same column - they are placed but not trusted. Last of all come the lengths that closed nothing, which have no column to be placed on.')
+        table.cell(swTable, h + 1, 1, ' Wins ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Windows closed at this length, summed over every scanned pair. The same number the scanner prints after CLOSED.')
+        table.cell(swTable, h + 2, 1, ' Entries ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
+        table.cell(swTable, h + 3, 1, ' Avg ',  bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Entries per closed window, which is 1 / per-entry win rate. Green below break-even, red above.')
+        table.cell(swTable, h + 4, 1, ' Avg +1σ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'avg + sqrt(avg² - avg) / sqrt(wins) - the average plus one standard error, and the column the table is SORTED and RANKED on. Entries-per-window is a geometric count, whose variance is avg² - avg, so this is the same sample read pessimistically: what the average would look like if this run had been one error bar unlucky. A length with forty wins cannot outrank one with four hundred on luck alone, because this column has already charged it for the small sample.')
+        table.cell(swTable, h + 5, 1, ' Red ' + str.tostring(redAt) + '+ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'How many closed windows cost ' + str.tostring(redAt) + ' entries or more, and what share of this length\'s wins that was. ' + str.tostring(redAt) + ' is where the diamond ladder turns red, so this is the count of runs that went red at least once.\n\nThis is the column the average cannot give you. Two lengths can average the same and be nothing alike - one closes almost everything on the second entry, the other pays for cheap wins with runs that go five and six deep - and only this column tells them apart.\n\nThe share is coloured against what a geometric run of that average would produce on its own: green means this length goes deep LESS often than its own average implies, red means the tail is fatter than the mean is admitting. Grey means the average is at or below 1 and the comparison has nothing to say.')
+        table.cell(swTable, h + 6, 1, ' Score ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'The two columns to the left, combined into one number: 0 is the best row in the table on both, 1 is the worst on both.\n\nHow it is built. Avg +1σ and the Red share are stretched separately onto 0..1 across the rows that clear the win threshold, then mixed - ' + str.tostring(100 - tailWeight) + '% average, ' + str.tostring(tailWeight) + '% tail, set by Tail weight. They cannot simply be added: one is entries per window and the other is a proportion, and no honest constant converts one into the other.\n\nThe Red side is read pessimistically, the same way Avg +1σ is: a length with no deep runs in forty windows has not proved as much as one with no deep runs in four hundred, and the score charges it for that.\n\nWhat it is NOT: an absolute measure. 0 and 1 are the best and worst rows CURRENTLY on screen, so changing the range or the win threshold changes what the number means. Compare lengths to each other with it, never to a fixed standard - the four columns to the left are the absolute ones.\n\nIt is blank on a row under the win threshold, because that row is not part of the population the 0..1 was stretched across. Those rows are ordered on Avg +1σ instead.' + (rankBy == 'Balanced (+1σ & Red)' ? '\n\nThe table is sorted and ranked on this column.' : rankBy == 'Links, then Score' ? '\n\nThe table is sorted on Links first and settles the ties on THIS column. Since Links reads zero on most rows, this is usually the column actually deciding the order.' : '\n\nThe table is currently sorted on ' + rankBy + ', so this column is shown but not acted on.'))
+        table.cell(swTable, h + 7, 1, ' Worst · pair ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'The most entries ONE window cost at this length, and the pair it happened on. This is a count of entries, not an identifier - 11 means a single series took eleven attempts before it closed on a win. Where Red says how OFTEN this length goes deep, this says how deep the single worst run got, and which pair to go and look at. 99 is the ceiling the packed format clamps to, and means 99 or more.')
+        table.cell(swTable, h + 8, 1, ' Pairs ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'How many pairs closed at least one window at this length. A good average carried by three pairs is a different finding from the same average across twenty.')
+        // Last in the row on purpose, and not next to Red where it reads best.
+        // The Score tooltip says "the two columns to the left", and Score sits
+        // at h + 6 with Avg +1σ and Red at h + 4 and h + 5. Inserting anything
+        // between them turns that sentence into a lie with nothing to catch it.
+        // Append; do not insert.
+        table.cell(swTable, h + 9, 1, ' Links ' + str.tostring(deepAt) + '+ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'How many times a window of ' + str.tostring(deepAt) + '+ entries opened within ' + str.tostring(chainWithin) + ' minutes of another ' + str.tostring(deepAt) + '+ window CLOSING ON THE SAME PAIR, summed over every scanned pair. Shallow windows in the gap are ignored.\n\nRed says how often this length goes deep and Worst says how deep the single worst run got. Neither says whether the deep ones arrived TOGETHER, and that is the one that kills a recovery ladder: evenly spaced deep windows let the stake return to base between them, two in a row do not.\n\nTWO THINGS THIS NUMBER IS NOT.\n\nIt is not the CHAINS figure from checks/closed-chains.js. That script counts across the WHOLE watchlist - a deep window on one pair followed by a deep window on another - and this cannot see that at all: one packed number crosses request.security per pair-and-length, and there is no shared timeline on this side to lay them on. What you get here is a strict lower bound on that figure. It is also LINKS rather than runs: a chain of three deep windows is two links here and one chain there.\n\nAnd the tolerance is not the script\'s --within either. Merging every pair onto one timeline puts windows about sixteen minutes apart, so two minutes is tight there. One pair on its own sees a window roughly every twenty-three hours, so the equivalent tolerance scales by the number of pairs - which is why the default here is 180 and not 2.\n\nExpect zero on most rows. This is a tripwire, not a scale: it is meant to be blank until a length is one you should not be trading.\n\nThe table is SORTED on it by default - "Links, then Score" under Rank and sort by. A real difference in the raw count always wins first; among rows that tie on the count (usually every row, at zero), a sample-size-aware reading of it decides - the same caution behind Avg +1σ, now applied here - and Score settles anything still tied. No amount of Score or sample size can move a row past one with a genuinely different link count.')
+
+    // i is where the row is DRAWN, k is which LENGTH it is. They were the same
+    // number until the table learned to sort, and keeping them apart is what
+    // stops the two from being quietly confused again: every array read below
+    // takes k, and every placement takes i.
+    for i = 0 to shown - 1
+        k   = array.get(rank, i)
+        len = sweepFrom + k * sweepStep
+        cls = array.get(agC, k)
+        ent = array.get(agE, k)
+        red = array.get(agR, k)
+        lnk = array.get(agD, k)
+        wst = array.get(agW, k)
+        who = array.get(agWho, k)
+        prs = array.get(agP, k)
+        scr = array.get(agScore, k)
+        avg = cls > 0 ? 1.0 * ent / cls : float(na)
+        ok  = cls >= minClosures
+
+        // One standard error on the mean of a geometric count, whose variance is
+        // avg² - avg. The clamp at zero covers the one case that can drive that
+        // negative: a widened success scope can close a window with no entry in
+        // it at all, which pulls the average under 1 and makes the variance term
+        // meaningless rather than merely small.
+        se = na(avg) or cls <= 0 ? float(na) : math.sqrt(math.max(avg * avg - avg, 0.0)) / math.sqrt(cls)
+        hi = na(se) ? float(na) : avg + se
+
+        // The deep runs, as a count and as a share of this length's own wins.
+        // The share is what makes two lengths comparable - 40 red windows out of
+        // 200 and out of 2000 are not the same finding, and the raw count alone
+        // would rank a length well simply for having closed less.
+        rsh = cls > 0 ? 100.0 * red / cls : float(na)
+
+        // What that share WOULD be if windows failed independently at this
+        // length's own rate. Entries per window is a geometric count with
+        // p = 1 / avg, so the chance a window needs redAt entries or more is
+        // (1 - p) ^ (redAt - 1), and comparing against it is what turns the
+        // column from a number into a verdict: above the line the tail is
+        // fatter than the mean is admitting, which is precisely the shape that
+        // survives a backtest on averages and then breaks a recovery ladder.
+        //
+        // na below an average of 1, where the model has nothing to say - a
+        // widened success scope can close windows that cost no entry at all.
+        expShare = na(avg) or avg <= 1.0 ? float(na) : 100.0 * math.pow((avg - 1.0) / avg, redAt - 1)
+
+        // The four ranked rows, each excluding the ones above it, so a table with
+        // two or three qualifying rows cannot paint one row twice. With exactly
+        // one qualifying row it is best and nothing else, which is correct - it
+        // has nothing to be better or worse than.
+        isBest  = ok and bestLen   > 0 and len == bestLen
+        isWorst = ok and worstLen  > 0 and len == worstLen  and not isBest
+        isBest2 = ok and best2Len  > 0 and len == best2Len  and not isBest and not isWorst
+        isWors2 = ok and worst2Len > 0 and len == worst2Len and not isBest and not isWorst and not isBest2
+
+        // The stripe follows the DRAWN position, not the length - sorted rows
+        // striped by length would alternate in a pattern with no relation to
+        // what is on screen, which is worse than no stripe at all.
+        rowBg = isBest ? C_BEST :
+             isWorst ? C_WORST :
+             isBest2 ? C_BEST2 :
+             isWors2 ? C_WORST2 :
+             not ok ? C_ROW_NO :
+             i % 2 == 0 ? C_ROW_A : C_ROW_B
+        rowFg = isBest ? C_BEST_T :
+             isWorst ? C_WORST_T :
+             isBest2 ? C_BEST2_T :
+             isWors2 ? C_WORST2_T :
+             not ok ? C_TXT_NO :
+             C_TXT
+
+        // Both average columns keep the break-even verdict even on a ranked row,
+        // except on the two solid ones - dark text on lime or on red is the only
+        // pairing here that cannot also carry a hue and stay readable.
+        avgFg = isBest or isWorst ? rowFg :
+             not ok ? C_TXT_NO :
+             avg < breakEven ? #6EF0A5 : #FF7B7B
+        hiFg = isBest or isWorst ? rowFg :
+             not ok or na(hi) ? C_TXT_NO :
+             hi < breakEven ? #6EF0A5 : #FF7B7B
+        redFg = isBest or isWorst ? rowFg :
+             not ok or na(rsh) ? C_TXT_NO :
+             na(expShare) ? C_TXT :
+             rsh <= expShare ? #6EF0A5 : #FF7B7B
+        // A gradient rather than two colours, because this one is a POSITION on
+        // a scale rather than a pass or a fail: 0.31 and 0.34 are not two
+        // different verdicts, and painting them as if they were would invent a
+        // boundary the number does not have.
+        scrFg = isBest or isWorst ? rowFg :
+             not ok or na(scr) ? C_TXT_NO :
+             color.from_gradient(scr, 0.0, 1.0, #6EF0A5, #FF7B7B)
+
+        tag = isBest ? ' ★ ' : isBest2 ? ' ☆ ' : isWorst ? ' ▼ ' : isWors2 ? ' ▽ ' : ' '
+
+        blk = int(math.floor(i / math.max(rowsPerBlock, 1)))
+        c   = blk * 11
+        r   = i - blk * rowsPerBlock + 2
+
+        table.cell(swTable, c + 0, r, tag + str.tostring(len) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 1, r, ' ' + str.tostring(cls) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 2, r, ' ' + str.tostring(ent) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 3, r, na(avg) ? ' - ' : ' ' + str.tostring(avg, '#.00000') + ' ', bgcolor = rowBg, text_color = avgFg, text_size = txtSize)
+        table.cell(swTable, c + 4, r, na(hi)  ? ' - ' : ' ' + str.tostring(hi,  '#.00000') + ' ', bgcolor = rowBg, text_color = hiFg,  text_size = txtSize)
+        // The deep runs. A real zero is worth printing here - unlike Worst, where
+        // a zero would read as "the worst window cost nothing", zero red windows
+        // is the best thing this column can say and has to be visible as such.
+        table.cell(swTable, c + 5, r, na(rsh) ? ' - ' : ' ' + str.tostring(red) + ' · ' + str.tostring(rsh, '#.0') + '% ', bgcolor = rowBg, text_color = redFg, text_size = txtSize)
+        // The combined score, read straight out of the array the sort used, so
+        // the number on screen and the number the row was placed by cannot drift
+        // apart.
+        table.cell(swTable, c + 6, r, na(scr) ? ' - ' : ' ' + str.tostring(scr, '#.000') + ' ', bgcolor = rowBg, text_color = scrFg, text_size = txtSize)
+        // The count and the pair in one cell. Blank rather than '0' when nothing
+        // closed at this length, because a zero here would read as "the worst
+        // window cost nothing" rather than "there was no window".
+        table.cell(swTable, c + 7, r, wst > 0 ? ' ' + str.tostring(wst) + ' · ' + who + ' ' : ' - ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 8, r, ' ' + str.tostring(prs) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        // The Links column. A real zero PRINTS - it is the answer on most rows
+        // and the good one, exactly like the Red count and unlike Worst, where
+        // a zero would read as "the worst window cost nothing". A dash here
+        // would hide the difference between "no deep window followed another"
+        // and "nothing closed at all", so the dash is kept for the second case
+        // only, which is what cls == 0 is.
+        //
+        // Coloured only when it fires. Grey at zero rather than green: this
+        // column is not a score to be read down, it is a flag to be noticed,
+        // and a wall of green zeros would make the one amber cell harder to
+        // find rather than easier.
+        table.cell(swTable, c + 9, r, cls == 0 ? ' - ' : ' ' + str.tostring(lnk) + ' ', bgcolor = rowBg,
+             text_color = isBest or isWorst ? rowFg : lnk > 0 ? #FFC163 : C_TXT_NO, text_size = txtSize)
+
+    // How much history this saw. Nothing in this file windows the history unless
+    // 'Bars of history per pair' is set - this is simply how many bars
+    // TradingView handed the script, which is a property of the plan and the
+    // timeframe. If the number looks small, scroll left until the chart stops
+    // loading more, then let it recompute.
+    //
+    // Six things are shouted rather than mentioned, because each of them means
+    // a number above is not what it appears to be: a capped history, a ticker
+    // that did not resolve, a total that overflowed the packed format, rows the
+    // block layout could not fit, a Red column that is empty everywhere - which
+    // looks like good news and is usually the threshold set too high or a
+    // history too short to have grown a tail - and a Links tolerance narrower
+    // than one bar. All six are silent everywhere else.
+    //
+    // The sixth is the newest and the quietest failure of the lot. The smallest
+    // gap this script can ever measure is ONE BAR: an entry taken on the bar
+    // that closed a window belongs to the window it closed, so a follower opens
+    // on the next bar at the earliest. Set the tolerance below the bar length -
+    // two minutes on a five-minute chart, say - and the Links column is
+    // identically zero by construction, on every row, forever. Zero reads as
+    // "no length does this", which is the opposite of what happened. The header
+    // of this file recommends raising the timeframe as the second-best lever
+    // against a timeout, so this is a foot-gun the file itself hands over.
+    tolBars = chainWithin * 60 < timeframe.in_seconds()
+    footBg  = C_FOOT
+    table.cell(swTable, 0, footRow,
+         ' history ' + str.tostring(bar_index + 1) + ' bars, from ' +
+         (na(firstBarTime) ? '-' : str.format_time(firstBarTime, 'yyyy-MM-dd HH:mm', 'UTC+1')) +
+         (scanBars > 0 ? '  ·  CAPPED AT ' + str.tostring(scanBars) + ' BARS PER PAIR' : '') +
+         (unresolved > 0 ? '  ·  ' + str.tostring(unresolved) + ' UNRESOLVED' : '') +
+         (overflowed > 0 ? '  ·  ' + str.tostring(overflowed) + ' TOTALS OVERFLOWED AND WERE DROPPED' : '') +
+         (shown < usedN ? '  ·  ' + str.tostring(usedN - shown) + ' ROWS NOT DRAWN - raise Rows per block' : '') +
+         (trusted > 0 and redFree == trusted ? '  ·  NO LENGTH HAS A SINGLE ' + str.tostring(redAt) + '+ WINDOW - lower the red threshold, or there is too little history to see a tail' : '') +
+         (tolBars ? '  ·  LINKS TOLERANCE ' + str.tostring(chainWithin) + ' MIN IS NARROWER THAN ONE ' + timeframe.period + ' BAR - that column can only read zero, raise it or drop the timeframe' : '') +
+         '  ·  spread ' + (span > 0 ? str.tostring(span, '#.000') : '-') +
+         '  ·  ' + str.tostring(trusted) + ' of ' + str.tostring(shown) + ' rows have ' + str.tostring(minClosures) + '+ wins ',
+         bgcolor = footBg, text_color = unresolved > 0 or overflowed > 0 or shown < usedN or tolBars or (trusted > 0 and redFree == trusted) ? #FFC163 : #C9D1DA, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, footRow, '', bgcolor = footBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, footRow, hdrSpan, footRow)
+
+    // The honesty line. The spread between best and worst is the whole of what
+    // the table found, and it means nothing until it is read against the error
+    // bar of a single average - which the Avg +1σ column now prints per row, and
+    // which is summarised here for the winner. Under three of those, the ranking
+    // above is noise in five decimals.
+    errBar = na(bestAvg) or bestCls <= 0 ? float(na) : math.sqrt(math.max(bestAvg * bestAvg - bestAvg, 0.0)) / math.sqrt(bestCls)
+    noisy  = span > 0 and not na(errBar) and errBar > 0 and span < errBar * 3
+    verdBg = noisy ? #5C3A00 : #0E2A1B
+
+    table.cell(swTable, 0, verdRow,
+         (na(errBar) ? ' not enough data to judge anything yet ' :
+          noisy ? ' SPREAD ' + str.tostring(span, '#.000') + ' IS INSIDE THE NOISE (±' + str.tostring(errBar, '#.000') + ' on the winner) - every length here is the same ' :
+          ' spread ' + str.tostring(span, '#.000') + ' clears the noise (±' + str.tostring(errBar, '#.000') + ' on the winner) - MA ' + str.tostring(bestLen) + ' is a real winner '),
+         bgcolor = verdBg, text_color = noisy or na(errBar) ? #FFC163 : #6EF0A5, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, verdRow, '', bgcolor = verdBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, verdRow, hdrSpan, verdRow)

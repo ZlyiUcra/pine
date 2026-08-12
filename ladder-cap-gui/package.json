@@ -1,0 +1,21 @@
+{
+  "name": "ladder-cap-gui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Desktop GUI over checks/ladder-cap-core.mjs - visual ladder-cap replay stats for the closed log.",
+  "main": "./out/main/index.js",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder --win --dir"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "electron": "^43.3.0",
+    "electron-builder": "^26.15.3",
+    "electron-vite": "^2",
+    "typescript": "^7.0.2",
+    "vite": "^5"
+  }
+}

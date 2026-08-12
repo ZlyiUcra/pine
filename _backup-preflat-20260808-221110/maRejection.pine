@@ -1,0 +1,2286 @@
+//@version=6
+// MAR1 - moving average rejection, trend continuation.
+//
+// The idea in one sentence: in a trend, price occasionally pulls back to its own
+// moving average, gets rejected there, and continues in the original direction.
+// The rejection is what the script looks for - a candle that reaches the average
+// but cannot hold there and leaves a long wick behind.
+//
+// overlay = true       draws on the price chart itself, not in a separate pane.
+// max_bars_back = 200  how many bars of history Pine keeps available for every
+//                      series. Pine normally guesses this by reading constant
+//                      offsets in the code (close[3] means "keep 3"). Below there
+//                      is a loop using close[i] with a variable i, and the guess
+//                      can be wrong there, which makes the script die mid-chart
+//                      with "cannot determine the referencing length of series".
+//                      Stating it explicitly removes the guesswork; the only cost
+//                      is a little memory.
+// max_labels_count     the closing-time labels further down are one per winning
+//                      signal. Pine keeps only the 50 most recent labels unless
+//                      told otherwise, which would leave the timestamps clinging
+//                      to the right-hand edge and the rest of the chart bare.
+indicator('MAR1', overlay = true, max_bars_back = 200, max_labels_count = 500)
+
+// ---------------------------------------------------------------------------
+// Gate and window - the two thresholds the streak gate is built from
+// ---------------------------------------------------------------------------
+// First in the dialog, and mar1Scanner.pine puts the same pair under a header of
+// the same name in the same place. These are read and changed while looking at
+// the streak tables here and at the finished-series log there; nothing else in
+// this file is touched as often, and nothing else has as much reason not to be
+// at the bottom of a six-section dialog.
+//
+// They were declared in Statistics, beside the tables they feed. That grouping
+// was tidy and wrong about how they are used: everything else in Statistics only
+// decides what gets drawn, while these two decide the gate threshold - and the
+// gate is what makes a signal an ENTRY rather than a warning.
+//
+// Pine has no way to order the settings dialog: sections appear in the order
+// their inputs are DECLARED, so first in the dialog and first in the file are the
+// same fact. The cost is that every setting below shifts by two positions and
+// TradingView maps saved settings onto inputs BY POSITION - see the note on the
+// timestamp section below, which pays the same price for the same reason.
+//
+// Both are folded into CFGSUM, so the scanner disagreeing about either of them is
+// caught rather than discovered.
+gTune = 'Gate and window'
+
+// Cumulative-percentage cutoff: the streak length at which this much of the
+// historical streak distribution is already accounted for. Feeds both the
+// highlighted row in the two streak tables and, when the gate runs in
+// Distribution or Max of both mode, the gate threshold itself.
+basePercentage = input.float(95.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+
+// Manual streak threshold. Used by the marker colour scale, and by the gate in
+// Manual or Max of both mode.
+minEntriesToStart = input.int(5, 'Min entries to start (floor for calculateIndex)', minval = 1, group = gTune, display = display.none)
+
+// ---------------------------------------------------------------------------
+// Timestamp on a signal that came out right
+// ---------------------------------------------------------------------------
+// The chart marks misses and says nothing about hits. That reads well, but it
+// makes tallying the wins by hand slow: a candle that simply went the right way
+// looks like every other candle on the chart. This puts two facts on it.
+//
+// The time is time_close - the instant the graded candle ENDS, which is the same
+// instant the next candle opens, so it is the timestamp to write down as the
+// moment the trade was over rather than the moment it began. It is formatted in
+// UTC+1, the frame the signal log and the hours filter already use, so all three
+// agree and rows can be reconciled across them.
+//
+// The number in brackets is how many entries this window cost: counted from the
+// green diamond that opened the gate, up to and including the entry that finally
+// hit. Three means the win arrived on the third attempt. Only the widened scopes
+// below can print a zero - a stamp on a suppressed signal, where the window was
+// closed by something that was never entered.
+//
+// The window is closed by the win itself and reopened by the next green diamond,
+// so a settled run can never leak its entries into the next count. With the
+// streak gate Off there are no green diamonds at all - colorLimit is zero and no
+// failure marker can land on it - and the number then reads as "entries since the
+// previous win", which is the same question asked from the only anchor left.
+//
+// Why the inputs are up here and the drawing is not
+// -------------------------------------------------
+// Pine has no way to order the settings dialog: sections appear in the order
+// their inputs are DECLARED, so being second in the dialog and being second in
+// the file are the same fact. These are the settings that get opened while
+// reading a chart rather than while setting the script up, and they used to be
+// declared last, sixteen hundred lines down, which put them at the bottom of a
+// six-section dialog. Nothing is in front of them now except the two gate
+// thresholds above, and the two sections together are short enough to sit on ONE
+// screen of the dialog - which is the whole point of the order, here and in
+// mar1Scanner.pine, where the same pair of ideas is arranged the same way.
+//
+// The code that draws the stamp stayed where it was, beside the markers it
+// follows - moving it would have dragged half the plotting block with it for no
+// gain, since where a calculation lives changes nothing about the dialog.
+//
+// The cost is the one the scanner's log section pays for the same reason:
+// TradingView maps saved settings onto inputs BY POSITION, so putting ten
+// widgets in front of Signal, Filters, Statistics, Live preview and Attention
+// signal slides every one of those onto a value saved against something else. The
+// recovery is Defaults -> Reset settings, once, on each chart already carrying
+// the script. Anything added later goes to the BOTTOM for exactly that reason.
+gStamp = 'Success timestamp'
+
+showSuccessTime = input.bool(true, 'Timestamp successful signals', group = gStamp, display = display.none)
+
+// Which successes get the stamp.
+//
+// Entries only is the default and the strictest reading: the stamp appears where
+// a trade was actually taken, on the coloured diamonds, and nowhere else. A white
+// diamond is a signal the gate held BACK - nothing was entered, so a timestamp on
+// it would record a trade that never happened and inflate any tally read off the
+// chart.
+//
+// Entries and warnings restores the symmetry with the small failure diamonds,
+// which do cover both: every large diamond then ends with a diamond if it missed
+// or a timestamp if it hit.
+//
+// All found signals adds the ones the gate suppressed for any reason. Those are
+// the signals the statistics tables count, so choose it when the chart is being
+// read against the tables rather than against the trades actually taken.
+successScope = input.string('Entries only', 'Timestamp which successes',
+     options = ['Entries only', 'Entries and warnings', 'All found signals'], group = gStamp, display = display.none)
+
+// Where the text goes.
+//
+// Putting it on the signal's own side - below for a buy, above for a sell - is
+// the obvious rule and the wrong one: in a rising market the space above the
+// candles is exactly where the next candles are about to be drawn, so a sell
+// stamp ends up buried under price within a few bars, and a chart scrolled back
+// a week reads as a wall of overlapping text.
+//
+// The room is on the OTHER side of the move. A market climbing left everything
+// below it empty, and a market falling leaves everything above it empty, so Auto
+// reads the slope and puts the text into whichever half is being vacated. The
+// stamp then sits in clear space and stays there, which is what makes a long
+// stretch of history readable at a glance.
+//
+// The three fixed modes are there for the cases the slope cannot know about: a
+// second indicator already occupying one side, or a preference for the old
+// by-direction reading.
+successPlace = input.string('Auto - away from the move', 'Text placement',
+     options = ['Auto - away from the move', 'Always below', 'Always above', 'By signal direction'], group = gStamp, display = display.none)
+
+// The window the slope is measured over. Short enough to follow a session, long
+// enough not to flip on a single candle - which would scatter consecutive stamps
+// above and below each other and undo the whole point.
+//
+// It is measured on maValue, the line already drawn on the chart, so what decides
+// the placement is the same trend the eye is reading.
+successSlopeLen = input.int(10, 'Slope window for auto placement', minval = 2, maxval = 100, group = gStamp, display = display.none)
+
+// How far from the candle the text sits, in ATR so it holds the same visual
+// distance on a quiet chart and a violent one. This is what keeps the stamp off
+// the wicks instead of resting on them.
+successGap = input.float(1.2, 'Gap from the candle (x ATR)', minval = 0.0, maxval = 10.0, step = 0.1, group = gStamp, display = display.none)
+
+// Normal by default, which it was not while the stamp was one line.
+//
+// Huge was the right default for a single line of text sitting beside a candle,
+// and it stopped being right the moment the stamp became three: the width that
+// one long line spent sideways, where a chart has room, three stacked lines now
+// spend downwards, where it has none. At Huge the block was taller than the gap
+// that keeps it off the wicks, so consecutive stamps ran into each other and
+// into the price - the text was large and, for that reason, unreadable.
+//
+// Huge is still in the list and is still Pine's ceiling for label text: there is
+// no step above it, and anything larger would have to stop being a label and
+// become a table pinned to a corner of the pane, which cannot sit on the candle
+// it describes.
+successTextSize = input.string('Normal', 'Text size',
+     options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = gStamp, display = display.none)
+
+// How much of the timestamp to print. Time alone is enough while reading one
+// session; the day matters as soon as the tally spans several, and the full date
+// is for copying rows into something outside TradingView.
+//
+// Kept as a choice rather than always printing the date because the stamp sits
+// on the chart next to the candle - every extra character is width that has to
+// go somewhere, and on a dense M1 chart the long forms will start to collide.
+successDateFmt = input.string('HH:mm', 'Timestamp format',
+     options = ['HH:mm', 'dd HH:mm', 'yyyy-MM-dd HH:mm'], group = gStamp, display = display.none)
+
+// The pair the row belongs to. Redundant while you are looking at the chart -
+// the header says it - and not redundant at all the moment the row leaves the
+// chart. A screenshot, a copied line, a tally kept across several pairs: all of
+// them lose the symbol unless the stamp carries it, and a table of times and
+// counts with no pair on it cannot be merged with another one afterwards.
+//
+// syminfo.ticker rather than tickerid: EURUSD, not OANDA:EURUSD. The exchange is
+// width on the chart and is the same for every row in a one-broker tally.
+successShowPair = input.bool(true, 'Include the pair name', group = gStamp,
+     tooltip = 'Writes the symbol into the stamp so a copied or screenshotted row still says which pair it belongs to.', display = display.none)
+
+// The other end of the window. With it on, the stamp reads
+//
+//   (3)
+//   14:31 → 14:35
+//   EURUSD
+//
+// which is the whole of a settled series: entered at 14:31, over at 14:35, three
+// entries to get there. The gap between the two times is how long the pair held
+// you, and that is a fact the entry count alone does not carry - three entries
+// over four minutes and three entries over an hour are different afternoons.
+successShowEntry = input.bool(true, 'Include the time the window opened', group = gStamp,
+     tooltip = 'The open of the candle the first entry of this window was taken on. Blank when the window closed without an entry, which only the widened scopes can produce.', display = display.none)
+
+// How long the series-closed flag stays published for the browser script, in
+// bars. It only has to survive one poll: the script reads it, clears whatever is
+// on screen from the attention that opened the window, and shows its own short
+// confirmation. Two bars covers a minute-long poll on M1 with one to spare.
+doneBars = input.int(2, 'Hold the series-closed flag for N bars', minval = 1, maxval = 500, group = gStamp,
+     tooltip = 'A hidden Chrome tab polls roughly once a minute, so keep this long enough to cover a minute on your timeframe.', display = display.none)
+
+// Group names. Pine puts every input carrying the same group string under one
+// collapsible header in the settings dialog, so strings like these three are
+// what splits the settings window into sections - and the ORDER of the sections
+// is the order their first input is declared in, which is why the two groups
+// read while trading are declared above this point and the rest below it.
+//
+// What appears in the status line
+// -------------------------------
+// TradingView prints an indicator's ARGUMENTS after its name at the top of the
+// chart, in declaration order, and with forty-seven inputs that line ran the
+// width of the screen as a wall of bare numbers with nothing saying which number
+// was which. A legend that has to be decoded is worse than no legend.
+//
+// THREE ARE VISIBLE. Everything else in this file carries display = display.none.
+//
+// The split used to be by KIND - everything that decides a signal shown,
+// everything that decides how it looks hidden - and on paper that is the right
+// cut. In practice it left thirty-five numbers on the line, which is not a
+// legend, it is the settings dialog printed sideways across the price. The cut
+// that survives contact is by how much ONE reading costs when it is wrong, and
+// only three settings answer that with a whole strategy:
+//
+//   MA Length      the file is named after this average, and 5 against 27 is not
+//                  the same indicator twice - it is two different ones wearing
+//                  one name. One short number, and the most load-bearing one here.
+//   Streak gate    with Off there is no gate at all, nothing is ever held back,
+//                  and every marker on the chart is an entry. Reading the tables
+//                  without knowing this is reading fiction.
+//   Fire signals   whether the hours filter is actually biting. A stretch of
+//   only inside    candles with no markers means 'nothing triggered' when this
+//   those hours    is off and 'nothing was allowed to' when it is on, and those
+//                  are not the same fact.
+//
+// The rest is not lost. display.none removes an input from that line and from
+// the Data Window and changes NOTHING ELSE: it is fully live, fully editable, and
+// sits in the settings dialog exactly where it did. It is a display flag, not a
+// switch, and it does not touch the saved-settings POSITION that everything else
+// in this file has to be careful about. A screenshot that has to carry the whole
+// configuration is what CFGSUM at the foot is for - one number, folded from
+// twenty-two settings, and it catches a divergence the eye would not.
+//
+// TO BRING ANY OTHER ONE BACK: delete ', display = display.none' from its line.
+// To hide one of the three above: add it. There is nothing to keep in sync - the
+// flag is per input and reaches no logic. The whole line can also be turned off
+// in the chart's own settings, under Status line.
+gSig   = 'Signal'
+gFilt  = 'Filters'
+gStats = 'Statistics'
+
+// The moving average the whole idea is built around. Type and source are kept
+// adjustable because "the average price is here" means something different on a
+// 5-period SMA of closes than on an RMA of ohlc4, and which one the market
+// respects is an empirical question, not a design decision.
+maLength = input.int(5, 'MA Length', minval = 2, group = gSig)
+maType   = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig, display = display.none)
+src      = input.source(ohlc4, 'Source', group = gSig, display = display.none)
+
+// How many candles must have closed on the trend side of the MA before a
+// rejection counts. This is the "is there even a trend to continue" test.
+trendBars = input.int(3, 'Bars that must close on the trend side of MA', minval = 2, maxval = 10, group = gSig, display = display.none)
+
+// How far from the MA those closes have to sit before the run counts as a trend.
+// Being on the correct side is not enough on its own: in a range price crosses
+// and re-crosses its own short average constantly, and a handful of closes a
+// fraction of a pip above the line satisfies a side test while describing no
+// trend at all. Requiring real separation is what tells a trend from a range.
+//
+// Measured in ATR so it scales with the instrument and the timeframe. Zero
+// restores the plain side test exactly.
+trendSep = input.float(0.30, 'Min distance of trend closes from MA (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+
+// What makes a wick "long". Measured as a share of the candle's own high-to-low
+// range, so it is self-normalising: the same 0.60 means the same thing on a
+// quiet M1 candle and on a violent M5 one. Measuring the wick against the body
+// instead would be useless, because a doji has almost no body and would make
+// every candle qualify.
+wickRatio = input.float(0.60, 'Min wick share of candle range', minval = 0.30, maxval = 0.95, step = 0.05, group = gSig, display = display.none)
+
+// How close to the MA the candle must get to count as "touched". Expressed in
+// ATR rather than pips so it scales with volatility. This single number covers
+// all three cases: the candle that stopped just short, the one that touched
+// exactly, and the one that overshot and came back.
+touchTol = input.float(0.30, 'Almost-reached tolerance (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+
+atrLen = input.int(8, 'ATR length', minval = 2, group = gSig, display = display.none)
+
+// Second, independent way to qualify as a rejection: the candle reached the
+// average but both opened AND closed on the trend side of it, so its entire body
+// stayed past the line, AND that body is smaller than the chart's average body
+// with a tail longer than itself.
+//
+// It skips the wick-share and pip tests, but not the size test - a large body
+// past the line is a trend candle, not a rejection.
+//
+// It only ever adds signals; switching it off restores the wick-only behaviour.
+allowBodyInside = input.bool(true, 'Accept small body fully on the trend side (skips wick share test)', group = gSig, display = display.none)
+
+// Third way to qualify: the tail that reached the average is simply longer than
+// tails on this chart usually are. The first path asks "is the tail long
+// relative to THIS candle", the second asks "is the body small", and this one
+// asks "is the tail long relative to every other candle" - answering without
+// looking at the body at all.
+//
+// The three are independent on purpose. A candle with a large body and a huge
+// tail fails the first two and passes this one, and such a candle is a genuine
+// rejection that the other two would have thrown away.
+allowLongWick = input.bool(true, 'Accept wick longer than its running average (ignores body)', group = gSig, display = display.none)
+
+// A single candle running against an established trend. This is not a rejection
+// at all - it never has to reach the moving average - so it enters at the
+// trigger level rather than as a fourth rejection path.
+//
+// The reasoning is exhaustion rather than reversal: inside a run of trend
+// candles, one lone candle the other way is usually profit taking, and the trend
+// resumes. "Lone" is enforced by requiring the candle before it to have gone
+// WITH the trend, so a second counter candle in a row does not fire again - by
+// then it is not one candle any more, it is a turn.
+allowCounterCandle = input.bool(true, 'Accept a single counter-trend candle', group = gSig, display = display.none)
+
+// One window for every reference the script measures a candle against: the
+// average body and the two average wicks. Keeping them on a single window means
+// "bigger than usual" always refers to the same stretch of history, whichever
+// dimension is being asked about.
+//
+// Capped at max_bars_back so a reference can never ask for more history than the
+// script keeps available.
+refLen = input.int(200, 'Average window (candles)', minval = 10, maxval = 200, group = gSig, display = display.none)
+
+// Spread guard. On M1 forex a candle can have a 60% wick that is still under a
+// pip long - pure noise. This floors the wick in absolute terms.
+minPips = input.float(1.0, 'Min wick length (pips)', minval = 0.0, step = 0.1, group = gFilt, display = display.none)
+
+// Keeps signals rare, and that is all it does. It is worth being explicit that
+// this is NOT a statistical safeguard here: every signal grades exactly one
+// candle, the one right after its trigger, so signals on adjacent bars grade
+// different candles and nothing is ever counted twice.
+//
+// The default of 1 means no spacing at all - every rejection the pattern finds
+// is reported. Raise it only to thin the chart out, never in the belief that it
+// makes the numbers more trustworthy.
+cooldown = input.int(1, 'Min bars between signals', minval = 1, group = gFilt, display = display.none)
+
+// Whether the cooldown is kept per direction or shared. Shared is the old
+// behaviour: any signal silences both sides. Per direction lets a reversal be
+// shown immediately instead of being swallowed by the opposite-side signal that
+// preceded it, while a run of same-side signals still has to wait.
+perDirectionCooldown = input.bool(true, 'Cooldown per direction', group = gFilt, display = display.none)
+
+// Streak gate. A signal is always DETECTED when the pattern is there; this
+// decides which detected signals are actually TAKEN - marked on the chart and
+// sent to alerts. Everything the statistics measure stays based on detected
+// signals, so the gate can never edit its own evidence.
+//
+//   Off          take everything
+//   Manual       take once the losing streak reaches 'Min entries to start'
+//   Distribution take once it reaches the streak length at which 'Percentage'
+//                of the historical streak distribution is already accounted for
+//   Max of both  whichever of the two is larger
+//
+// Max of both is the default because the distribution is empty at the start of a
+// chart, where calculateIndex returns -1 and would otherwise leave the gate wide
+// open exactly when there is least reason to trust it.
+gateMode = input.string('Max of both', 'Streak gate', options = ['Off', 'Manual', 'Distribution', 'Max of both'], group = gFilt,
+     tooltip = 'Thresholds come from Percentage and Min entries to start, both in the Gate and window group at the top of this dialog.')
+
+// Session window, on by default. It used to be off so the first thing you saw was
+// unfiltered behaviour, but a signal outside the hours you actually trade is
+// noise that also feeds the streak histogram, and the gate then sets its
+// threshold partly from candles you were never going to act on.
+//
+// This default must stay identical to the one in mar1Scanner.pine. The hours
+// filter runs before the streak is counted, so the two scripts disagreeing here
+// gives them different distributions and therefore different gate thresholds -
+// which is the difference between a signal being an entry and being a warning.
+startHour       = input.int(4, "Start indicator's hours", group = gFilt, display = display.none)
+endHour         = input.int(16, "End indicator's hours", group = gFilt, display = display.none)
+restrictToHours = input.bool(true, 'Fire signals only inside those hours', group = gFilt)
+
+// Applies to every cell of every table at once. Normal is Pine's own default and
+// the point at which the bottom-left table still fits a usual chart window;
+// Large and Huge are there for readability and will make it taller, so expect to
+// trade the signal log or the metrics block for them.
+tableTextSize = input.string('Normal', 'Table text size', options = ['Tiny', 'Small', 'Normal', 'Large', 'Huge'], group = gStats, display = display.none)
+
+// Diagnostics. Prints one character per bar along the bottom of the pane naming
+// the first condition that stopped that candle from producing a signal. Answers
+// "why is there nothing here" without guessing from the shape of the chart.
+debugMode = input.bool(false, 'Debug: reason code per bar', group = gStats, display = display.none)
+
+// Off by default, which is the same reasoning the scanner's own log already
+// follows: the block is tall enough to cover the price it is supposed to be read
+// against, and it is a thing you go and look at rather than a thing you need in
+// front of you while a candle is forming.
+//
+// Nothing stops being COUNTED. Every statistic behind this is accumulated on
+// every bar whatever this says - the switch only decides whether the table is
+// drawn - so turning it on later shows the full history, not the history since
+// you turned it on.
+showStatsTable = input.bool(false, 'Show statistics table', group = gStats, display = display.none)
+
+// The taken block sits inside the statistics block, so this only has an effect
+// while 'Show statistics table' is on - the numbers it prints are computed
+// there and nowhere else.
+showTakenTable = input.bool(false, "Show 'TAKEN' table", group = gStats, display = display.none)
+
+showFailedAfterSuccessTable = input.bool(false, "Show 'Fails After Success' table", group = gStats, display = display.none)
+showSuccessedAfterFailTable = input.bool(false, "Show 'Successes After Fail' table", group = gStats, display = display.none)
+
+// Width of the forward window in the two streak tables. The Cumulative column
+// looks backwards - everything up to and including this row - and answers "how
+// much of the distribution is already behind me". This looks the other way and
+// answers "how much is in the next few rows", which is the question that matters
+// when the streak is sitting ON a row and you want to know what is still ahead.
+//
+// Three by default; the window truncates at bucket 15, so the last rows sum
+// fewer than three because there is nothing beyond the catch-all.
+forwardSteps = input.int(3, 'Forward window (rows after each row)', minval = 1, maxval = 14, group = gStats, display = display.none)
+
+// One pip. syminfo.mintick is the smallest price increment the symbol quotes,
+// which on forex is one tenth of a pip on both 5-digit majors and 3-digit JPY
+// crosses - hence the x10. On anything that is not forex a "pip" is meaningless,
+// so the raw tick is used instead.
+pipSize = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
+
+// Pine has no single "moving average" call that takes a type, so the type input
+// is resolved by hand. All four are evaluated on every bar regardless of the
+// choice - that is how Pine works and it costs nothing here.
+maValue = maType == 'WMA' ? ta.wma(src, maLength) :
+     maType == 'EMA' ? ta.ema(src, maLength) :
+     maType == 'RMA' ? ta.rma(src, maLength) :
+     ta.sma(src, maLength)
+
+isBullishBar = open < close
+isBearishBar = open > close
+
+// body is the filled part of the candle. atr is average true range, the standard
+// measure of how much this symbol moves per candle - used here only to scale the
+// touch tolerance.
+body = math.abs(close - open)
+atr  = ta.atr(atrLen)
+
+// The "large body" benchmark, on the same rolling window as the wick averages.
+// It used to be a cumulative mean over the entire loaded history, which needed
+// no window but also never adapted: a chart spanning a quiet session and a
+// violent one settled on a figure that described neither.
+//
+// The [1] shift keeps the current candle out of the average it is measured
+// against, so a large candle cannot raise its own bar. Until refLen candles have
+// closed this is na, and every test that reads it stays shut - which is also the
+// warmup, with no separate constant to maintain.
+bodyRef = ta.sma(body, refLen)[1]
+
+// Geometry of the current candle. math.max(open, close) is the top of the body
+// whichever way the candle went, so upperWick works for bull and bear candles
+// alike without branching.
+candleRange = high - low
+upperWick   = high - math.max(open, close)
+lowerWick   = math.min(open, close) - low
+
+tol = atr * touchTol
+
+// Trend test. Counting rather than chaining close[1] <= ma[1] and close[2] <= ...
+// keeps trendBars adjustable: with a fixed chain the number of comparisons
+// would have to be written into the code.
+//
+// Note the loop starts at 1, not 0: bar 0 is the rejection candle itself, and it
+// is allowed - in fact required - to behave differently from the run before it.
+//
+// The comparisons are inclusive: a close sitting exactly on the average still
+// counts as being on that side of it. A candle that closed precisely at the
+// average therefore satisfies both counters, but since equality of two floats
+// this way round is vanishingly rare, and the long-wins tie-break on the signal
+// already covers a collision, nothing further is needed.
+int belowCount = 0
+int aboveCount = 0
+for i = 1 to trendBars
+    // Separation, measured on the bar being tested so it scales with the
+    // volatility that actually prevailed there rather than with today's.
+    sep = atr[i] * trendSep
+    belowCount := belowCount + (close[i] <= maValue[i] - sep ? 1 : 0)
+    aboveCount := aboveCount + (close[i] >= maValue[i] + sep ? 1 : 0)
+
+trendDown = belowCount == trendBars
+trendUp   = aboveCount == trendBars
+
+// The rejection itself, three conditions in one expression:
+//   high >= maValue - tol   the candle reached the average, or came within
+//                           tolerance of it, or overshot it - all one test
+//   close <= maValue        but it did not finish beyond it
+//   upperWick >= ...        and it left a long wick as evidence of the fight
+// candleRange > 0 guards the division-by-zero case of a candle with no range,
+// which does happen on illiquid forex ticks.
+//
+// The close comparison is inclusive to match the trend counters above: on a
+// short moving average of closes the two values can genuinely land on the same
+// tick, and excluding that case would silently drop real rejections.
+// Two ways to qualify, joined by or.
+//
+// The wick path wants a long tail measured against the candle's own range.
+//
+// The body path wants three things at once: the open on the trend side, which
+// the outer close test pairs with a close on that side so the whole body sits
+// past the average; a body SMALLER than the chart's own average body; and a tail
+// longer than that body. Without the size test this path swallowed everything -
+// it fired on any ordinary trend candle and made the wick share setting inert.
+//
+// The reasoning is that a small body with a long tail is a candle that went to
+// the average and got pushed away. A large body that happens to sit past the
+// line is just a trend candle, and a trend candle is not a rejection of
+// anything, so it has no business starting a trade.
+//
+// bodyRef excludes the current candle, so a candle cannot lower the bar it has
+// to clear. While it is still na - the first bars of a chart - the body path
+// stays shut and only the wick path can fire.
+// Running averages of the two tails, taken over refLen candles and shifted by
+// one bar so a candle is never compared against a mean it helped raise. Upper
+// and lower are tracked apart because they are not interchangeable: a downtrend
+// prints long lower tails for reasons that say nothing about upper ones.
+upperWickRef = ta.sma(upperWick, refLen)[1]
+lowerWickRef = ta.sma(lowerWick, refLen)[1]
+
+wickRejectDown = upperWick >= wickRatio * candleRange and upperWick >= minPips * pipSize
+wickRejectUp   = lowerWick >= wickRatio * candleRange and lowerWick >= minPips * pipSize
+smallBody      = not na(bodyRef) and body < bodyRef
+bodyRejectDown = allowBodyInside and open <= maValue and smallBody and upperWick > body
+bodyRejectUp   = allowBodyInside and open >= maValue and smallBody and lowerWick > body
+longWickDown   = allowLongWick and not na(upperWickRef) and upperWick > upperWickRef
+longWickUp     = allowLongWick and not na(lowerWickRef) and lowerWick > lowerWickRef
+
+// Three paths, any one of which qualifies. The outer pair of conditions is
+// shared and non-negotiable: the candle reached the average, and it did not
+// finish past it.
+rejectDown = candleRange > 0 and high >= maValue - tol and close <= maValue and (wickRejectDown or bodyRejectDown or longWickDown)
+rejectUp   = candleRange > 0 and low  <= maValue + tol and close >= maValue and (wickRejectUp or bodyRejectUp or longWickUp)
+
+// The lone counter-trend candle. In a downtrend that candle is bullish, and it
+// argues for the downtrend resuming - so it produces a SHORT, the same direction
+// a rejection there would produce. isBearishBar[1] is what makes it lone: the
+// candle before it went with the trend.
+counterShort = allowCounterCandle and isBullishBar and isBearishBar[1]
+counterLong  = allowCounterCandle and isBearishBar and isBullishBar[1]
+
+// --- MODULE: two counter-trend candles ------------------------------- BEGIN
+//
+// To roll the whole thing back: set DC_ON to false. To remove it outright:
+// delete down to END, and drop `or dcShort` / `or dcLong` from the two trigger
+// lines below. Nothing else in the script refers to it except one debug line,
+// which is marked with the same MODULE word.
+//
+// The same argument as the lone counter candle, made about a PAIR of them. One
+// candle against the trend is usually profit taking; two is either a deeper
+// flush of the same thing or the beginning of a turn - and what separates those
+// two is how far the second one got. So this path accepts the pair only while
+// the move is still contained: the second candle must not have closed past
+// where price already was several candles before the pair started.
+//
+// DC_BACK is that distance, counted back from the SECOND counter candle, so 4
+// means the fifth candle inclusive:
+//
+//   [4]  the candle whose price is the reference
+//   [3]  [2]  still running with the trend; [2] is the last one that does
+//   [1]  first counter candle
+//   [0]  second counter candle - the trigger
+//
+// Direction. In a downtrend the pair is bullish, so "contained" is a ceiling:
+// the close must not be ABOVE the reference. In an uptrend it is the mirror,
+// and the whole thing produces a long for the same reason the single-candle
+// path does - the trend is expected to resume.
+//
+// isBearishBar[2] / isBullishBar[2] is the lone-ness test the single-candle
+// path applies at [1], moved back one candle: the run has to be EXACTLY two. A
+// third counter candle is not a deeper pullback any more, it is a turn, and
+// this module has no business firing on every candle of one.
+//
+// This ADDS to the single-candle path rather than replacing it. With both on,
+// the first counter candle triggers by the old route and the second by this
+// one, on adjacent bars - two separate claims about two separate candles. It is
+// also why it has its own switch and does not read allowCounterCandle: the two
+// are meant to be turned on and off independently while this is being judged.
+//
+// Constants, not inputs, and that is the point rather than a shortcut.
+// TradingView maps saved settings onto inputs by POSITION, and this one has to
+// be declared here, above its use - so as an input it would shift every setting
+// below it on every chart that already carries the script, and taking it out
+// again later would shift them all back. A constant costs one word to flip and
+// leaves every saved chart untouched.
+//
+// These three must stay identical to the block of the same name in
+// mar1Scanner.pine, which is not something CFGSUM can check for you - the
+// checksum only covers inputs.
+DC_ON   = true      // false rolls the module back without deleting it
+DC_BACK = 4         // candles back from the second counter candle
+DC_REF  = 'Close'   // 'Close' or 'Open' - which price of that candle bounds it
+
+dcRef   = DC_REF == 'Open' ? open[DC_BACK] : close[DC_BACK]
+
+// na until DC_BACK candles have loaded. Guarding here rather than in each of the
+// two lines below keeps the comparison out of na arithmetic entirely.
+dcReady = DC_ON and not na(dcRef)
+
+dcShort = dcReady and isBullishBar and isBullishBar[1] and isBearishBar[2] and close <= dcRef
+dcLong  = dcReady and isBearishBar and isBearishBar[1] and isBullishBar[2] and close >= dcRef
+// --- MODULE: two counter-trend candles --------------------------------- END
+
+// A downward rejection in a downtrend argues for continuation down, hence short.
+// The counter candle argues for the same thing by a different route, so the two
+// sit side by side under the same trend test.
+triggerShort = trendDown and (rejectDown or counterShort or dcShort)
+triggerLong  = trendUp and (rejectUp or counterLong or dcLong)
+
+// Local hour. TradingView's hour is in exchange time; the offset shifts it to
+// the frame the startHour/endHour inputs are written in, and the same frame is
+// used to timestamp signals in the table, so the two always agree.
+utcOffset = 1
+localHour = (hour + utcOffset) % 24
+inHours   = localHour >= startHour and localHour < endHour
+hoursOk   = not restrictToHours or inHours
+
+// var means "initialise once, then survive from bar to bar" - an ordinary
+// assignment would reset on every candle. Both start far in the past so the very
+// first signal of either side is never blocked by the cooldown.
+//
+// Two counters cover both modes without a third variable: in shared mode a
+// signal advances both of them, which keeps them identical and reproduces the
+// single-counter behaviour exactly.
+var int lastLongBar  = -100000
+var int lastShortBar = -100000
+canFireLong  = bar_index - lastLongBar >= cooldown
+canFireShort = bar_index - lastShortBar >= cooldown
+
+// DETECTED signals. [1] means "one bar ago": the trigger is read from the candle
+// that has already closed, and the condition lands on the candle being
+// predicted. That is what makes the signal non-repainting - by the time it
+// appears, everything it depends on is final and cannot change.
+//
+// not triggerLong[1] on the short side is a tie-break: if both fire on the same
+// candle, long wins and short is suppressed, so the two can never be counted
+// against the same bar.
+//
+// Every statistic in this script is built from these two, never from the gated
+// versions further down. That separation is the whole point: the gate reads the
+// streak history, so if the gate also decided what entered that history it would
+// be grading its own homework.
+buyFound  = triggerLong[1] and canFireLong and hoursOk
+sellFound = triggerShort[1] and not triggerLong[1] and canFireShort and hoursOk
+
+// barstate.isconfirmed is true only once the bar has actually closed. Advancing
+// the cooldown on an unconfirmed bar would let a flickering realtime candle
+// consume the budget and then take the signal back.
+//
+// The cooldown is spent by DETECTED signals, not taken ones, so suppressing a
+// signal does not silently shift the spacing of everything after it.
+if barstate.isconfirmed
+    if buyFound
+        lastLongBar := bar_index
+        if not perDirectionCooldown
+            lastShortBar := bar_index
+    if sellFound
+        lastShortBar := bar_index
+        if not perDirectionCooldown
+            lastLongBar := bar_index
+
+// bodyRef holds the mean body of every candle closed before this one, so a large
+// candle can never inflate the benchmark it is judged by.
+isBigBody = not na(bodyRef) and body > bodyRef
+
+var int totalBuySignals      = 0
+var int successfulBuySignals = 0
+var int bigBodyBuySignals    = 0
+var int totalSellSignals      = 0
+var int successfulSellSignals = 0
+var int bigBodySellSignals    = 0
+
+// Streaks of consecutive wrong signals. Buy and sell are tracked separately and
+// combined, because a strategy can be fine in one direction and broken in the
+// other and a single number would hide that.
+var int consecutiveBuyFalse         = 0
+var int maxConsecutiveBuyFalse      = 0
+var int consecutiveSellFalse        = 0
+var int maxConsecutiveSellFalse     = 0
+var int consecutiveCombinedFalse    = 0
+var int maxConsecutiveCombinedFalse = 0
+
+var int consecutiveBuySuccess         = 0
+var int maxConsecutiveBuySuccess      = 0
+var int consecutiveSellSuccess        = 0
+var int maxConsecutiveSellSuccess     = 0
+var int consecutiveCombinedSuccess    = 0
+var int maxConsecutiveCombinedSuccess = 0
+
+var int totalFalseSignals = 0
+
+// Rolling log of the 10 most recent signals, newest first. Every signal is
+// unshifted onto the front and one entry popped off the back, so the arrays stay
+// at exactly 10 without any explicit trimming. Four parallel arrays rather than
+// one array of objects, because that is the shape the table renderer wants and
+// Pine has no tuple array.
+var array<string> last15Signals = array.new_string(10, '')
+var array<string> last15Results = array.new_string(10, '')
+var array<string> last15Bodies  = array.new_string(10, '')
+var array<string> last15Times   = array.new_string(10, '')
+
+// Histograms of streak lengths: bucket n holds how many streaks stopped at
+// exactly length n. Bucket 15 is a catch-all for anything longer, which is why
+// the tables can show every bucket and still have their cumulative column reach
+// 100%. Nothing is lost by capping there - the true worst case is reported
+// separately by the Max False Streak row.
+var int[] combinedFailedAfterSuccess   = array.new_int(16, 0)
+var int[] combinedSuccessesAfterFailed = array.new_int(16, 0)
+
+var int currentCombinedFailedAfterSuccess   = 0
+var int currentCombinedSuccessesAfterFailed = 0
+
+// Unconditional base rates over the same sample. Without them a percentage in
+// the table cannot be told apart from what firing at random would produce, which
+// is the whole point of the exercise.
+var int barsSeen  = 0
+var int barsUpBig = 0
+var int barsDnBig = 0
+
+// The taken subset, counted separately from everything above. Comparing these
+// against the full set is the only way to answer whether waiting for a losing
+// streak helps or is superstition.
+var int takenBuySignals   = 0
+var int takenBuyDirHit    = 0
+var int takenBuyJointHit  = 0
+var int takenSellSignals  = 0
+var int takenSellDirHit   = 0
+var int takenSellJointHit = 0
+
+// Index at which the cumulative distribution of a streak histogram crosses perc.
+// Defined here rather than next to the tables because the gate below needs it on
+// every bar, not just on the last one. Starts at 1 because bucket 0 means "no
+// streak" and would skew the total. Returns -1 when there is nothing to measure.
+calculateIndex(int[] arr, float perc) =>
+    total = 0.0
+    for i = 1 to array.size(arr) - 1
+        total += array.get(arr, i)
+    if array.size(arr) == 0 or total == 0
+        -1
+    else
+        cumSum = 0.0
+        index = -1
+        for i = 1 to array.size(arr) - 1
+            cumSum += array.get(arr, i) / total * 100
+            // Inclusive on purpose. With a strict > the bucket that lands the
+            // cumulative exactly on the cutoff was skipped and the answer slid
+            // one bucket to the right, and a Percentage of 100 could never match
+            // at all, since the cumulative caps at exactly 100.
+            if cumSum >= perc and index == -1
+                index := i
+        index
+
+// The gate. distIndex is read from the histogram as it stands BEFORE this bar is
+// graded, and consecutiveCombinedFalse likewise still holds the streak as of the
+// previous signal - both are updated further down. So the gate decides using
+// only what was already known, which is what makes it honest and also what makes
+// it reproducible in real time.
+//
+// A -1 from calculateIndex means the histogram is still empty; falling back to
+// the manual floor keeps the gate shut rather than wide open.
+distIndex = calculateIndex(combinedFailedAfterSuccess, basePercentage)
+gateThreshold = gateMode == 'Off' ? 0 :
+     gateMode == 'Manual' ? minEntriesToStart :
+     gateMode == 'Distribution' ? (distIndex > 0 ? distIndex : minEntriesToStart) :
+     math.max(distIndex, minEntriesToStart)
+
+gateOk = consecutiveCombinedFalse >= gateThreshold
+
+// The streak as it stood when the signal was judged, captured here because the
+// statistics block further down folds this signal's own result into the counter.
+// Markers that describe the ENTRY must use this value; markers that describe the
+// OUTCOME must use the updated one.
+streakAtSignal = consecutiveCombinedFalse
+
+// The exact colour that was painted on the last failure marker, carried forward
+// so the next large diamond can reuse the value itself rather than recompute
+// something that ought to match. Position size is decided from this colour, so
+// "ought to match" is not good enough - two formulas agreeing is a coincidence
+// that a drifting threshold has already broken once.
+//
+// na means no run is in progress: either nothing has failed yet, or the last
+// marker won and the ladder was reset.
+var color carriedColor = na
+
+// Read before the update further down, because a signal is resolved on the same
+// bar it fires: without this snapshot the marker would collect the colour of its
+// own failure instead of the previous one.
+carriedAtSignal = carriedColor
+
+// Anchor the marker colour scale is measured against.
+//
+// It must NOT be the live gateThreshold. In Distribution and Max of both modes
+// that threshold is recomputed every bar from the streak histogram, and a fresh
+// failure is exactly what feeds the histogram - so a losing run pushed the
+// threshold up by roughly the same step it pushed the streak, the difference
+// between them stayed put, and consecutive entries came out lime, lime, lime
+// instead of climbing the ladder. The scale was chasing a moving target.
+//
+// So the anchor is captured once, at the moment a run begins - while the streak
+// still reads zero - and then held for the whole run. From then on the streak
+// grows and the anchor does not, which is what makes each successive marker take
+// the next colour. It is re-adopted on the next reset, so a drifting threshold
+// still gets picked up, just never in the middle of a sequence.
+//
+// The gate itself keeps using the live threshold: gating should react to the
+// current distribution. Only the colour is frozen.
+//
+// With the gate off there is no threshold at all, and zero is the right anchor:
+// it puts a fresh entry - streak zero, clean slate - on lime and climbs from
+// there. White stays unused, correctly, since white means "one step from the
+// gate opening" and there is no gate to open.
+var int lockedLimit = 0
+if consecutiveCombinedFalse == 0
+    lockedLimit := gateThreshold
+
+colorLimit = gateMode == 'Off' ? 0 : lockedLimit
+
+// The one colour scale, used by every diamond on the chart, large and small.
+// It encodes how far the losing streak has run relative to the gate threshold,
+// and nothing else - direction is carried by position, below the bar for buy and
+// above it for sell, so colour never has to say it twice.
+//
+//   limit - 1   white    one step short, the gate is about to open
+//   limit       lime     first streak length that an entry can happen on
+//   limit + 1   orange
+//   limit + 2   lilac
+//   +3          purple
+//   +4          RED      the fifth entry, far past anything expected
+//   +5 beyond   WHITE    the sixth entry on - white AGAIN, at the far end
+//
+// One step per colour all the way up, with red from +4. It used to be one step
+// each for orange and lilac and then TWELVE for purple, up to +15, so the top of
+// the scale stopped saying anything: a run four deep and a run eleven deep wore
+// the same colour, and the one colour meaning "this is unusual" was reserved for
+// a length nobody ever reaches.
+//
+// The step is one BEHIND the entry it colours, and that is the part to keep
+// straight when reading this against the chart. A large diamond wears
+// carriedColor - the colour of the failure marker before it - so entry n stands
+// on step n-1:
+//
+//   entry 1   lime      the gate has just opened, nothing has failed yet
+//   entry 2   orange
+//   entry 3   lilac
+//   entry 4   purple
+//   entry 5   red       and every entry after it
+//
+// So there is exactly one purple diamond in a run, and the fifth entry is the
+// first red one. Reading the scale straight off the entry count instead of off
+// the streak is off by one every time.
+//
+// Keep this identical to ladderStep and stepColor in mar1Scanner.pine. The
+// three are one scale split up only because a colour cannot cross
+// request.security, and moving a boundary OR a hue on one side alone is how a
+// purple diamond ends up standing over a red row. Nothing catches that: CFGSUM
+// folds settings, not colours.
+//
+// Red means one thing here and one thing only: the top step. It used to be the
+// fallback for everything BELOW the threshold, which is why sell entries came
+// out red whatever streak they arrived on - that fallback is gone, and the hue
+// was free to be given to the step that has earned an alarm.
+//
+// The fallback covers streaks below limit - 1, which the scale has no name for.
+// It is drawn heavily transparent rather than solid: those markers carry no
+// information from this scale, so they should not compete with the ones that do.
+// Raise the 80 to 100 to make them disappear completely.
+streakColor(int streak, int limit) =>
+    if streak == limit - 1
+        color.white
+    else if streak == limit
+        color.lime
+    else if streak > limit
+        if streak - limit < 2
+            color.orange
+        else if streak - limit < 3
+            color.rgb(121, 119, 236)
+        else if streak - limit < 4
+            color.purple
+        else if streak - limit < 5
+            // BRIGHT RED, and it is the only step on this ladder that is not
+            // simply the next hue along.
+            //
+            // It was sky blue, then deep blue - 5, 188, 243 carried almost as
+            // much green as blue and read as teal against the lilac below it,
+            // so the green was dropped. That fixed the ambiguity and left the
+            // real problem: a run four entries past its anchor is the single
+            // most expensive thing this strategy does, and it was being reported
+            // by one more colour in a sequence. Blue is a hue you have to have
+            // learned; red is not.
+            //
+            // The same value is in stepColor in mar1Scanner.pine, so the diamond
+            // on the chart and the row in both of the scanner's tables are still
+            // one fact seen twice. Change one and change the other - nothing
+            // checks it, because CFGSUM folds settings and not colours.
+            #FF1744
+        else
+            // WHITE AGAIN, from the SIXTH entry on, and the repetition is the
+            // point rather than an oversight.
+            //
+            // Red used to cover the fifth entry and everything after it, so a
+            // window five deep and a window eleven deep were the same colour -
+            // the scale simply stopped, and the worst runs there are ran out of
+            // ladder to climb. Adding a seventh hue would have meant learning a
+            // seventh hue.
+            //
+            // White is already on this scale, at the BOTTOM, one step short of
+            // the gate. It cannot be confused with this one: that white is a gate
+            // with nothing open, and this one is a window six entries deep. They
+            // are as far apart as the ladder goes, and no run passes through the
+            // bottom white on its way up - a window starts at lime.
+            //
+            // It also reads correctly on its own. After red, going back to the
+            // blankest thing on the chart says the scale has been left behind,
+            // which is exactly what a run this long has done.
+            color.white
+    else
+        color.new(color.silver, 80)
+
+// TAKEN signals - the ones that get a marker and an alert.
+buyTaken  = buyFound and gateOk
+sellTaken = sellFound and gateOk
+
+// One step short of the threshold. A signal arriving here is still suppressed,
+// but if it fails the streak reaches the threshold and the NEXT signal will be
+// taken - so this is the heads-up that entries are about to resume.
+//
+// Only meaningful while the gate is on: with Off the threshold is 0, nothing is
+// ever suppressed, and there is nothing to warn about.
+//
+// The condition mirrors the white step of the marker colour scale, which also
+// sits at exactly one below its limit, so the chart and the small diamonds agree
+// on what white means.
+gateArmed = gateMode != 'Off' and consecutiveCombinedFalse == gateThreshold - 1
+buyWarn   = buyFound and gateArmed
+sellWarn  = sellFound and gateArmed
+
+// Moves a running streak from bucket n-1 to bucket n. Called once per signal, so
+// while a streak is alive it occupies exactly one bucket, and when it dies it
+// stays in the bucket matching its final length - CAPPED AT 15, and the cap is
+// the whole subtlety. See below.
+//
+// ONCE A STREAK REACHES THE CATCH-ALL, NOTHING MOVES ANY MORE - and this
+// used to keep moving it, which is the bug this guard fixes rather than a
+// style choice.
+//
+// The transfer is what keeps a LIVE streak in exactly one bucket: as it grows
+// past n it is added to bucket n and taken back out of n-1. Bucket 15 is a
+// catch-all, so a streak that reaches 15 has ARRIVED and never leaves. With the
+// index clamped by math.min, the sixteenth failure ran the transfer AGAIN -
+// adding a second copy of one live streak to bucket 15 and taking a real one
+// OUT of bucket 14, which went NEGATIVE by one per extra failure.
+//
+// THE TOTAL WAS NEVER AFFECTED, and that is what made it silent for as long as
+// it was: the +1 and the -1 both sit inside the summed range 1..15, so the one
+// number anybody could have checked by hand stayed exactly right while the
+// shape underneath it did not.
+//
+// What it cost: calcIndex walks the cumulative distribution and takes the FIRST
+// crossing of the percentage. A negative bucket 14 drags that cumulative back
+// DOWN, so a crossing that belonged at 14 was missed and picked up at 15
+// instead - one rung too high on the gate threshold, in Distribution and in Max
+// of both. The gate then opens one loss LATER than the distribution says it
+// should. The error is one-sided and bounded: never earlier, and never any
+// bucket other than 14 -> 15.
+//
+// Worked example, 20 consecutive misses against 19 shorter streaks at 95%:
+// bucket 14 reads -4 and bucket 15 reads 6 where they should read 1 and 1, the
+// cumulative falls from 90% to 70% at bucket 14, and the answer comes back 15
+// instead of 14.
+//
+// The same five lines live in SIX files. maRejection.pine is the one where this
+// feeds the gate that decides real entries.
+//
+// The return value is the bucket the streak now sits in. It is still the
+// clamped index, because that IS where a saturated streak sits; only the
+// transfer stops.
+recordStreak(int[] arr, int streakLen) =>
+    idx = math.min(streakLen, 15)
+    if streakLen <= 15
+        array.set(arr, idx, array.get(arr, idx) + 1)
+        array.set(arr, idx - 1, array.get(arr, idx - 1) - 1)
+    idx
+
+// All statistics are accumulated here, and only on confirmed bars, so a realtime
+// candle cannot be counted twice as it ticks.
+if barstate.isconfirmed and not na(bodyRef)
+    barsSeen  += 1
+    barsUpBig += isBigBody and isBullishBar ? 1 : 0
+    barsDnBig += isBigBody and isBearishBar ? 1 : 0
+
+    if buyFound or sellFound
+        // Taken subset is tallied first, while the gate decision that produced
+        // it still reflects the streak as it stood when the signal appeared.
+        if buyTaken
+            takenBuySignals  += 1
+            takenBuyDirHit   += isBullishBar ? 1 : 0
+            takenBuyJointHit += isBullishBar and isBigBody ? 1 : 0
+        if sellTaken
+            takenSellSignals  += 1
+            takenSellDirHit   += isBearishBar ? 1 : 0
+            takenSellJointHit += isBearishBar and isBigBody ? 1 : 0
+
+        if buyFound
+            totalBuySignals += 1
+            array.unshift(last15Signals, 'BUY')
+            array.unshift(last15Results, isBullishBar ? '1' : '0')
+            array.unshift(last15Bodies, isBigBody ? 'Big' : 'Small')
+            array.unshift(last15Times, str.format_time(time, 'yyyy-MM-dd HH:mm', 'UTC+1'))
+            array.pop(last15Signals)
+            array.pop(last15Results)
+            array.pop(last15Bodies)
+            array.pop(last15Times)
+
+            if isBullishBar
+                successfulBuySignals += 1
+                bigBodyBuySignals += isBigBody ? 1 : 0
+
+                currentCombinedSuccessesAfterFailed += 1
+                recordStreak(combinedSuccessesAfterFailed, currentCombinedSuccessesAfterFailed)
+
+                consecutiveBuyFalse := 0
+                consecutiveBuySuccess += 1
+                consecutiveCombinedSuccess += 1
+                maxConsecutiveBuySuccess := math.max(maxConsecutiveBuySuccess, consecutiveBuySuccess)
+                maxConsecutiveCombinedSuccess := math.max(maxConsecutiveCombinedSuccess, consecutiveCombinedSuccess)
+
+                currentCombinedFailedAfterSuccess := 0
+            else
+                currentCombinedSuccessesAfterFailed := 0
+                consecutiveBuyFalse += 1
+                consecutiveBuySuccess := 0
+                consecutiveCombinedSuccess := 0
+                maxConsecutiveBuyFalse := math.max(maxConsecutiveBuyFalse, consecutiveBuyFalse)
+
+                currentCombinedFailedAfterSuccess += 1
+                recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+
+        if sellFound
+            totalSellSignals += 1
+            array.unshift(last15Signals, 'SELL')
+            array.unshift(last15Results, isBearishBar ? '1' : '0')
+            array.unshift(last15Bodies, isBigBody ? 'Big' : 'Small')
+            array.unshift(last15Times, str.format_time(time, 'yyyy-MM-dd HH:mm', 'UTC+1'))
+            array.pop(last15Signals)
+            array.pop(last15Results)
+            array.pop(last15Bodies)
+            array.pop(last15Times)
+
+            if isBearishBar
+                successfulSellSignals += 1
+                bigBodySellSignals += isBigBody ? 1 : 0
+
+                currentCombinedSuccessesAfterFailed += 1
+                recordStreak(combinedSuccessesAfterFailed, currentCombinedSuccessesAfterFailed)
+
+                consecutiveSellFalse := 0
+                consecutiveSellSuccess += 1
+                consecutiveCombinedSuccess += 1
+                maxConsecutiveSellSuccess := math.max(maxConsecutiveSellSuccess, consecutiveSellSuccess)
+                maxConsecutiveCombinedSuccess := math.max(maxConsecutiveCombinedSuccess, consecutiveCombinedSuccess)
+
+                currentCombinedFailedAfterSuccess := 0
+            else
+                currentCombinedSuccessesAfterFailed := 0
+                consecutiveSellFalse += 1
+                consecutiveSellSuccess := 0
+                consecutiveCombinedSuccess := 0
+                maxConsecutiveSellFalse := math.max(maxConsecutiveSellFalse, consecutiveSellFalse)
+
+                currentCombinedFailedAfterSuccess += 1
+                recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+
+        if (buyFound and not isBullishBar) or (sellFound and not isBearishBar)
+            totalFalseSignals += 1
+            consecutiveCombinedFalse += 1
+            maxConsecutiveCombinedFalse := math.max(maxConsecutiveCombinedFalse, consecutiveCombinedFalse)
+        else
+            consecutiveCombinedFalse := 0
+
+// Ladder bookkeeping, deliberately after the statistics block so the streak it
+// reads already includes this signal's own result - the same value the small
+// failure marker is about to be painted with.
+//
+// A marker that failed stores its colour; a marker that won clears the store, so
+// the next run starts from the freshly computed step instead of inheriting the
+// colour of a run that is already over.
+if barstate.isconfirmed and (buyTaken or sellTaken or buyWarn or sellWarn)
+    markerMissed = (buyTaken or buyWarn) and not isBullishBar or (sellTaken or sellWarn) and not isBearishBar
+    carriedColor := markerMissed ? streakColor(consecutiveCombinedFalse, colorLimit) : na
+
+// Faint green wash over the session window, so the hours filter is visible even
+// when it is switched off. Transparency 100 means fully invisible outside it.
+bgcolor(inHours ? color.new(color.green, 97) : color.new(color.red, 100), title = 'Trading Hours Background')
+
+plot(maValue, 'MA', color = color.new(color.blue, 0), linewidth = 2)
+
+// 100.0 leads the expression deliberately: in Pine, int divided by int is
+// integer division, so part / total * 100 would collapse every percentage in
+// this script to exactly 0% or 100%.
+pct(int part, int total) =>
+    total > 0 ? 100.0 * part / total : float(na)
+
+// Returns N/A rather than 0% for an empty sample, because a fabricated zero
+// reads as a real measurement.
+fmtPct(float value) =>
+    na(value) ? 'N/A' : str.tostring(value, '#.##') + '%'
+
+// Sum of the `steps` buckets that come AFTER row `from`. The row itself is
+// excluded on purpose: the Cumulative column already includes it, so the two
+// columns partition the distribution rather than overlapping on one bucket.
+//
+// The window is clipped to the last bucket, and the explicit emptiness guard is
+// not decoration - a Pine for loop whose start exceeds its end counts DOWNWARDS
+// instead of skipping, so on the last row it would step onto index 16 of a
+// 16-element array and kill the script.
+forwardSum(int[] arr, int from, int steps) =>
+    last  = math.min(from + steps, array.size(arr) - 1)
+    total = 0
+    if from + 1 <= last
+        for j = from + 1 to last
+            total += array.get(arr, j)
+    total
+
+// Behind divided by ahead - how many times more of the distribution is already
+// closed than sits in the forward window. Both arguments share a denominator, so
+// the percentage signs cancel and what comes out is a plain count ratio.
+//
+// The infinity case is real rather than an error: the last rows have nothing
+// after them, so their forward window is legitimately empty and the whole
+// distribution is behind. Printing 'inf' says that; a hidden N/A would not.
+fmtRatio(float behind, float ahead) =>
+    if na(behind) or na(ahead)
+        'N/A'
+    else if ahead <= 0
+        'inf'
+    else
+        str.tostring(behind / ahead, '#.00') + 'x'
+
+// Tables are created once and rewritten on the last bar only. Rebuilding them on
+// every bar would work but would be thousands of times slower.
+//
+txtSize = tableTextSize == 'Tiny' ? size.tiny :
+     tableTextSize == 'Small' ? size.small :
+     tableTextSize == 'Large' ? size.large :
+     tableTextSize == 'Huge' ? size.huge :
+     size.normal
+
+// Row layout of the bottom-left table: 0-13 all-signal metrics, 14 spacer,
+// 15-16 headers, then the 10 signal rows on 17..26. Row indices are zero-based,
+// so the declared count must exceed the largest index used. 32 leaves headroom
+// for the log to be lengthened again without tripping the out-of-bounds error a
+// count of exactly 27 would invite.
+//
+// The two streak tables show buckets 1..15 on rows 2..16 and a totals row on 17,
+// hence 19.
+var table perfTable = table.new(position.bottom_left, 5, 32, border_width = 2)
+var table takenTable = table.new(position.bottom_right, 4, 10, border_width = 2)
+// Debug legend, directly above the TAKEN table on the right edge. It was tried
+// at top_left first, where TradingView's own symbol and indicator legend covers
+// that corner and hid it completely.
+var table debugTable = table.new(position.middle_right, 1, 3, border_width = 2)
+
+var table failedAfterSuccessTable = table.new(position.top_right, 6, 19, border_width = 2)
+// Bottom centre because every other anchor is taken: takenTable holds
+// bottom_right, debugTable middle_right, failedAfterSuccessTable top_right. Two
+// tables sharing one anchor overlap, with the later declaration hiding the
+// earlier one even when its own cells are never written.
+var table successedAfterFailTable = table.new(position.bottom_center, 6, 19, border_width = 2)
+
+if barstate.islast and showStatsTable
+    totalSignals    = totalBuySignals + totalSellSignals
+    totalSuccessful = successfulBuySignals + successfulSellSignals
+    totalBigBody    = bigBodyBuySignals + bigBodySellSignals
+
+    buyAccuracy   = pct(successfulBuySignals, totalBuySignals)
+    sellAccuracy  = pct(successfulSellSignals, totalSellSignals)
+    totalAccuracy = pct(totalSuccessful, totalSignals)
+
+    buyJoint   = pct(bigBodyBuySignals, totalBuySignals)
+    sellJoint  = pct(bigBodySellSignals, totalSellSignals)
+    totalJoint = pct(totalBigBody, totalSignals)
+
+    // What a coin flip would have scored on this very sample, weighted by the
+    // actual long/short mix. edge* is the signal result divided by it: 1.00x
+    // means the signal contributes nothing at all.
+    pUpBig   = pct(barsUpBig, barsSeen)
+    pDnBig   = pct(barsDnBig, barsSeen)
+    baseComb = totalSignals > 0 and not na(pUpBig) and not na(pDnBig) ? (totalBuySignals * pUpBig + totalSellSignals * pDnBig) / totalSignals : float(na)
+    edgeBuy  = na(pUpBig) or pUpBig <= 0 or na(buyJoint) ? float(na) : buyJoint / pUpBig
+    edgeSell = na(pDnBig) or pDnBig <= 0 or na(sellJoint) ? float(na) : sellJoint / pDnBig
+    edgeComb = na(baseComb) or baseComb <= 0 or na(totalJoint) ? float(na) : totalJoint / baseComb
+
+    falseAccuracy = pct(totalFalseSignals, totalSignals)
+
+    // The taken subset. Its baseline is weighted by the taken long/short mix,
+    // not the detected one - the gate can skew that mix, and comparing against
+    // the wrong mix would invent an edge that is not there.
+    takenSignals  = takenBuySignals + takenSellSignals
+    takenDirHit   = takenBuyDirHit + takenSellDirHit
+    takenJointHit = takenBuyJointHit + takenSellJointHit
+
+    takenBuyAcc   = pct(takenBuyDirHit, takenBuySignals)
+    takenSellAcc  = pct(takenSellDirHit, takenSellSignals)
+    takenTotalAcc = pct(takenDirHit, takenSignals)
+
+    takenBuyJoint   = pct(takenBuyJointHit, takenBuySignals)
+    takenSellJoint  = pct(takenSellJointHit, takenSellSignals)
+    takenTotalJoint = pct(takenJointHit, takenSignals)
+
+    takenBase = takenSignals > 0 and not na(pUpBig) and not na(pDnBig) ? (takenBuySignals * pUpBig + takenSellSignals * pDnBig) / takenSignals : float(na)
+    takenEdgeBuy  = na(pUpBig) or pUpBig <= 0 or na(takenBuyJoint) ? float(na) : takenBuyJoint / pUpBig
+    takenEdgeSell = na(pDnBig) or pDnBig <= 0 or na(takenSellJoint) ? float(na) : takenSellJoint / pDnBig
+    takenEdge     = na(takenBase) or takenBase <= 0 or na(takenTotalJoint) ? float(na) : takenTotalJoint / takenBase
+
+    cLabel = color.new(#333333, 70)
+    cBuy   = color.new(#005500, 80)
+    cSell  = color.new(#550000, 80)
+    cComb  = color.new(#333399, 80)
+
+    table.cell(perfTable, 0, 0, ' PERFORMANCE ', bgcolor = color.black, text_color = color.white, width = 4, text_size = txtSize)
+
+    table.cell(perfTable, 0, 1, ' Metric ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 1, ' Buy ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 1, ' Sell ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 1, ' Combined ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 2, ' Bars analysed ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 2, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 2, 2, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 3, 2, str.tostring(barsSeen), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 3, ' Signals found ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 3, str.tostring(totalBuySignals), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 3, str.tostring(totalSellSignals), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 3, str.tostring(totalSignals), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 4, ' Signals per 1000 bars ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 4, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 2, 4, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 3, 4, barsSeen > 0 ? str.tostring(1000.0 * totalSignals / barsSeen, '#.#') : 'N/A', bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 5, ' Direction correct ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 5, str.tostring(successfulBuySignals), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 5, str.tostring(successfulSellSignals), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 5, str.tostring(totalSuccessful), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 6, ' Direction accuracy ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 6, fmtPct(buyAccuracy), bgcolor = color.new(#00AA00, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 6, fmtPct(sellAccuracy), bgcolor = color.new(#AA0000, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 6, fmtPct(totalAccuracy), bgcolor = color.new(#5555FF, 80), text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 7, ' Dir + body > avg ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 7, str.tostring(bigBodyBuySignals), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 7, str.tostring(bigBodySellSignals), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 7, str.tostring(totalBigBody), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 8, ' Joint accuracy ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 8, fmtPct(buyJoint), bgcolor = color.new(#00AA00, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 8, fmtPct(sellJoint), bgcolor = color.new(#AA0000, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 8, fmtPct(totalJoint), bgcolor = color.new(#5555FF, 80), text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 9, ' Random baseline ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 9, fmtPct(pUpBig), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 9, fmtPct(pDnBig), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 9, fmtPct(baseComb), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 10, ' Edge over chance ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 10, na(edgeBuy) ? 'N/A' : str.tostring(edgeBuy, '#.00') + 'x', bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 10, na(edgeSell) ? 'N/A' : str.tostring(edgeSell, '#.00') + 'x', bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 10, na(edgeComb) ? 'N/A' : str.tostring(edgeComb, '#.00') + 'x', bgcolor = na(edgeComb) or edgeComb < 1.0 ? color.new(#553300, 60) : color.new(#005500, 60), text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 11, ' False Accuracy ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 11, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 2, 11, '', bgcolor = cLabel, text_size = txtSize)
+    table.cell(perfTable, 3, 11, fmtPct(falseAccuracy), bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 12, ' Max False Streak ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 12, str.tostring(maxConsecutiveBuyFalse), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 12, str.tostring(maxConsecutiveSellFalse), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 12, str.tostring(maxConsecutiveCombinedFalse), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+    table.cell(perfTable, 0, 13, ' Max Success Streak ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 13, str.tostring(maxConsecutiveBuySuccess), bgcolor = color.new(#00AA00, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 13, str.tostring(maxConsecutiveSellSuccess), bgcolor = color.new(#AA0000, 80), text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 13, str.tostring(maxConsecutiveCombinedSuccess), bgcolor = color.new(#5555FF, 80), text_color = color.white, text_size = txtSize)
+
+    if showTakenTable
+        // Taken block, in its own table at the bottom right. It used to sit under
+        // the metrics above, which made the bottom-left table tall enough to run off
+        // the top of the chart. Two short tables in two corners beat one tall one.
+        //
+        // It owns the bottom-right corner alone. 'Successes After Fail' was moved to
+        // middle_right for that reason - two tables on one anchor overlap.
+        //
+        // Every row here has a counterpart in the bottom-left table; reading them as
+        // pairs is the point. If waiting for a losing streak does anything, Joint
+        // accuracy and Edge must be higher here. If they are the same or worse, the
+        // gate is costing you trades and buying nothing.
+        gateLift = na(edgeComb) or edgeComb <= 0 or na(takenEdge) ? float(na) : takenEdge / edgeComb
+
+        table.cell(takenTable, 0, 0, ' TAKEN (gate applied) ', bgcolor = color.black, text_color = color.white, width = 4, text_size = txtSize)
+
+        table.cell(takenTable, 0, 1, ' Metric ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 1, ' Buy ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 1, ' Sell ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 3, 1, ' Combined ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+
+        table.cell(takenTable, 0, 2, ' Gate mode / threshold ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 2, gateMode, bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 2, '', bgcolor = cLabel, text_size = txtSize)
+        table.cell(takenTable, 3, 2, gateMode == 'Off' ? 'all' : str.tostring(gateThreshold), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+        table.cell(takenTable, 0, 3, ' Signals taken ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 3, str.tostring(takenBuySignals), bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 3, str.tostring(takenSellSignals), bgcolor = cSell, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 3, 3, str.tostring(takenSignals) + ' of ' + str.tostring(totalSignals), bgcolor = cComb, text_color = color.white, text_size = txtSize)
+
+        table.cell(takenTable, 0, 4, ' Direction accuracy ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 4, fmtPct(takenBuyAcc), bgcolor = color.new(#00AA00, 80), text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 4, fmtPct(takenSellAcc), bgcolor = color.new(#AA0000, 80), text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 3, 4, fmtPct(takenTotalAcc), bgcolor = color.new(#5555FF, 80), text_color = color.white, text_size = txtSize)
+
+        table.cell(takenTable, 0, 5, ' Joint accuracy ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 5, fmtPct(takenBuyJoint), bgcolor = color.new(#00AA00, 80), text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 5, fmtPct(takenSellJoint), bgcolor = color.new(#AA0000, 80), text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 3, 5, fmtPct(takenTotalJoint), bgcolor = color.new(#5555FF, 80), text_color = color.white, text_size = txtSize)
+
+        table.cell(takenTable, 0, 6, ' Edge over chance ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 6, na(takenEdgeBuy) ? 'N/A' : str.tostring(takenEdgeBuy, '#.00') + 'x', bgcolor = cBuy, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 2, 6, na(takenEdgeSell) ? 'N/A' : str.tostring(takenEdgeSell, '#.00') + 'x', bgcolor = cSell, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 3, 6, na(takenEdge) ? 'N/A' : str.tostring(takenEdge, '#.00') + 'x', bgcolor = na(takenEdge) or takenEdge < 1.0 ? color.new(#553300, 60) : color.new(#005500, 60), text_color = color.white, text_size = txtSize)
+
+        // Gate lift: taken edge divided by the edge of everything. Above 1.00x the
+        // gate helped, below it the gate hurt. This is the single number that
+        // settles whether the streak idea works on this chart.
+        table.cell(takenTable, 0, 7, ' Gate lift vs all ', bgcolor = cLabel, text_color = color.white, text_size = txtSize)
+        table.cell(takenTable, 1, 7, '', bgcolor = cLabel, text_size = txtSize)
+        table.cell(takenTable, 2, 7, '', bgcolor = cLabel, text_size = txtSize)
+        table.cell(takenTable, 3, 7, na(gateLift) ? 'N/A' : str.tostring(gateLift, '#.00') + 'x', bgcolor = na(gateLift) or gateLift < 1.0 ? color.new(#553300, 60) : color.new(#005500, 60), text_color = color.white, text_size = txtSize)
+
+    for c = 0 to 4
+        table.cell(perfTable, c, 14, '', bgcolor = color.black, text_size = txtSize)
+
+    table.cell(perfTable, 0, 15, ' Last 10 Signals (found) ', bgcolor = color.black, text_color = color.white, width = 4, text_size = txtSize)
+    table.cell(perfTable, 0, 16, ' # ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 1, 16, ' Date / time (UTC+1) ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 2, 16, ' Type ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 3, 16, ' Dir ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(perfTable, 4, 16, ' Body ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+
+    // Empty slots are skipped rather than drawn blank, so a fresh chart shows a
+    // short table instead of ten empty rows.
+    for i = 0 to 9
+        signalType = array.get(last15Signals, i)
+        if signalType != ''
+            result = array.get(last15Results, i)
+            bodyTag = array.get(last15Bodies, i)
+            timeTag = array.get(last15Times, i)
+            rowBgColor = result == '1' ? (signalType == 'BUY' ? color.new(#005500, 70) : color.new(#550000, 70)) : color.new(#333333, 70)
+            table.cell(perfTable, 0,  17 + i, str.tostring(i + 1), bgcolor = rowBgColor, text_color = color.white, text_size = txtSize)
+            table.cell(perfTable, 1,  17 + i, timeTag, bgcolor = rowBgColor, text_color = color.white, text_size = txtSize)
+            table.cell(perfTable, 2,  17 + i, signalType, bgcolor = rowBgColor, text_color = color.white, text_size = txtSize)
+            table.cell(perfTable, 3,  17 + i, result, bgcolor = rowBgColor, text_color = color.white, text_size = txtSize)
+            table.cell(perfTable, 4,  17 + i, bodyTag, bgcolor = rowBgColor, text_color = bodyTag == 'Big' ? color.lime : color.silver, text_size = txtSize)
+
+// Distribution of losing streaks: how often a run of N consecutive failures
+// happened after a success. The point is to see where the tail actually ends.
+if barstate.islast and showFailedAfterSuccessTable
+    table.cell(failedAfterSuccessTable, 0, 0, ' FAILS AFTER SUCCESS ', bgcolor = color.black, text_color = color.white, width = 7, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 0, 1, ' Signals After Success ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 2, 1, ' Percentage ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 3, 1, ' Cumulative ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 4, 1, ' Next ' + str.tostring(forwardSteps) + ' ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Share of the distribution sitting in the ' + str.tostring(forwardSteps) + ' rows after this one. The row itself is not included - Cumulative already has it.')
+    table.cell(failedAfterSuccessTable, 5, 1, ' Cum / Next ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Cumulative divided by the forward window: how many times more of the distribution is behind this row than ahead of it. Above 1.00x means most of it is already spent.')
+
+    totalFails = 0
+    for i = 1 to 15
+        totalFails += array.get(combinedFailedAfterSuccess, i)
+
+    bestRatioIndex = calculateIndex(combinedFailedAfterSuccess, basePercentage)
+
+    cumulativeFails = 0
+    for i = 1 to 15
+        fails = array.get(combinedFailedAfterSuccess, i)
+        cumulativeFails += fails
+        failPct = pct(fails, totalFails)
+        cumPct  = pct(cumulativeFails, totalFails)
+        fwdPct  = pct(forwardSum(combinedFailedAfterSuccess, i, forwardSteps), totalFails)
+
+        rowColor = color.new(#333333, 70 - i * 3)
+        ratioCellColor = i == bestRatioIndex ? color.new(color.green, 70) : rowColor
+        ratioTextColor = i == bestRatioIndex ? color.yellow : color.white
+
+        table.cell(failedAfterSuccessTable, 0, i + 1, i == 15 ? '15+' : str.tostring(i), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(failedAfterSuccessTable, 1, i + 1, str.tostring(fails), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(failedAfterSuccessTable, 2, i + 1, fmtPct(failPct), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(failedAfterSuccessTable, 3, i + 1, fmtPct(cumPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+        table.cell(failedAfterSuccessTable, 4, i + 1, fmtPct(fwdPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+        table.cell(failedAfterSuccessTable, 5, i + 1, fmtRatio(cumPct, fwdPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+
+    table.cell(failedAfterSuccessTable, 0,  17, ' Total Fails ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 1,  17, str.tostring(totalFails), bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 2,  17, '', bgcolor = color.gray, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 3,  17, totalFails > 0 ? '100%' : '0%', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    // No total for the forward column: its rows overlap each other, so adding
+    // them up would count most buckets several times and print a meaningless
+    // number well over 100%.
+    table.cell(failedAfterSuccessTable, 4,  17, '', bgcolor = color.gray, text_size = txtSize)
+    table.cell(failedAfterSuccessTable, 5,  17, '', bgcolor = color.gray, text_size = txtSize)
+
+// Mirror image of the table above, for winning streaks.
+if barstate.islast and showSuccessedAfterFailTable
+    table.cell(successedAfterFailTable, 0, 0, ' SUCCESSES AFTER FAIL ', bgcolor = color.black, text_color = color.white, width = 7, text_size = txtSize)
+    table.cell(successedAfterFailTable, 0, 1, ' Signals After Fail ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 2, 1, ' Percentage ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 3, 1, ' Cumulative ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 4, 1, ' Next ' + str.tostring(forwardSteps) + ' ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Share of the distribution sitting in the ' + str.tostring(forwardSteps) + ' rows after this one. The row itself is not included - Cumulative already has it.')
+    table.cell(successedAfterFailTable, 5, 1, ' Cum / Next ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+         tooltip = 'Cumulative divided by the forward window: how many times more of the distribution is behind this row than ahead of it. Above 1.00x means most of it is already spent.')
+
+    totalSuccessesAfterFail = 0
+    for i = 1 to 15
+        totalSuccessesAfterFail += array.get(combinedSuccessesAfterFailed, i)
+
+    bestRatioIndex = calculateIndex(combinedSuccessesAfterFailed, basePercentage)
+
+    cumulativeSuccesses = 0
+    for i = 1 to 15
+        successes = array.get(combinedSuccessesAfterFailed, i)
+        cumulativeSuccesses += successes
+        successPct = pct(successes, totalSuccessesAfterFail)
+        cumPct     = pct(cumulativeSuccesses, totalSuccessesAfterFail)
+        fwdPct     = pct(forwardSum(combinedSuccessesAfterFailed, i, forwardSteps), totalSuccessesAfterFail)
+
+        rowColor = color.new(#333333, 70 - i * 3)
+        ratioCellColor = i == bestRatioIndex ? color.new(color.green, 70) : rowColor
+        ratioTextColor = i == bestRatioIndex ? color.yellow : color.white
+
+        table.cell(successedAfterFailTable, 0, i + 1, i == 15 ? '15+' : str.tostring(i), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(successedAfterFailTable, 1, i + 1, str.tostring(successes), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(successedAfterFailTable, 2, i + 1, fmtPct(successPct), bgcolor = ratioCellColor, text_color = color.white, text_size = txtSize)
+        table.cell(successedAfterFailTable, 3, i + 1, fmtPct(cumPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+        table.cell(successedAfterFailTable, 4, i + 1, fmtPct(fwdPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+        table.cell(successedAfterFailTable, 5, i + 1, fmtRatio(cumPct, fwdPct), bgcolor = ratioCellColor, text_color = ratioTextColor, text_size = txtSize)
+
+    table.cell(successedAfterFailTable, 0,  17, ' Total Successes ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 1,  17, str.tostring(totalSuccessesAfterFail), bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 2,  17, '', bgcolor = color.gray, text_size = txtSize)
+    table.cell(successedAfterFailTable, 3,  17, totalSuccessesAfterFail > 0 ? '100%' : '0%', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+    table.cell(successedAfterFailTable, 4,  17, '', bgcolor = color.gray, text_size = txtSize)
+    table.cell(successedAfterFailTable, 5,  17, '', bgcolor = color.gray, text_size = txtSize)
+
+
+// ---------------------------------------------------------------------------
+// Live preview - the marker on the candle that is still forming
+// ---------------------------------------------------------------------------
+// Everything above is built not to repaint: a signal reads its trigger from the
+// PREVIOUS candle, so by the time a marker is drawn nothing it depends on can
+// change any more. The cost of that honesty is a wait. The trigger candle has to
+// close before its diamond appears, which on M1 is up to a full minute of
+// watching a candle that already qualifies and no marker under it.
+//
+// This block buys that minute back, and the price is worth stating bluntly:
+// PREVIEW MARKERS REPAINT. They are read from the live candle, whose wick, body
+// and close are all still moving, so a preview can appear, change colour, jump to
+// the other side of the bar and vanish, all inside one candle. Only the solid
+// marker that arrives after the close is a fact.
+//
+// They are drawn faded for exactly that reason. Faded means provisional, solid
+// means settled, and both land on the same candle in the same place - so a
+// preview firms up where it stands rather than being replaced somewhere else.
+//
+// Nothing here touches the statistics, the gate or the colour ladder. The
+// preview only reads state, never writes to it. If it were counted, every
+// intrabar flicker would enter the evidence the gate later reads back.
+gLive = 'Live preview'
+
+livePreview = input.bool(true, 'Show markers on the forming candle', group = gLive,
+     tooltip = 'These repaint by nature - the candle they are read from is not finished. The solid markers are the settled ones.', display = display.none)
+liveFade    = input.int(45, 'Preview transparency', minval = 0, maxval = 90, group = gLive, display = display.none)
+
+// Only the candle currently being built. Every historical bar already carries
+// its settled marker in this exact spot, so drawing a preview there as well
+// would just stack two diamonds on top of each other.
+liveBar = livePreview and barstate.isrealtime and not barstate.isconfirmed
+
+// Everything below projects one bar forward. Each line answers "if this candle
+// closed right now, what would the next bar see", and each mirrors the update
+// that the corresponding block further up performs at this candle's close.
+
+// The streak, from the statistics block: a signal that missed adds one, a signal
+// that hit resets to zero, and a candle with no signal leaves it alone.
+liveStreak = (buyFound and not isBullishBar) or (sellFound and not isBearishBar) ? consecutiveCombinedFalse + 1 :
+     buyFound or sellFound ? 0 : consecutiveCombinedFalse
+
+// The cooldown, from the block that spends it. A signal detected on THIS candle
+// takes the budget at its close, before the trigger forming here could ever use
+// it - and in shared mode it takes the other direction's budget with it.
+liveLastLong  = buyFound or (not perDirectionCooldown and sellFound) ? bar_index : lastLongBar
+liveLastShort = sellFound or (not perDirectionCooldown and buyFound) ? bar_index : lastShortBar
+liveCanLong   = bar_index + 1 - liveLastLong >= cooldown
+liveCanShort  = bar_index + 1 - liveLastShort >= cooldown
+
+// The gate, measured against the projected streak rather than the current one.
+//
+// gateThreshold itself is deliberately NOT projected. In Distribution and Max of
+// both modes it is recomputed from the streak histogram, which this candle also
+// feeds, so an honest projection would have to simulate recordStreak too. The
+// threshold moves by at most one bucket, so the preview can occasionally offer a
+// marker that the settled pass then withholds. That is the known limit here, and
+// it is a smaller lie than the repainting already is.
+liveGateOk    = liveStreak >= gateThreshold
+liveGateArmed = gateMode != 'Off' and liveStreak == gateThreshold - 1
+
+// The trigger read from THIS candle instead of the previous one. That single
+// difference is the whole feature and the whole reason it repaints. The
+// long-wins tie-break is the same one the settled signals use.
+liveBuyFound  = triggerLong and liveCanLong and hoursOk
+liveSellFound = triggerShort and not triggerLong and liveCanShort and hoursOk
+
+liveBuyTaken  = liveBar and liveBuyFound and liveGateOk
+liveSellTaken = liveBar and liveSellFound and liveGateOk
+liveBuyWarn   = liveBar and liveBuyFound and liveGateArmed
+liveSellWarn  = liveBar and liveSellFound and liveGateArmed
+
+// carriedColor as it will stand at the next bar's read, mirroring the ladder
+// bookkeeping block exactly: a marker that missed stores its colour, one that
+// hit clears the store, and a candle with no marker leaves it untouched.
+liveMarker  = buyTaken or sellTaken or buyWarn or sellWarn
+liveMissed  = (buyTaken or buyWarn) and not isBullishBar or (sellTaken or sellWarn) and not isBearishBar
+liveCarried = liveMarker ? (liveMissed ? streakColor(liveStreak, colorLimit) : na) : carriedColor
+
+liveEntryColor = na(liveCarried) ? streakColor(liveStreak, colorLimit) : liveCarried
+
+// A small diamond marks a signal that got the direction wrong, and nothing else.
+// Correct signals are left unmarked on purpose: the chart then reads as "large
+// diamonds where something was signalled, small diamonds where it went wrong".
+//
+// Warnings are included alongside entries. A white large diamond that then fails
+// is what pushes the streak onto the threshold, so its small companion comes out
+// lime - and lime is precisely the colour the next large diamond will wear. The
+// pair reads as "that one missed, the next one is live".
+//
+// The miss test matches the statistics block exactly, so what the eye counts and
+// what the table counts can never disagree. A doji closing at its own open is a
+// miss in both places.
+//
+// Colour uses the UPDATED streak, because this marker describes the outcome, not
+// the entry. That is the whole difference from the large diamonds below.
+buyFailed  = (buyTaken or buyWarn) and not isBullishBar
+sellFailed = (sellTaken or sellWarn) and not isBearishBar
+
+// The small diamonds already appeared on the forming candle before any of the
+// preview work above - buyTaken is settled from the candle's first tick, and
+// only the direction test moves. What they did NOT have was the right colour.
+//
+// The colour has to come from the streak with THIS candle folded in. On a
+// confirmed bar that is simply the counter, because the statistics block has
+// already run by the time plotshape is evaluated. On the candle still forming it
+// has not run, so the projection stands in and the marker wears the colour it
+// will keep instead of the previous one - which is what made it change shade at
+// the close and look like it had changed its mind.
+failedColor = barstate.isconfirmed ? streakColor(consecutiveCombinedFalse, colorLimit) : streakColor(liveStreak, colorLimit)
+
+plotshape(buyFailed, 'Buy Signal Failed', shape.diamond, location.belowbar,
+  color = failedColor, size = size.tiny)
+plotshape(sellFailed, 'Sell Signal Failed', shape.diamond, location.abovebar,
+  color = failedColor, size = size.tiny)
+
+// ---------------------------------------------------------------------------
+// The white step - the moment the ladder reaches one short of the gate
+// ---------------------------------------------------------------------------
+// The marker that was missing, and the reason it was missing is worth stating
+// because it is not an oversight in the ladder - it is a gap between the ladder
+// and what actually gets drawn.
+//
+// White is step 1 of the scale: the streak standing one short of the anchor, so
+// the next large diamond on this pair comes out white and one more miss opens
+// the gate. But a small diamond is only ever drawn for a signal that was TAKEN
+// or WARNED, and by the time either of those has failed the streak has already
+// moved ONTO the anchor - lime, not white. The streak climbs to the white step
+// through SUPPRESSED signals, which draw nothing at all.
+//
+// So the white step was a real state that the chart never showed. It is what the
+// scanner's pale row reports, and until now that row had no counterpart here at
+// all - which is exactly why a pale row could not be reconciled with the chart
+// by looking at it.
+//
+// This closes that. One tiny white diamond on the candle where the streak
+// arrives on the step, and the scanner's pale row carries the same minute in its
+// Open since column. Seeing the two line up is the check that the whole idea is
+// working; seeing a pale row with no diamond behind it is the signal that the
+// two scripts have drifted apart.
+//
+// It marks an ARRIVAL, not a condition. Drawn once, on the candle the streak
+// steps on, rather than on every candle the streak stays there - the state can
+// last for hours, and a row of identical diamonds under every one of them would
+// bury the chart to say one thing.
+//
+// Nothing here feeds anything. No counter, no histogram, no gate, no carried
+// colour, no success stamp. It is a reading of state that already exists, and it
+// has to stay that way: the gate reads the streak history back, so a marker that
+// wrote to it would be editing the evidence.
+//
+// No input to switch it off, deliberately. Every plotshape is already switchable
+// one by one in the indicator's Style tab, and a new input in this file would
+// shift the position of every setting declared after it - TradingView maps saved
+// settings onto inputs BY POSITION, so that would quietly rearrange settings you
+// have already tuned.
+var bool onWhiteStep = false
+whiteStepHit = false
+
+if barstate.isconfirmed
+    // colorLimit > 0 covers the gate being Off on its own: there is no ladder
+    // then, no green diamonds, and no white step to arrive on.
+    nowWhite = colorLimit > 0 and consecutiveCombinedFalse == colorLimit - 1
+
+    // A signal on this bar is required, and not as a formality. The streak only
+    // moves when a signal is graded, but colorLimit can move on its own when the
+    // anchor is re-captured - and without this the step could appear to be
+    // entered on a candle where nothing happened at all, putting a marker
+    // somewhere the eye has no way to explain.
+    whiteStepHit := nowWhite and not onWhiteStep and (buyFound or sellFound)
+    onWhiteStep  := nowWhite
+
+// Side by the signal that did it, which is the same rule the failure diamonds
+// use: below the bar for the long side, above it for the short.
+whiteStepLong  = whiteStepHit and buyFound
+whiteStepShort = whiteStepHit and not buyFound
+
+// Softened rather than solid. It marks a state, not an outcome and not a trade,
+// so it should be legible without carrying the same weight as a marker that
+// reports something that actually happened.
+plotshape(whiteStepLong, 'White step (long side)', shape.diamond, location.belowbar,
+  color = color.new(color.white, 25), size = size.tiny)
+plotshape(whiteStepShort, 'White step (short side)', shape.diamond, location.abovebar,
+  color = color.new(color.white, 25), size = size.tiny)
+
+// The entry marker, and the only thing to act on. offset = -1 draws it one bar
+// to the left, onto the rejection candle - the candle after which you enter.
+// Position carries the direction: below means buy, above means sell.
+// White diamond: the gate is one step from opening. Same size, same positions
+// and the same offset as an entry, because it marks the same kind of moment -
+// it just says "not yet, watch the next one" instead of "go".
+// Large diamonds inherit the exact colour value the previous failure marker was
+// painted with, and only fall back to computing a fresh one when no run is in
+// progress - the first marker after a win, or the first of the chart. The
+// inheritance is what guarantees the ladder never repeats a colour, whatever the
+// gate threshold does underneath.
+entryColor = na(carriedAtSignal) ? streakColor(streakAtSignal, colorLimit) : carriedAtSignal
+
+plotshape(buyWarn, 'Warning Long', shape.diamond, location.belowbar,
+  color = entryColor, size = size.normal, offset = -1)
+plotshape(sellWarn, 'Warning Short', shape.diamond, location.abovebar,
+  color = entryColor, size = size.normal, offset = -1)
+
+plotshape(buyTaken, 'Entry Long', shape.diamond, location.belowbar,
+  color = entryColor, size = size.normal, offset = -1)
+plotshape(sellTaken, 'Entry Short', shape.diamond, location.abovebar,
+  color = entryColor, size = size.normal, offset = -1)
+
+// The previews. No offset, because they already sit on the candle they describe
+// - the settled marker reaches this same candle from the next bar with an offset
+// of -1, so the faded diamond simply turns solid where it stands.
+plotshape(liveBuyWarn, 'Warning Long (live)', shape.diamond, location.belowbar,
+  color = color.new(liveEntryColor, liveFade), size = size.normal)
+plotshape(liveSellWarn, 'Warning Short (live)', shape.diamond, location.abovebar,
+  color = color.new(liveEntryColor, liveFade), size = size.normal)
+
+plotshape(liveBuyTaken, 'Entry Long (live)', shape.diamond, location.belowbar,
+  color = color.new(liveEntryColor, liveFade), size = size.normal)
+plotshape(liveSellTaken, 'Entry Short (live)', shape.diamond, location.abovebar,
+  color = color.new(liveEntryColor, liveFade), size = size.normal)
+
+alertcondition(buyTaken, 'MAR1 Buy', 'MAR1 {{ticker}} {{interval}}: entry long')
+alertcondition(sellTaken, 'MAR1 Sell', 'MAR1 {{ticker}} {{interval}}: entry short')
+
+// The armed alert: a white marker that missed. That miss is what carries the
+// streak onto the threshold, so the small companion diamond comes out lime and
+// the NEXT signal - whenever it arrives - is a live entry rather than a warning.
+//
+// It is deliberately not split by direction. The white marker has a side, but
+// the streak that the gate reads is combined across both, so the entry it opens
+// the door for may come out either way. Splitting the alert would promise a
+// direction the condition cannot know yet.
+//
+// Only reachable while the gate is on, since buyWarn and sellWarn are false in
+// Off mode - there are no warnings when nothing is being held back.
+//
+// Set this alert to "Once Per Bar Close". The miss is only decided at the close
+// of the candle being predicted; on any other trigger setting it will flicker
+// while the candle is still moving.
+gateArmedNow = (buyWarn and not isBullishBar) or (sellWarn and not isBearishBar)
+
+alertcondition(gateArmedNow, 'MAR1 Armed', 'MAR1 {{ticker}} {{interval}}: white marker missed, next signal is a live entry')
+
+// ---------------------------------------------------------------------------
+// Attention signal - "look at this pair, now"
+// ---------------------------------------------------------------------------
+// The purpose is narrow and worth stating plainly: this block never decides what
+// to trade. Everything above grades signals; this only raises a hand and says
+// the chart is worth looking at.
+//
+// It reaches you on four levels, in ascending order of how far they travel:
+//
+//   1. a lime wash on the candle and a blinking banner across the top of the
+//      chart - free, but only if that chart is already in front of you
+//   2. the Pine Logs panel, timestamped, so an event survives you looking away
+//   3. alertconditions, for when you do want the platform to carry it
+//   4. a sentinel number published to the status line, which the companion
+//      browser script tv-green-diamond.user.js reads out of the page and turns
+//      into a real desktop popup - no platform alert involved
+//
+// Two triggers, and why the default uses both
+// -------------------------------------------
+// The green diamond alone cannot satisfy "always, whatever the settings". It is
+// a failure marker painted at exactly the streak length the gate opens on, so it
+// depends on there BEING a gate: with 'Streak gate' set to Off, colorLimit is
+// zero, no failure marker can ever land on it, and the green trigger goes
+// permanently silent. A mechanism an unrelated setting can switch off is not a
+// mechanism to rely on.
+//
+// So the entry is the second trigger, and the default fires on either. They say
+// different things and both are worth a look:
+//
+//   green diamond   the gate just opened - the NEXT signal will be an entry
+//   entry taken     an entry is live on THIS candle
+//
+// The two are not confirmed at the same moment
+// --------------------------------------------
+// greenDiamond describes an OUTCOME. Whether the marker missed is only known
+// once the candle closes, and consecutiveCombinedFalse is updated inside a
+// barstate.isconfirmed block further up - so on a live candle it would be
+// computed from a stale streak. It has to wait for the close, or it flickers
+// between shades and cries green before taking it back.
+//
+// entryTaken is the opposite. It is fully determined by the PREVIOUS candle
+// (triggerLong[1]), so it is already true on the first tick of the entry candle
+// and stays true for the whole bar. Waiting for the close would announce a trade
+// whose entire holding period has already passed, so it deliberately does not
+// wait. Even then the honest reading is "you are already in this candle" - the
+// open you were supposed to enter at is behind you by the time anything reaches
+// your screen. Treat the entry alert as "check whether this is still worth it",
+// not as a fill.
+gPop = 'Attention signal'
+
+popOn      = input.bool(true, 'Attention signal on', group = gPop, display = display.none)
+popTrigger = input.string('Green diamond or entry', 'Fire on', options = ['Green diamond or entry', 'Green diamond', 'Entry taken'], group = gPop,
+     tooltip = 'Green diamond on its own goes permanently silent when Streak gate is Off, because there is then no gate for a marker to land on.', display = display.none)
+popBars    = input.int(3, 'Hold the banner and the flag for N bars', minval = 1, maxval = 500, group = gPop,
+     tooltip = 'Also the window the browser script has to notice the flag. A hidden Chrome tab polls roughly once a minute, so keep this long enough to cover a minute on your timeframe.', display = display.none)
+popFlash     = input.bool(true, 'Flash the candle background', group = gPop, display = display.none)
+popFlashFade = input.int(80, 'Flash transparency', minval = 0, maxval = 95, group = gPop,
+     tooltip = 'The flash inherits the colour of the large diamond on that candle, so this only decides how heavy the wash is. Lower means more solid.', display = display.none)
+popLog     = input.bool(true, 'Write to Pine Logs', group = gPop, display = display.none)
+popFlag    = input.bool(true, 'Publish status line flag for the browser script', group = gPop, display = display.none)
+
+// Lime means "the updated streak landed exactly on the anchor the colour scale
+// is measured against". Compared numerically rather than by comparing colours,
+// so repainting the palette later cannot silently break this.
+greenDiamond = (buyFailed or sellFailed) and colorLimit > 0 and consecutiveCombinedFalse == colorLimit
+
+entryTaken = buyTaken or sellTaken
+
+useGreen = popTrigger != 'Entry taken'
+useEntry = popTrigger != 'Green diamond'
+
+// The alert-facing condition, deliberately free of any barstate. TradingView
+// decides when to evaluate an alertcondition from the alert's own trigger
+// setting, and baking a bar state in here would fight that choice.
+attention = popOn and ((useGreen and greenDiamond) or (useEntry and entryTaken))
+
+// The chart-facing condition, which does not get that luxury - it has to pick a
+// moment. Each half is held to the confirmation rule that half actually needs.
+attentionNow = popOn and ((useGreen and greenDiamond and barstate.isconfirmed) or (useEntry and entryTaken))
+
+var int    popBar        = na
+var string popWhat       = ''
+var int    lastLoggedBar = na
+
+if attentionNow
+    popBar := bar_index
+
+    if useGreen and greenDiamond and barstate.isconfirmed
+        popWhat := (buyFailed ? 'long' : 'short') + ' side missed - the gate is open, the next signal is a live entry'
+    else
+        popWhat := buyTaken ? 'ENTRY LONG - this candle' : 'ENTRY SHORT - this candle'
+
+    // Realtime only, and once per bar. entryTaken is true from the first tick of
+    // its candle, so without the bar guard this would write a line per tick and
+    // bury the event it is meant to record. Historical occurrences are skipped
+    // for the same reason - they would push the live one off the top.
+    if popLog and barstate.isrealtime and (na(lastLoggedBar) or lastLoggedBar != bar_index)
+        lastLoggedBar := bar_index
+        log.warning('MAR1 ATTENTION {0} {1} - {2}, streak {3}',
+             syminfo.ticker, timeframe.period, popWhat, consecutiveCombinedFalse)
+
+// The banner outlives the bar that caused it. Without that window it would be
+// gone by the time you looked up, and the browser script polling the page could
+// step over the whole event between two samples.
+//
+// N bars is a floor, not a promise: the Success timestamp block below clears
+// popBar the moment a win closes the window, and the banner goes with it. The
+// hold exists because the script cannot normally tell when the thing it is
+// pointing at is finished - when it can, it stops pointing.
+popLive = popOn and not na(popBar) and bar_index - popBar < popBars
+
+// Two phases a second, driven by the clock rather than by bars, so the banner
+// pulses while ticks arrive. On a closed market it just sits still - still
+// there, only not blinking.
+popBlink = timenow % 1000 < 500
+
+// The flash is a bgcolor, which paints the full height of one bar - so what you
+// see is a vertical line the width of the candle it belongs to.
+//
+// Its colour is inherited from entryColor, the exact value the large diamond on
+// this candle was painted with, rather than a fixed lime. That keeps one meaning
+// for one colour across the whole chart: a lime line stands under a lime
+// diamond, orange under orange, lilac under lilac, purple under purple. A fixed
+// lime said "attention" twice and the ladder step not at all.
+//
+// entryColor is the right source for both triggers. On an entry it is literally
+// that diamond's colour. On a green diamond it is the colour of the large marker
+// on the same candle - the entry or the white warning whose miss is what the
+// small companion is reporting - which is the marker that precedes it.
+//
+// Only the transparency is overridden, so the wash stays a wash. The ladder
+// colours are otherwise solid and would black out the candle underneath.
+bgcolor(popFlash and attentionNow ? color.new(entryColor, popFlashFade) : na, title = 'Attention flash')
+
+// top_center is the only anchor left: bottom_left, bottom_right, middle_right,
+// top_right and bottom_center are taken by the statistics tables, and top_left
+// is where TradingView draws its own legend.
+var table popTable = table.new(position.top_center, 1, 2, border_width = 3)
+
+if barstate.islast
+    if popLive
+        table.cell(popTable, 0, 0, '  ◆  ATTENTION - ' + syminfo.ticker + '  ◆  ',
+             bgcolor = popBlink ? color.lime : color.new(color.lime, 55),
+             text_color = color.black, text_size = size.huge)
+        table.cell(popTable, 0, 1, '  ' + popWhat + '  ',
+             bgcolor = color.new(color.black, 10), text_color = color.lime, text_size = size.normal)
+    else
+        table.clear(popTable, 0, 0, 0, 1)
+
+// The sentinel the browser script watches for. Negative on purpose: no price on
+// any instrument can print it, so a poller reading numbers out of the page can
+// never confuse it with a quote. It is held for the same window as the banner,
+// which is what makes polling reliable on any timeframe.
+//
+// The title stays GREENFLAG even though the trigger is now broader, because the
+// browser script and its documentation refer to it by that name.
+//
+// display excludes the pane, so this adds a value to the status line and the
+// data window without drawing anything on the price chart.
+plot(popFlag and popLive ? -424242 : 0, 'GREENFLAG', color = color.new(color.lime, 0),
+  display = display.status_line + display.data_window)
+
+// The alerts. Kept separate because they want different trigger settings, and
+// merging them would force the wrong setting on one of them.
+//
+//   MAR1 Attention      the umbrella, following whatever 'Fire on' is set to.
+//                       Set it to ONCE PER BAR. Not bar close - it can carry the
+//                       entry half, and by the close that candle is finished.
+//   MAR1 Green Diamond  the gate opening, on its own. ONCE PER BAR CLOSE: the
+//                       miss it reports is only decided when the candle closes.
+//
+// The two entry alerts declared further up already cover the entry by direction,
+// which this pair deliberately does not - 'look at this pair' is the whole
+// message, and the chart says the rest.
+alertcondition(attention, 'MAR1 Attention', 'MAR1 {{ticker}} {{interval}}: look at this pair')
+alertcondition(greenDiamond, 'MAR1 Green Diamond', 'MAR1 {{ticker}} {{interval}}: gate open, the next signal is a live entry')
+
+// ---------------------------------------------------------------------------
+// Timestamp on a signal that came out right - the drawing
+// ---------------------------------------------------------------------------
+// What the stamp says and why it is placed the way it is is written above its
+// inputs, and those now sit at the top of the file, directly under the Signal
+// group - the dialog is ordered by declaration and nothing else, so that is the
+// only place a section can be moved from. Only the drawing was left here, next
+// to the markers it follows.
+successBuySet = successScope == 'All found signals' ? buyFound :
+     successScope == 'Entries and warnings' ? (buyTaken or buyWarn) :
+     buyTaken
+
+successSellSet = successScope == 'All found signals' ? sellFound :
+     successScope == 'Entries and warnings' ? (sellTaken or sellWarn) :
+     sellTaken
+
+// The direction test is the exact complement of the one buyFailed / sellFailed
+// use, doji included: a candle closing at its own open is a miss there, so it
+// must not count as a hit here. Only the set of markers differs, and only when
+// the scope above is narrowed to entries.
+buySucceeded  = successBuySet and isBullishBar
+sellSucceeded = successSellSet and isBearishBar
+
+// Slope of the moving average across the window. Both tests are explicit rather
+// than one being the negation of the other, so a dead-flat stretch - and the
+// warmup, where the older value is still na - falls through to the direction of
+// the signal itself instead of silently defaulting to one side.
+stampSlopeUp = not na(maValue[successSlopeLen]) and maValue > maValue[successSlopeLen]
+stampSlopeDn = not na(maValue[successSlopeLen]) and maValue < maValue[successSlopeLen]
+
+stampBelow = successPlace == 'Always below' ? true :
+     successPlace == 'Always above' ? false :
+     successPlace == 'By signal direction' ? buySucceeded :
+     stampSlopeUp ? true :
+     stampSlopeDn ? false :
+     buySucceeded
+
+// nz covers the first bars, where ATR has not filled yet and the gap would
+// otherwise be na - which would put the label at an na price and drop it.
+stampY = stampBelow ? low - nz(atr) * successGap : high + nz(atr) * successGap
+
+stampSize = successTextSize == 'Tiny' ? size.tiny :
+     successTextSize == 'Small' ? size.small :
+     successTextSize == 'Large' ? size.large :
+     successTextSize == 'Huge' ? size.huge :
+     size.normal
+
+var int entriesInWindow = 0
+
+// When the series began: the open of the candle the FIRST entry of this window
+// was taken on. That is the moment you were in, so it is the moment worth
+// writing down - not the green diamond, which is only when the gate unlocked and
+// may sit several candles before anything was entered.
+//
+// na while no entry has been taken yet, which is also what a window closed on a
+// suppressed signal leaves behind - the widened scopes can do that, and a stamp
+// on one of those has no entry time to show because there was no entry.
+var int windowEntryTime = na
+
+// The series-closed state, recorded at the same instant the stamp is written.
+// A win is what ends the window the green diamond opened, so it is also the
+// moment every attention channel has nothing left to say - see the block under
+// the stamp for what is done with it.
+var int doneBar      = na
+var int doneEntries  = 0
+var int doneOpenTime = na
+
+// Confirmed bars only. The result of a signal is decided by the close of the
+// candle it grades, so on a live candle both the hit test and the entry count
+// would still be moving - and a label, unlike a plot, does not take itself back.
+if barstate.isconfirmed
+    // Counted before either reset below can fire: an entry taken on this bar
+    // belongs to the window that is about to close, not to the next one.
+    if entryTaken
+        entriesInWindow += 1
+
+        // Only the first one. The stamp reports the span of the whole window, so
+        // what it needs is when the window started paying, and every entry after
+        // the first is inside a window that already had a start.
+        if entriesInWindow == 1
+            windowEntryTime := time
+
+    // style_none draws the text alone - no bubble, no arrow, no anchor mark - so
+    // the string sits centred on the price computed above and the ATR gap is the
+    // whole of the distance from the candle. With a bubble style the box would
+    // hang off that point and add its own height on top, and the gap would stop
+    // meaning what it says.
+    //
+    // White because it has to be legible against candles of either colour and
+    // against the ladder colours the diamonds already use. This text carries no
+    // ladder step and should not look as though it does.
+    if showSuccessTime and (buySucceeded or sellSucceeded)
+        // The entry time is printed as HH:mm whatever the format above says, and
+        // deliberately so. The two timestamps are minutes apart in the ordinary
+        // case, so repeating the date on both would double the width of the stamp
+        // to say the same thing twice. The closing side keeps the chosen format,
+        // which is the one a row copied off the chart is dated by.
+        entryStamp = successShowEntry and not na(windowEntryTime) ?
+             str.format_time(windowEntryTime, 'HH:mm', 'UTC+1') + ' → ' : ''
+
+        // Three lines rather than one, stacked in the order the eye wants them.
+        //
+        // The one-line form spent all its length sideways, and a stamp is
+        // anchored to a candle - so a long line reaches across the candles either
+        // side of the one it belongs to, and on a dense stretch the stamps run
+        // through each other horizontally, which is where the reading breaks. A
+        // block is roughly a third as wide and only three lines tall, and height
+        // is the direction a chart has room in: the ATR gap above already puts
+        // the stamp in empty space.
+        //
+        // The count leads because it is the number being read - how much this
+        // series cost - and it is the shortest line, so the widest part of the
+        // block is in the middle rather than at the end nearest the candle.
+        //
+        // The pair is last because it is the line that is redundant while you are
+        // looking at the chart and is the whole point once the stamp has left it
+        // in a screenshot. Bottom is where it can be dropped without disturbing
+        // the two lines above - which is exactly what the tick box does.
+        pairLine = successShowPair ? '\n' + syminfo.ticker : ''
+
+        label.new(bar_index, stampY,
+             text = '(' + str.tostring(entriesInWindow) + ')\n' +
+                 entryStamp + str.format_time(time_close, successDateFmt, 'UTC+1') + pairLine,
+             style = label.style_none,
+             textcolor = color.white,
+             size = stampSize,
+             // Centring is what keeps a three-line block reading as one thing:
+             // the short count line and the short pair line sit under the middle
+             // of the long time line instead of ragging off to one side of it.
+             // It is also label.new's own default, and it is written out anyway -
+             // the layout above depends on it, and a default the code does not
+             // name is one a later edit can change without noticing.
+             //
+             // The parameter is textalign, with no underscore. text_align is the
+             // spelling every other Pine text argument would suggest and it is
+             // rejected outright - CE10120, no such argument.
+             textalign = text.align_center,
+             tooltip = 'The number of entries the window cost, the entry that opened it, the closing time of the winning candle - the same instant the next candle opens - and the pair.')
+
+    // The window is over. Two things are recorded: what to publish, and the fact
+    // that the attention hold has nothing left to hold.
+    //
+    // popBar := na is the whole of the fix for a banner that outstayed the event.
+    // The hold is a fixed N bars because the script cannot normally know when the
+    // thing it is pointing at is finished - but at this exact line it does know,
+    // so the remainder of the window is thrown away instead of run out.
+    if buySucceeded or sellSucceeded
+        doneBar      := bar_index
+        doneEntries  := entriesInWindow
+        // Captured here rather than read later, because the line below wipes it.
+        // Still na when the window closed without an entry, and the flag then
+        // simply has no opening time to publish.
+        doneOpenTime := windowEntryTime
+        popBar       := na
+
+    if buySucceeded or sellSucceeded or greenDiamond
+        entriesInWindow := 0
+        // Cleared with the count it belongs to. Left standing, it would date the
+        // next window from an entry that belonged to the last one.
+        windowEntryTime := na
+
+// Published for the same browser script that watches GREENFLAG, on a plot of its
+// own so neither value can ever mask the other. The count is encoded into the
+// number rather than sent alongside it: the status line is the only channel out
+// of Pine into the page, and it carries numbers.
+//
+//   -4243NN   the series closed, NN entries were taken to close it
+//
+// -4243 cannot be a prefix of -424242, and no price prints a negative six-figure
+// number, so the two sentinels are unambiguous read as plain text. The count is
+// clamped at 99 because it is two digits wide by construction; a window that
+// long is already telling you something other than what this flag is for.
+doneLive = not na(doneBar) and bar_index - doneBar < doneBars
+
+plot(popFlag and doneLive ? -(424300 + math.min(doneEntries, 99)) : 0, 'DONEFLAG', color = color.new(color.gray, 0),
+  display = display.status_line + display.data_window)
+
+// The other end of the window, on a flag of its own, so the popup can say when
+// the series started as well as what it cost:
+//
+//   -50HHMM   the window opened at that time, UTC+1
+//
+// The clock is packed as a four-digit number - 14:31 becomes 1431 - because the
+// status line carries numbers and nothing else. -50 is a family of its own: it
+// cannot be confused with -424242 or with -4243NN, and the four digits after it
+// are always four, since a leading zero survives inside a six-digit number.
+//
+// Zero when the window closed without an entry to date it from, which is what
+// the widened success scopes can produce. The popup then just omits it rather
+// than inventing a time.
+doneOpenHHMM = na(doneOpenTime) ? 0 : hour(doneOpenTime, 'UTC+1') * 100 + minute(doneOpenTime, 'UTC+1')
+
+plot(popFlag and doneLive and doneOpenHHMM > 0 ? -(500000 + doneOpenHHMM) : 0, 'DONEOPEN', color = color.new(color.gray, 0),
+  display = display.status_line + display.data_window)
+
+// The platform-level counterpart, for anyone routing this through a real
+// TradingView alert rather than the browser script. ONCE PER BAR CLOSE: like the
+// green diamond, the win it reports is only decided when the candle closes.
+alertcondition(buySucceeded or sellSucceeded, 'MAR1 Series Closed', 'MAR1 {{ticker}} {{interval}}: series closed on a win, the window is over')
+
+// ---------------------------------------------------------------------------
+// Debug: one reason code per bar
+// ---------------------------------------------------------------------------
+// Every code lands on the CANDIDATE candle - the candle that would have been the
+// trigger - so the character under a candle always answers "what did THIS candle
+// fail". The three signal-level codes are detected one bar later and drawn back
+// with offset = -1 to keep that promise.
+//
+//   T  no trend: neither side had trendBars closes on its side of the MA
+//   D  distance: the candle never came within the tolerance of the MA
+//   X  wrong side: it reached the MA but closed past it instead of being pushed back
+//   B  body: the body path applied but the body was not smaller than the chart
+//      average, or the tail did not exceed it - and the wick path failed too
+//   W  wick: the rejection wick was under the required share of the candle range
+//   P  pips: the wick cleared the share test but is shorter than the spread guard
+//   C  cooldown: pattern was valid, the direction was still inside its cooldown
+//   H  hours: pattern was valid, the bar fell outside the session window
+//   G  gate: signal was detected, the streak gate was shut
+//   ^  taken: this candle produced a real entry
+//
+// Codes are mutually exclusive by construction: the trigger-level ones fire only
+// when the trigger failed, the signal-level ones only when it succeeded.
+
+// The side under examination. When both are true - possible once the comparisons
+// against the MA went inclusive - long wins, matching the tie-break used for the
+// signals themselves.
+dbgSideUp = trendUp
+
+dbgNoTrend   = not trendUp and not trendDown
+dbgNoTouch   = dbgSideUp ? not (low <= maValue + tol) : not (high >= maValue - tol)
+dbgWrongSide = dbgSideUp ? not (close >= maValue) : not (close <= maValue)
+
+// The trigger is an or of two paths, so "first failure wins" needs care: a code
+// may only be reported once BOTH paths have failed.
+dbgBodyPath = dbgSideUp ? bodyRejectUp : bodyRejectDown
+
+dbgShareFail = dbgSideUp ? not (lowerWick >= wickRatio * candleRange) : not (upperWick >= wickRatio * candleRange)
+dbgPipsFail  = dbgSideUp ? not (lowerWick >= minPips * pipSize) : not (upperWick >= minPips * pipSize)
+
+// The body path was available - the open sat on the trend side - but the size
+// test turned it away. Worth its own code, because otherwise these candles are
+// reported as wick failures and the wick is not what stopped them.
+dbgBodyBlocked = allowBodyInside and (dbgSideUp ? open >= maValue : open <= maValue) and not dbgBodyPath
+
+// With three paths joined by or, a failure code may only be reported once ALL
+// three have failed. Reporting on the first one alone would put W under candles
+// that became perfectly valid triggers by another route.
+dbgLongWick = dbgSideUp ? longWickUp : longWickDown
+
+dbgTrigFail = (dbgShareFail or dbgPipsFail) and not dbgBodyPath and not dbgLongWick
+dbgBigBody  = dbgTrigFail and dbgBodyBlocked
+dbgThinWick = dbgTrigFail and not dbgBodyBlocked and dbgShareFail
+dbgTinyWick = dbgTrigFail and not dbgBodyBlocked and not dbgShareFail and dbgPipsFail
+
+// First failure wins, so each guard repeats the ones before it as negations.
+// The counter-trend candle skips the touch and the closing-side tests as well as
+// the wick ones, so once it has carried the candle through, NO rejection code
+// may be reported - not D or X either. Everything below the trend test is gated
+// on it having failed.
+//
+// MODULE: dcLong / dcShort belong in here for the same reason - that path skips
+// the touch and closing-side tests too, so a candle it carried must not be
+// reported as a D or an X. Drop them from this line when removing the module.
+dbgCounterPath = dbgSideUp ? (counterLong or dcLong) : (counterShort or dcShort)
+dbgRejectStage = not dbgNoTrend and not dbgCounterPath
+
+dbgT = debugMode and dbgNoTrend
+dbgD = debugMode and dbgRejectStage and dbgNoTouch
+dbgX = debugMode and dbgRejectStage and not dbgNoTouch and dbgWrongSide
+dbgB = debugMode and dbgRejectStage and not dbgNoTouch and not dbgWrongSide and dbgBigBody
+dbgW = debugMode and dbgRejectStage and not dbgNoTouch and not dbgWrongSide and dbgThinWick
+dbgP = debugMode and dbgRejectStage and not dbgNoTouch and not dbgWrongSide and dbgTinyWick
+
+// Signal-level checks, evaluated on the bar after a valid trigger.
+dbgTrigAny  = triggerLong[1] or triggerShort[1]
+dbgCooldOk  = triggerLong[1] ? canFireLong : canFireShort
+
+dbgH = debugMode and dbgTrigAny and not hoursOk
+dbgC = debugMode and dbgTrigAny and hoursOk and not dbgCooldOk
+dbgG = debugMode and (buyFound or sellFound) and not gateOk
+dbgOk = debugMode and (buyTaken or sellTaken)
+
+cDbgDim  = color.new(color.gray, 20)
+cDbgWarn = color.new(color.orange, 20)
+
+plotchar(dbgT, 'dbg no trend',   'T', location.bottom, cDbgDim, size = size.tiny)
+plotchar(dbgD, 'dbg distance',   'D', location.bottom, cDbgDim, size = size.tiny)
+plotchar(dbgX, 'dbg wrong side', 'X', location.bottom, cDbgDim, size = size.tiny)
+plotchar(dbgB, 'dbg body too big', 'B', location.bottom, cDbgDim, size = size.tiny)
+plotchar(dbgW, 'dbg wick share', 'W', location.bottom, cDbgDim, size = size.tiny)
+plotchar(dbgP, 'dbg wick pips',  'P', location.bottom, cDbgDim, size = size.tiny)
+
+plotchar(dbgH, 'dbg hours',    'H', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
+plotchar(dbgC, 'dbg cooldown', 'C', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
+plotchar(dbgG, 'dbg gate',     'G', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
+plotchar(dbgOk, 'dbg taken',   '^', location.bottom, color.new(color.lime, 0), offset = -1, size = size.tiny)
+
+// Compact legend, drawn only while the debug row is on. Split across two lines
+// by the same grey/orange split the characters themselves use: the first line is
+// the pattern failing, the second is the pattern succeeding and a filter
+// stopping the signal. Knowing which line a letter came from already tells you
+// which settings group to go and change.
+if barstate.islast and debugMode
+    table.cell(debugTable, 0, 0, ' DEBUG CODES ', bgcolor = color.black, text_color = color.white, text_size = txtSize)
+    table.cell(debugTable, 0, 1, ' T no trend | D not near MA | X closed past MA | B body too big | W wick share | P wick under spread ',
+         bgcolor = color.new(#333333, 65), text_color = color.silver, text_size = txtSize)
+    table.cell(debugTable, 0, 2, ' C cooldown | H outside hours | G gate shut | ^ entry taken ',
+         bgcolor = color.new(#333333, 65), text_color = color.orange, text_size = txtSize)
+
+// ---------------------------------------------------------------------------
+// The settings checksum - CFGSUM and CFGGRP
+// ---------------------------------------------------------------------------
+// The other half of the check described at the foot of mar1Scanner.pine. That
+// file carries the full reasoning; the short version is that twenty-two signal
+// settings are duplicated between the two scripts, nothing enforces the
+// duplication, and a divergence is completely silent - the scanner simply stops
+// describing this chart. This publishes the same fold of the same settings so
+// the browser extension can compare them and say so out loud.
+//
+// The formulas below must stay character-for-character identical to the ones in
+// mar1Scanner.pine. If you change a weight here, change it there in the same
+// commit - two different folds would report drift on an untouched pair of
+// scripts, and a check that cries wolf is worse than no check.
+//
+// The leading digit is the address: 7xxxxx is this file's CFGSUM, 9xxxxxxx its
+// CFGGRP. The scanner publishes 6 and 8. That is what lets the reader pick both
+// out of one legend without identifying which row belongs to which indicator.
+
+// Source is the one setting the two scripts cannot state the same way.
+//
+// Here it is input.source, which hands over a SERIES and no name at all - Pine
+// offers no way to ask an input.source what the user picked. The scanner cannot
+// use input.source in the first place, because that series is bound to the
+// chart's symbol and would feed every scanned pair this chart's prices, so it
+// names its source as a string instead.
+//
+// So the source is identified by BEHAVIOUR: start with every candidate possible
+// and eliminate any that ever disagrees with the chosen series. Within a couple
+// of bars exactly one survives.
+//
+// This is not a workaround that merely approximates the string version - it is
+// strictly better for what the checksum is for. If two candidates both survive
+// the whole history, they produced identical numbers on every bar and would
+// produce identical signals, so calling them the same setting is correct. And a
+// source pointed at another indicator's output eliminates all seven, giving 0,
+// which no scanner setting can produce - a divergence the scanner genuinely
+// cannot follow, correctly reported as one.
+var bool cfgSrcClose = true
+var bool cfgSrcOpen  = true
+var bool cfgSrcHigh  = true
+var bool cfgSrcLow   = true
+var bool cfgSrcHl2   = true
+var bool cfgSrcHlc3  = true
+var bool cfgSrcOhlc4 = true
+cfgSrcClose := cfgSrcClose and src == close
+cfgSrcOpen  := cfgSrcOpen  and src == open
+cfgSrcHigh  := cfgSrcHigh  and src == high
+cfgSrcLow   := cfgSrcLow   and src == low
+cfgSrcHl2   := cfgSrcHl2   and src == hl2
+cfgSrcHlc3  := cfgSrcHlc3  and src == hlc3
+cfgSrcOhlc4 := cfgSrcOhlc4 and src == ohlc4
+
+cfgMaType = maType == 'SMA' ? 1 : maType == 'EMA' ? 2 : maType == 'WMA' ? 3 : 4
+cfgSrc    = cfgSrcClose ? 1 : cfgSrcOpen ? 2 : cfgSrcHigh ? 3 : cfgSrcLow ? 4 :
+     cfgSrcHl2 ? 5 : cfgSrcHlc3 ? 6 : cfgSrcOhlc4 ? 7 : 0
+cfgGate   = gateMode == 'Off' ? 1 : gateMode == 'Manual' ? 2 : gateMode == 'Distribution' ? 3 : 4
+cfgScope  = successScope == 'Entries only' ? 1 : successScope == 'Entries and warnings' ? 2 : 3
+
+cfgG1 = maLength + cfgMaType * 7 + cfgSrc * 13
+cfgG2 = trendBars + int(math.round(trendSep * 100)) * 3 + int(math.round(wickRatio * 100)) * 5 +
+     int(math.round(touchTol * 100)) * 7 + atrLen * 11
+cfgG3 = (allowBodyInside ? 1 : 0) + (allowLongWick ? 1 : 0) * 3 + (allowCounterCandle ? 1 : 0) * 5 +
+     refLen * 7
+cfgG4 = int(math.round(minPips * 10)) + cooldown * 3 + (perDirectionCooldown ? 1 : 0) * 5 + cfgGate * 7
+cfgG5 = startHour + endHour * 3 + (restrictToHours ? 1 : 0) * 5
+cfgG6 = int(math.round(basePercentage * 100)) + minEntriesToStart * 3 + cfgScope * 5
+
+cfgRaw = cfgG1 + cfgG2 * 31 + cfgG3 * 961 + cfgG4 * 29791 + cfgG5 * 923521 + cfgG6 * 28629151
+cfgSum = cfgRaw % 99991
+
+cfgGrp = (cfgG1 % 9 + 1) * 100000 + (cfgG2 % 9 + 1) * 10000 + (cfgG3 % 9 + 1) * 1000 +
+     (cfgG4 % 9 + 1) * 100 + (cfgG5 % 9 + 1) * 10 + (cfgG6 % 9 + 1)
+
+// Published unconditionally, unlike the popup flags above. popFlag off means
+// "do not alert me"; it must not also mean "stop telling me whether the two
+// scripts agree", because a check you can switch off by accident is one you will
+// eventually be running without.
+plot(700000 + cfgSum, 'CFGSUM', color = color.new(color.gray, 0),
+  display = display.status_line + display.data_window)
+plot(9000000 + cfgGrp, 'CFGGRP', color = color.new(color.gray, 0),
+  display = display.status_line + display.data_window)

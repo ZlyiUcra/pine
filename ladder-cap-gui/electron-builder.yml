@@ -1,0 +1,10 @@
+appId: com.pine.laddercapgui
+productName: Ladder Cap
+directories:
+  output: dist
+  buildResources: build
+files:
+  - out/**/*
+  - package.json
+win:
+  target: dir

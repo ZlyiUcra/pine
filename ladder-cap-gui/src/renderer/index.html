@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'" />
+    <title>Ladder Cap</title>
+    <link rel="stylesheet" href="./src/style.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Ladder Cap</h1>
+      <div id="file-row">
+        <button id="open-file-btn" type="button">Open log files...</button>
+        <button id="open-folder-btn" type="button">Open log folder...</button>
+        <label id="year-hint-label" title="Only needed for mar1GatesScanner.pine's per-entry MAR1GSCLOSE lines - every timestamp in them ('MM-dd HH:mm') carries no year at all. Ignored for plain GCLOSE/MAR1CLOSE logs, which already carry their own year.">
+          year <input id="p-year" type="number" min="2000" max="2100" step="1" value="2026" />
+        </label>
+        <span id="file-name">no file loaded</span>
+      </div>
+      <div id="payout-file-row">
+        <button id="open-payout-btn" type="button">Open payout logs...</button>
+        <button id="open-payout-folder-btn" type="button">Open payout log folder...</button>
+        <span id="payout-file-name">no payout log loaded</span>
+      </div>
+    </header>
+
+    <section id="payout-coverage"></section>
+
+    <section id="params" aria-disabled="true">
+      <h2>Parameters</h2>
+      <div class="param-grid">
+        <label>schedule, comma-separated blocks <input id="p-cap" type="text" value="2,2,2,2" /><span id="p-cap-hint" class="cap-hint"></span></label>
+        <label>deposit <input id="p-deposit" type="number" min="0" step="0.01" value="1000" /></label>
+        <label>mult <input id="p-mult" type="number" min="1" step="0.001" value="2.429" /></label>
+        <label>steps <input id="p-steps" type="number" min="1" max="12" step="1" value="8" /></label>
+        <label>payout <input id="p-payout" type="number" min="0" max="1" step="0.01" value="0.70" /></label>
+        <label>start (HH:mm, optional) <input id="p-start" type="text" placeholder="09:00" value="09:00" /></label>
+        <label>end (HH:mm, optional) <input id="p-end" type="text" placeholder="19:00" value="19:00" /></label>
+        <label>day (optional) <select id="p-day"><option value="">all days</option></select></label>
+      </div>
+      <button id="run-btn" type="button" disabled>Run</button>
+      <p id="param-error" class="error"></p>
+    </section>
+
+    <section id="results"></section>
+
+    <section id="payout-counterfactual" aria-disabled="true">
+      <h2>Payout counterfactual</h2>
+      <p class="section-note">
+        Uses the schedule/deposit/mult/steps/payout above, plus a minimum broker payout below. Needs
+        a payout log AND a Pine log with per-entry data (mar1GatesScanner.pine's MAR1GSCLOSE) both loaded.
+      </p>
+      <div class="param-grid">
+        <label>minimum payout to count an entry <input id="pf-threshold" type="number" min="0" max="1" step="0.01" value="0.70" /></label>
+      </div>
+      <button id="pf-stage-a-btn" type="button" disabled>Run Stage A (drop whole windows by their winning entry's payout)</button>
+      <button id="pf-v2-btn" type="button" disabled>Run v2 (replay entry by entry, filtered)</button>
+      <br />
+      <button id="pf-stage-a-sweep-btn" type="button" disabled>Stage A - full combo sweep (which schedules survive, filtered)</button>
+      <button id="pf-v2-sweep-btn" type="button" disabled>v2 - full combo sweep (which schedules survive, filtered)</button>
+      <p id="pf-error" class="error"></p>
+      <div id="pf-results"></div>
+    </section>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>

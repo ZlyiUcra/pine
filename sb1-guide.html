@@ -1,0 +1,309 @@
+<meta charset="utf-8">
+<title>SB1 - how to read the indicator</title>
+<style>
+  :root {
+    --color-page: #f4f4f2;
+    --color-panel: #ffffff;
+    --color-panel-alt: #ebebe7;
+    --color-ink: #1c1c1c;
+    --color-ink-dim: #5f5f5f;
+    --color-border: #cccccc;
+    --color-accent: #2b4a8b;
+    --color-warn: #8a5a00;
+    --color-entry-buy: #00b394;
+    --color-entry-sell: #e0303f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --color-page: #16181a;
+      --color-panel: #1e2124;
+      --color-panel-alt: #26292d;
+      --color-ink: #e2e2e0;
+      --color-ink-dim: #9a9a98;
+      --color-border: #3a3e42;
+      --color-accent: #7fa4e8;
+      --color-warn: #d9a441;
+      --color-entry-buy: #00e0c0;
+      --color-entry-sell: #ff4757;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    padding: 24px 16px 64px;
+    background: var(--color-page);
+    color: var(--color-ink);
+    font: 14px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+
+  .wrap { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 28px; }
+
+  h1 { font-size: 22px; margin: 0; letter-spacing: -0.01em; }
+  h2 { font-size: 16px; margin: 0 0 10px; color: var(--color-accent); }
+  p  { margin: 0 0 10px; }
+  p:last-child { margin-bottom: 0; }
+
+  .lede { color: var(--color-ink-dim); max-width: 72ch; }
+
+  section {
+    background: var(--color-panel);
+    border: 1px solid var(--color-border);
+    padding: 16px;
+  }
+
+  code { font-family: "Cascadia Mono", Consolas, "MS Gothic", monospace; font-size: 12.5px; background: var(--color-panel-alt); padding: 1px 4px; }
+
+  ul, ol { margin: 0 0 10px; padding-left: 20px; }
+  li { margin-bottom: 4px; }
+  li:last-child { margin-bottom: 0; }
+
+  .timeline { display: flex; gap: 4px; align-items: flex-end; overflow-x: auto; padding: 12px 0 4px; }
+  .slot { flex: 0 0 60px; display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .candle { width: 14px; position: relative; }
+  .wick { width: 2px; margin: 0 auto; background: var(--color-ink-dim); }
+  .real { width: 14px; border: 1px solid var(--color-ink); }
+  .up   { background: #1f9d78; border-color: #1f9d78; }
+  .down { background: #c0392b; border-color: #c0392b; }
+  .flat { background: var(--color-panel-alt); border-color: var(--color-border); }
+  .slot small { font-size: 10.5px; color: var(--color-ink-dim); text-align: center; line-height: 1.35; }
+  .lane { height: 20px; display: flex; align-items: center; justify-content: center; gap: 3px; }
+
+  .dia { transform: rotate(45deg); border: 1px solid rgba(0,0,0,0.35); }
+  .dia.big { width: 15px; height: 15px; }
+  .dia.small { width: 8px; height: 8px; }
+
+  .band { border-left: 3px solid var(--color-accent); background: var(--color-panel-alt); padding: 10px 12px; }
+  .band + .band { margin-top: 10px; }
+  .band.warn { border-left-color: var(--color-warn); }
+
+  .matrix { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .cell { border: 1px solid var(--color-border); padding: 12px; background: var(--color-panel-alt); }
+  .cell .head { display: flex; align-items: center; gap: 9px; margin-bottom: 6px; font-weight: 600; }
+
+  .legend { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 8px; }
+  .legend div { display: flex; align-items: center; gap: 9px; border: 1px solid var(--color-border); padding: 6px 8px; }
+  .legend span { font-size: 12.5px; }
+
+  .rows { display: flex; flex-direction: column; }
+  .row { display: grid; grid-template-columns: 200px 1fr; gap: 12px; padding: 8px 0; border-top: 1px solid var(--color-border); }
+  .row:first-child { border-top: 0; }
+  .row b { font-weight: 600; }
+  .row .desc { color: var(--color-ink-dim); }
+
+  .scroll { overflow-x: auto; }
+
+  @media (max-width: 720px) {
+    .matrix { grid-template-columns: 1fr; }
+    .row { grid-template-columns: 1fr; gap: 2px; }
+  }
+</style>
+
+<div class="wrap">
+
+  <header>
+    <h1>SB1 &mdash; squeeze breakout, how to read it</h1>
+    <p class="lede">One signal. It predicts a single candle: the one that opens right after a decisive
+    breakout out of a compressed range. Everything on the chart is either that signal or a measurement of
+    how the signal has performed so far on this exact symbol and timeframe.</p>
+  </header>
+
+  <section>
+    <h2>1. The entry marker &mdash; the only thing you need to act on</h2>
+
+    <div class="matrix">
+      <div class="cell">
+        <div class="head"><span class="dia big" style="background:var(--color-entry-buy)"></span> Large diamond BELOW the candle</div>
+        <p><b>Go long</b> at the open of the next candle.</p>
+      </div>
+      <div class="cell">
+        <div class="head"><span class="dia big" style="background:var(--color-entry-sell)"></span> Large diamond ABOVE the candle</div>
+        <p><b>Go short</b> at the open of the next candle.</p>
+      </div>
+    </div>
+
+    <div class="band" style="margin-top:12px">
+      <p>Position carries the direction: <b>below means buy, above means sell</b>. Nothing else needs to be
+      decoded. The marker sits on the candle <b>after which</b> you enter, appears at that candle's close, and
+      cannot be turned off &mdash; there is no option for it.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>2. Timing &mdash; what predicts what</h2>
+
+    <div class="scroll">
+      <div class="timeline">
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:8px"></div><div class="real flat" style="height:14px"></div><div class="wick" style="height:8px"></div></div>
+          <div class="lane"></div>
+          <small>squeeze</small>
+        </div>
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:6px"></div><div class="real flat" style="height:11px"></div><div class="wick" style="height:9px"></div></div>
+          <div class="lane"></div>
+          <small>squeeze</small>
+        </div>
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:9px"></div><div class="real flat" style="height:13px"></div><div class="wick" style="height:6px"></div></div>
+          <div class="lane"></div>
+          <small>squeeze</small>
+        </div>
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:5px"></div><div class="real flat" style="height:10px"></div><div class="wick" style="height:10px"></div></div>
+          <div class="lane"></div>
+          <small>squeeze</small>
+        </div>
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:3px"></div><div class="real up" style="height:46px"></div><div class="wick" style="height:4px"></div></div>
+          <div class="lane"><span class="dia big" style="background:var(--color-entry-buy)"></span></div>
+          <small><b>TRIGGER</b><br>breaks out;<br>marker lands here</small>
+        </div>
+        <div class="slot">
+          <div class="lane"><span class="dia small" style="background:#00aaff"></span></div>
+          <div class="candle"><div class="wick" style="height:4px"></div><div class="real up" style="height:34px"></div><div class="wick" style="height:5px"></div></div>
+          <div class="lane"><span class="dia small" style="background:#008877"></span></div>
+          <small><b>ENTRY</b><br>enter at open,<br>exit at close</small>
+        </div>
+        <div class="slot">
+          <div class="lane"></div>
+          <div class="candle"><div class="wick" style="height:7px"></div><div class="real flat" style="height:12px"></div><div class="wick" style="height:7px"></div></div>
+          <div class="lane"></div>
+          <small>graded,<br>done</small>
+        </div>
+      </div>
+    </div>
+
+    <div class="band">
+      <p><b>The trigger candle</b> closes outside a tight range of the previous 6 bars, with a body at least
+      1.5x the average body, closing in the outer 30% of its own range, on the right side of the EMA50, on
+      above-average tick volume, and larger than the spread guard in pips.</p>
+      <p><b>The entry candle</b> is the very next one. It is the candle being predicted, and the one you hold.</p>
+      <p>None of this can repaint. Every input comes from candles that are already closed, so once the large
+      diamond appears it never moves and never disappears.</p>
+    </div>
+
+    <div class="band">
+      <p><b>What is actually being scored</b> is two things about the entry candle:</p>
+      <ol>
+        <li>Does it close in the signalled direction?</li>
+        <li>Is its body larger than the average body of the previous 20 candles?</li>
+      </ol>
+      <p>Nothing past that candle is measured.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>3. The two small diamonds &mdash; information, not instruction</h2>
+    <p>On the entry candle, one bar to the right of the large marker, a pair of small diamonds is painted.
+    They are not extra signals. They are the same signal shown twice more, each copy coloured by a
+    different running streak. Ignore them entirely if you only want to trade the large diamond.</p>
+
+    <div class="matrix">
+      <div class="cell">
+        <div class="head"><span class="dia small" style="background:#008877"></span> Below the entry candle on a buy<br></div>
+        <p>Coloured by the current <b>losing streak</b> &mdash; how many signals in a row have failed right now
+        (<code>consecutiveCombinedFalse</code>). On a sell the same copy sits <b>above</b> the candle and starts
+        from red instead of teal.</p>
+      </div>
+      <div class="cell">
+        <div class="head"><span class="dia small" style="background:#00aaff"></span> Above the entry candle on a buy</div>
+        <p>Coloured by the current <b>winning streak</b> (<code>consecutiveCombinedSuccess</code>). On a sell this
+        copy sits <b>below</b> the candle.</p>
+      </div>
+    </div>
+
+    <div class="band warn" style="margin-top:12px">
+      <p>These two copies place themselves on both sides regardless of direction, so <b>their</b> position tells
+      you nothing. That is fine now: direction is read off the large diamond one candle to the left. This
+      pair was kept deliberately as an extra information layer.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>4. Colour scale of the small pair</h2>
+    <p>Both small diamonds use the same scale. It measures the streak against
+    <code>Min entries to start</code> (default <b>10</b>). Read it as "how far past the threshold are we".</p>
+
+    <div class="legend">
+      <div><span class="dia small" style="background:#008877"></span><span>teal &mdash; buy, loss streak below 9</span></div>
+      <div><span class="dia small" style="background:#cc0011"></span><span>red &mdash; sell, loss streak below 9</span></div>
+      <div><span class="dia small" style="background:#00aaff"></span><span>blue &mdash; win streak below 9</span></div>
+      <div><span class="dia small" style="background:#ffffff"></span><span>white &mdash; streak = 9 (one short)</span></div>
+      <div><span class="dia small" style="background:#00ff00"></span><span>lime &mdash; streak = 10 (threshold hit)</span></div>
+      <div><span class="dia small" style="background:#ff9800"></span><span>orange &mdash; streak = 11</span></div>
+      <div><span class="dia small" style="background:#7977ec"></span><span>violet &mdash; streak = 12</span></div>
+      <div><span class="dia small" style="background:#9c27b0"></span><span>purple &mdash; streak 13 to 24</span></div>
+      <div><span class="dia small" style="background:#05bcf3"></span><span>cyan &mdash; streak 25 and beyond</span></div>
+    </div>
+
+    <div class="band warn" style="margin-top:12px">
+      <p><b>Deviation from C2.</b> In C2 the colour functions had no <code>else</code> branch, so a streak below the
+      threshold returned <code>na</code> and the diamond was <b>invisible</b> &mdash; C2 only ever showed signals that
+      arrived deep into a streak. SB1 adds the <code>else</code>, so every signal is visible. To get C2 behaviour
+      back, delete the two <code>else</code> lines at the end of <code>getSignalColor</code> and
+      <code>getOppositeSignalColor</code>. The large entry diamond is unaffected either way.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>5. How to trade it</h2>
+    <ul>
+      <li><b>Wait</b> for a large diamond to appear at the close of a candle.</li>
+      <li><b>Direction</b>: diamond below the candle = long, above = short.</li>
+      <li><b>Enter</b> at the open of the very next candle.</li>
+      <li><b>Exit</b> at the close of that same candle. Holding period is exactly one bar.</li>
+      <li><b>No stop, no target</b> in what is measured. Adding them changes the outcome, and the table stops
+      describing what you are doing.</li>
+    </ul>
+
+    <div class="band">
+      <p><b>The streak colours are a separate, optional bet.</b> The C2 idea behind them: wait until the losing
+      streak reaches a length the historical distribution says is near its maximum, then take the next
+      signal on the theory that the run is due to end. The two side tables
+      (<code>Fails After Success</code>, <code>Successes After Fail</code>) exist to test whether that holds on
+      your data. Until the highlighted row in those tables sits well away from the small values, treat the
+      streak colours as decoration rather than a rule.</p>
+    </div>
+  </section>
+
+  <section>
+    <h2>6. The table in the bottom left, row by row</h2>
+    <p>Three columns: Buy, Sell, Combined. Everything is measured on the bars visible to the script on this
+    chart, this symbol, this timeframe. Change any of those and every number changes.</p>
+
+    <div class="rows">
+      <div class="row"><b>Bars analysed</b><div class="desc">Sample size. Small sample means every percentage below is noise.</div></div>
+      <div class="row"><b>Signals</b><div class="desc">How many times the signal fired.</div></div>
+      <div class="row"><b>Signals per 1000 bars</b><div class="desc">How rare it is. Below roughly 2 you do not have enough signals for the percentages to mean anything &mdash; you want at least 100 to 150 signals in total.</div></div>
+      <div class="row"><b>Direction correct</b><div class="desc">Raw count of signals where the entry candle closed the right way.</div></div>
+      <div class="row"><b>Direction accuracy</b><div class="desc">The same as a percentage. A coin flip gives 50%. From 52% to 56% is a real but small edge. Above 65% on a large sample, look for a bug before celebrating.</div></div>
+      <div class="row"><b>Dir + body &gt; avg</b><div class="desc">Count of signals where <i>both</i> held: right direction <i>and</i> body larger than the 20-candle average. This is the event you originally asked about.</div></div>
+      <div class="row"><b>Joint accuracy</b><div class="desc">That count as a percentage of signals.</div></div>
+      <div class="row"><b>Random baseline</b><div class="desc">The same joint event measured over <i>every</i> bar on the chart, not just signal bars. What you would score firing at random. Typically 15% to 20%, because candle bodies are skewed &mdash; only about a third of candles exceed their own trailing average.</div></div>
+      <div class="row"><b>Edge over chance</b><div class="desc">Joint accuracy divided by the random baseline. <b>The only row that matters.</b> 1.00x means the signal contributes nothing. Green above 1.00x, brown below.</div></div>
+      <div class="row"><b>False Accuracy</b><div class="desc">Share of signals that got the direction wrong. Just 100% minus direction accuracy, kept because C2 had it.</div></div>
+      <div class="row"><b>Max False Streak</b><div class="desc">Longest run of consecutive wrong signals ever observed. Read it as the drawdown you must be able to sit through.</div></div>
+      <div class="row"><b>Max Success Streak</b><div class="desc">Longest run of consecutive correct signals.</div></div>
+      <div class="row"><b>Last 15 Signals</b><div class="desc">Five columns: <code>#</code>, <code>Date / time (UTC+1)</code>, <code>Type</code>, <code>Dir</code> (1 if direction was right), <code>Body</code> (Big or Small). A row reading BUY / 1 / Big is a full hit on both conditions.</div></div>
+      <div class="row"><b>Why UTC+1</b><div class="desc">The timestamp is the open of the entry candle, printed in UTC+1 so it matches the <code>Start / End indicator's hours</code> filter, which uses the same offset. It is not the chart's timezone.</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>7. What this cannot do</h2>
+    <p>The target you started from &mdash; 80% on both direction and body size for the next candle &mdash; is about
+    4.3x the random baseline. Edges that size do not exist on liquid FX at M1 to M5. Realistic outcomes on a
+    decent sample are 1.1x to 1.5x, and the honest job of the table is to tell you when even that is absent.</p>
+    <p>Two things move the numbers more than any parameter tweak: the session filter (Asian hours on M1 are
+    close to a random walk) and the spread guard in pips (on M1 EURUSD the average body is only a pip or
+    two, so an unfiltered "large body" is mostly noise).</p>
+  </section>
+
+</div>

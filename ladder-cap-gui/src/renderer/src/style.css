@@ -1,0 +1,260 @@
+:root {
+  color-scheme: light dark;
+  --color-panel: light-dark(#f4f4f4, #1e1e1e);
+  --color-border: light-dark(#ccc, #444);
+  --color-text: light-dark(#111, #eee);
+  --color-win: light-dark(#0a7a2f, #4ade80);
+  --color-carry: light-dark(#8a6d00, #eab308);
+  --color-blowup: light-dark(#b30000, #f87171);
+  --color-short-ladder: light-dark(#6d3bbf, #c4a5f5);
+  --color-fastest: light-dark(#0a5aa8, #7cc0f5);
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  font-size: 14px;
+  color: var(--color-text);
+  background: light-dark(#ffffff, #121212);
+  margin: 0;
+  padding: 16px 24px 40px;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+h1 {
+  font-size: 18px;
+  margin: 0;
+}
+
+#file-row, #payout-file-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#year-hint-label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+}
+
+#year-hint-label input {
+  width: 70px;
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  color: var(--color-text);
+}
+
+section {
+  margin-top: 20px;
+}
+
+.param-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 20px;
+  margin-bottom: 12px;
+}
+
+.param-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.param-grid input, .param-grid select {
+  padding: 4px 6px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  width: 140px;
+}
+
+/* Live "is this the best schedule of this length" note under the schedule
+   input - see updateCapHint. Wider than the input it sits under since it is
+   a whole sentence, not a value. */
+.cap-hint {
+  display: block;
+  max-width: 260px;
+  white-space: normal;
+  font-weight: normal;
+}
+
+button {
+  padding: 6px 14px;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  cursor: pointer;
+}
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.error {
+  color: var(--color-blowup);
+  min-height: 1.2em;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+th, td {
+  border: 1px solid var(--color-border);
+  padding: 4px 8px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+th:first-child, td:first-child {
+  text-align: left;
+}
+
+.win { color: var(--color-win); }
+.carry { color: var(--color-carry); }
+.blowup { color: var(--color-blowup); }
+
+/* Candidate whose blocks add up to less than the full ladder. */
+.short-ladder { color: var(--color-short-ladder); }
+
+.summary-line {
+  margin: 4px 0;
+}
+
+.blowup-item {
+  border-left: 3px solid var(--color-blowup);
+  padding-left: 10px;
+  margin-bottom: 10px;
+}
+
+.chains-table {
+  margin-bottom: 16px;
+}
+
+.chains-table .chain-detail {
+  text-align: left;
+  font-variant-numeric: normal;
+  white-space: normal;
+}
+
+.chains-table tr.day-group-start td {
+  border-top: 2px solid var(--color-border);
+}
+
+.chains-table tr.candidate-row {
+  cursor: pointer;
+}
+
+.chains-table tr.candidate-row:hover td {
+  background: var(--color-panel);
+}
+
+.chains-table tr.candidate-row-selected td {
+  background: var(--color-panel);
+  font-weight: bold;
+}
+
+/* Block count sits in the half-of-steps neighbourhood - a shape the user
+   would plausibly have picked. Only the name cell, so it stays readable
+   next to the selected-row bold above. */
+.chains-table tr.plausible-pick td:first-child {
+  font-weight: bold;
+}
+
+/* The 3 candidates with the smallest average sequence duration IN THIS
+   TABLE's own list (each table ranks its own rows independently, not one
+   global three - user decision, 2026-08-09). A distinct colour rather than
+   reusing bold, which .plausible-pick and .candidate-row-selected both
+   already claim and could otherwise collide with on the same row. */
+.chains-table tr.fastest-seq td:first-child {
+  color: var(--color-fastest);
+  font-weight: bold;
+}
+
+.page-controls {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.detail-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.detail-head h2 {
+  margin: 0;
+}
+
+.fold {
+  margin: 16px 0 6px;
+}
+
+.fold > summary {
+  cursor: pointer;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+/* A whole suggestion section, folded away until asked for - reads as a
+   section header rather than as a sub-heading inside one. */
+.section-fold {
+  border-top: 1px solid var(--color-border);
+  padding-top: 10px;
+  margin: 0;
+}
+
+.section-fold > summary {
+  font-size: 16px;
+  padding: 4px 0;
+}
+
+.section-fold > summary:hover {
+  background: var(--color-panel);
+}
+
+.cap-block {
+  border-top: 2px solid var(--color-border);
+  padding-top: 12px;
+  margin-top: 24px;
+}
+
+.cap-block h3 {
+  margin: 16px 0 6px;
+}
+
+.section-note {
+  font-size: 12px;
+  color: var(--color-border);
+  max-width: 640px;
+}
+
+/* The always-visible "this is not real trade history" label on the v2
+   comparison - deliberately loud, not styled like an ordinary note (security
+   condition, 2026-08-11-ladder-cap-payout-counterfactual.md: entries from
+   different windows/pairs spliced into one synthetic sequence must never
+   read like a real backtest). */
+.counterfactual-warning {
+  border: 1px solid var(--color-blowup);
+  color: var(--color-blowup);
+  padding: 8px 10px;
+  border-radius: 4px;
+  font-weight: bold;
+  margin: 10px 0;
+}

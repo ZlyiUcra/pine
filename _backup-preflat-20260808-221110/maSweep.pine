@@ -1,0 +1,664 @@
+//@version=6
+// MAR1 MA Sweep - which MA Length to trade, on ONE symbol, in detail.
+//
+// Runs MAR1's entry logic on the chart's own symbol up to thirty-three times -
+// once per MA Length across a range you choose - and prints what each length
+// cost: windows closed, entries spent, the average, and the worst single window.
+//
+// Its companion is maSweepPairs.pine, which asks the same question across the
+// whole watchlist at eight lengths instead of thirty-three. The split is forced
+// rather than chosen: pairs times lengths is one execution budget, and thirty
+// pairs at thirty-three lengths is about seven hundred copies of MAR1 in one
+// script. Use the pair file to find the neighbourhood, this one to comb it.
+//
+// Reading the AVG column
+// ----------------------
+// It is entries per closed window, which is also 1 / (per-entry win rate). At a
+// FLAT stake and a payout of r, a length pays only while
+//
+//     avg  <  1 + r
+//
+// so 92% needs an average under 1.92. That line is printed in the header and
+// decides the colour of every AVG cell.
+//
+// If the stake climbs the colour ladder instead, AVG is the wrong column and
+// WORST is the right one: a recovery ladder earns a fixed amount per closed
+// window whatever it cost, and dies on the one window that ran too long.
+//
+// Why it costs almost nothing
+// ---------------------------
+// No request.security at all. In Pine a `var` inside a function belongs to the
+// CALL SITE, so thirty-three literal calls to sweepState() give thirty-three
+// independent state machines, all reading data that is already loaded.
+//
+// Everything independent of the MA is computed ONCE at global scope: the ATR,
+// both wick averages, the body average, the geometry, both counter-trend paths.
+// Multiplied by thirty-three is one moving average, a three-step trend loop and
+// a handful of comparisons.
+//
+// Keep the settings identical to maRejection.pine or the table describes a
+// strategy you are not trading. There is no CFGSUM here to catch a divergence.
+indicator('MAR1 MA Sweep', overlay = true, max_bars_back = 300)
+
+// NOTHING BELOW PRINTS ITSELF IN THE STATUS LINE except three settings, and
+// that is what display = display.none on the rest of this file buys.
+//
+// TradingView prints an indicator's ARGUMENTS after its name in the legend, in
+// declaration order. This file has twenty-nine inputs, and the line ran the width
+// of the chart as a wall of bare numbers with nothing saying which number was
+// which. A legend that has to be decoded is worse than no legend.
+//
+// display.none removes an input from that line and from the Data Window and
+// changes NOTHING ELSE: the input is fully live, fully editable, and sits in the
+// settings dialog exactly where it did. It is a display flag, not a switch, and
+// it does not touch the saved-settings POSITION that everything in this file has
+// to be careful about.
+//
+// THREE ARE VISIBLE, and the third one differs from the other files in this
+// project on purpose:
+//
+//   MA Type        THE ONE THE OTHER FILES HIDE. Everywhere else the visible
+//                  setting is MA Length, because there is one length and it
+//                  defines the indicator. Here the LENGTHS ARE THE ROWS OF THE
+//                  TABLE - they say themselves, in ink, forty at a time. What
+//                  nothing on screen says is which KIND of average every one of
+//                  them is, and a sweep run on SMA describes a strategy that is
+//                  not being traded: maRejection.pine sits on EMA with this
+//                  setting hidden, and the whole point of this table is to feed
+//                  numbers back into that file. Wrong type here and every row is
+//                  an answer to a question nobody asked.
+//   Streak gate    with Off there is no gate at all, nothing is ever held back,
+//                  and every signal counts as an entry. Every column in the
+//                  table is then measuring something else.
+//   Fire signals   whether the hours filter is actually biting. It runs BEFORE
+//   only inside    the streak is counted, so it moves the distribution and
+//   those hours    therefore the gate threshold - it is not a cosmetic filter.
+//
+// Everything else - the sweep range, the ranking, the payout, the block layout,
+// the whole signal mirror - is either already printed by the table itself or is
+// one dialog click away. There is no CFGSUM in this file to catch a divergence
+// from maRejection.pine, so nothing was lost from the legend that the legend was
+// ever going to catch.
+//
+// TO BRING ANY OTHER ONE BACK: delete ', display = display.none' from its line.
+// To hide one of the three above: add it. There is nothing to keep in sync - the
+// flag is per input and reaches no logic.
+gSig  = 'Signal (must match MAR1)'
+gFilt = 'Filters (must match MAR1)'
+gSwp  = 'Sweep range'
+gOut  = 'Sweep output'
+
+maType = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig)
+src    = input.source(ohlc4, 'Source', group = gSig, display = display.none)
+
+trendBars = input.int(3, 'Bars that must close on the trend side of MA', minval = 2, maxval = 10, group = gSig, display = display.none)
+trendSep  = input.float(0.30, 'Min distance of trend closes from MA (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+wickRatio = input.float(0.60, 'Min wick share of candle range', minval = 0.30, maxval = 0.95, step = 0.05, group = gSig, display = display.none)
+touchTol  = input.float(0.30, 'Almost-reached tolerance (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
+atrLen    = input.int(8, 'ATR length', minval = 2, group = gSig, display = display.none)
+
+allowBodyInside    = input.bool(true, 'Accept small body fully on the trend side', group = gSig, display = display.none)
+allowLongWick      = input.bool(true, 'Accept wick longer than its running average', group = gSig, display = display.none)
+allowCounterCandle = input.bool(true, 'Accept a single counter-trend candle', group = gSig, display = display.none)
+
+// The two-candle module. None of it looks at the moving average, so it is
+// computed once below and shared by every length.
+DC_ON   = true
+DC_BACK = 4
+DC_REF  = 'Close'
+
+refLen = input.int(200, 'Average window (candles)', minval = 10, maxval = 200, group = gSig, display = display.none)
+
+minPips              = input.float(1.0, 'Min wick length (pips)', minval = 0.0, step = 0.1, group = gFilt, display = display.none)
+cooldown             = input.int(1, 'Min bars between signals', minval = 1, group = gFilt, display = display.none)
+perDirectionCooldown = input.bool(true, 'Cooldown per direction', group = gFilt, display = display.none)
+gateMode             = input.string('Max of both', 'Streak gate', options = ['Off', 'Manual', 'Distribution', 'Max of both'], group = gFilt)
+
+// The most important filter in this file, and not for the usual reason. A sweep
+// over the whole day answers "which length is best across hours you do not
+// trade". Narrow these to the session you actually sit in first.
+startHour       = input.int(4, "Start indicator's hours", group = gFilt, display = display.none)
+endHour         = input.int(16, "End indicator's hours", group = gFilt, display = display.none)
+restrictToHours = input.bool(true, 'Fire signals only inside those hours', group = gFilt)
+
+basePercentage    = input.float(95.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gFilt, display = display.none)
+minEntriesToStart = input.int(5, 'Min entries to start', minval = 1, group = gFilt, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The range
+// ---------------------------------------------------------------------------
+// Which lengths get swept: sweepFrom, then a step at a time, sweepCount of them.
+// So 1 / step 1 / count 33 is every length from 1 to 33, and 1 / step 4 / count
+// 9 is a coarse map from 1 to 33 in nine rows.
+//
+// The count only decides how many rows are DRAWN. All thirty-three call sites
+// are evaluated whatever it says - Pine has no way to make a call site
+// conditional - so lowering it makes the table shorter and not the script
+// faster. It is there because a ten-row answer is easier to read than a
+// thirty-three-row one, not to save anything.
+//
+// Both minimums are 1 so that from + i*step can never reach zero, which is what
+// lets the lengths be built from inputs at all: ta.ema needs a SIMPLE int, and
+// arithmetic on inputs stays simple while math.max would not be worth the risk.
+sweepFrom  = input.int(1, 'First MA length', minval = 1, maxval = 200, group = gSwp, display = display.none)
+sweepStep  = input.int(1, 'Step', minval = 1, maxval = 5, group = gSwp,
+     tooltip = 'A coarse pass at step 3 or 4 finds the neighbourhood in one screen. Come back at step 1 around the winner.', display = display.none)
+sweepCount = input.int(33, 'How many lengths to show', minval = 2, maxval = 33, group = gSwp,
+     tooltip = 'Rows drawn, nothing more - all 33 are computed either way. The largest length swept is First + (this - 1) x Step.', display = display.none)
+
+// The payout the AVG column is judged against. It changes no arithmetic; it
+// decides where green stops and red starts, which is what turns 2.06 from a
+// number into a verdict.
+payoutPct = input.float(92.0, 'Broker payout %', minval = 10.0, maxval = 200.0, step = 1.0, group = gOut,
+     tooltip = 'At a flat stake a length pays only while its average is below 1 + payout. 92% gives a break-even average of 1.92.', display = display.none)
+
+// A length that closed six windows has an average that means nothing, and left
+// unmarked it would sit at the top of the ranking. Rows under this are greyed,
+// cannot win, and do not stretch the bars.
+minClosures = input.int(30, 'Ignore lengths with fewer wins than', minval = 1, maxval = 1000, group = gOut, display = display.none)
+
+// When the list is longer than this it wraps into another block BESIDE the
+// first, exactly the way the scanner's closed log does - same columns repeated,
+// a blank column between them, each block picking up where the last ran out.
+// Height is the direction a chart has least of, so the list grows sideways.
+rowsPerBlock = input.int(20, 'Rows per block (wraps sideways past this)', minval = 5, maxval = 33, group = gOut,
+     tooltip = 'Up to three blocks stand side by side, so 12 here holds all 33 lengths in three short columns.', display = display.none)
+
+barCells    = input.int(14, 'Bar width, characters', minval = 5, maxval = 30, group = gOut, display = display.none)
+tablePos    = input.string('Middle right', 'Table position',
+     options = ['Middle right', 'Middle left', 'Middle center', 'Top right', 'Bottom right', 'Top center', 'Bottom center'], group = gOut, display = display.none)
+txtSizeName = input.string('Small', 'Text size', options = ['Tiny', 'Small', 'Normal'], group = gOut, display = display.none)
+
+MAX_BLOCKS = 3
+
+// The palette, and every one of these is OPAQUE on purpose.
+//
+// The first version used #333333 at 55% and the grey rows at 82%, which let the
+// candles show through the table - so white text was not sitting on grey, it was
+// sitting on whatever the chart happened to be doing behind it, and it changed
+// as the chart moved. A table has to be a surface, not a tint. Transparency is
+// the whole reason the text was hard to read; the text was already white.
+//
+// Two row shades alternating, because thirty-three rows of one colour is a wall
+// the eye loses its place in - the difference is small enough not to look like
+// two kinds of row and large enough to follow across five columns.
+C_ROW_A  = #1F242D
+C_ROW_B  = #171B22
+C_ROW_NO = #101317   // below the win threshold - present, and not competing
+C_TXT    = #F2F6FA   // brighter than plain white against a dark slate
+C_TXT_NO = #7C8792
+C_HEAD   = #3B404A
+C_FOOT   = #1A1E25
+
+// ---------------------------------------------------------------------------
+// Everything that does not depend on the MA
+// ---------------------------------------------------------------------------
+isBull = open < close
+isBear = open > close
+
+bodySize  = math.abs(close - open)
+atrVal    = ta.atr(atrLen)
+bodyRef   = ta.sma(bodySize, refLen)[1]
+rangeSize = high - low
+upWick    = high - math.max(open, close)
+dnWick    = math.min(open, close) - low
+upWickRef = ta.sma(upWick, refLen)[1]
+dnWickRef = ta.sma(dnWick, refLen)[1]
+
+pipSize = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
+tolVal  = atrVal * touchTol
+
+wickRejectDown = upWick >= wickRatio * rangeSize and upWick >= minPips * pipSize
+wickRejectUp   = dnWick >= wickRatio * rangeSize and dnWick >= minPips * pipSize
+smallBody      = not na(bodyRef) and bodySize < bodyRef
+longWickDown   = allowLongWick and not na(upWickRef) and upWick > upWickRef
+longWickUp     = allowLongWick and not na(dnWickRef) and dnWick > dnWickRef
+
+counterShort = allowCounterCandle and isBull and isBear[1]
+counterLong  = allowCounterCandle and isBear and isBull[1]
+
+dcRef   = DC_REF == 'Open' ? open[DC_BACK] : close[DC_BACK]
+dcReady = DC_ON and not na(dcRef)
+dcShort = dcReady and isBull and isBull[1] and isBear[2] and close <= dcRef
+dcLong  = dcReady and isBear and isBear[1] and isBull[2] and close >= dcRef
+
+localHour = (hour + 1) % 24
+inHours   = localHour >= startHour and localHour < endHour
+hoursOk   = not restrictToHours or inHours
+
+// How much history this actually saw. The answer to "is it using everything" is
+// not a setting - it is how many bars TradingView loaded, which depends on the
+// plan and the timeframe, and it is printed in the footer so it can be checked
+// rather than assumed. Nothing in this file windows the history.
+var int firstBarTime = na
+if na(firstBarTime)
+    firstBarTime := time
+
+calcIndex(int[] arr, float perc) =>
+    total = 0.0
+    for i = 1 to array.size(arr) - 1
+        total += array.get(arr, i)
+    if total == 0
+        -1
+    else
+        cumSum = 0.0
+        index = -1
+        for i = 1 to array.size(arr) - 1
+            cumSum += array.get(arr, i) / total * 100
+            if cumSum >= perc and index == -1
+                index := i
+        index
+
+// ---------------------------------------------------------------------------
+// One MA length, over the whole loaded history
+// ---------------------------------------------------------------------------
+// MAR1 with the drawing, statistics and alerts removed. The block order is
+// load-bearing: the gate reads the streak BEFORE this bar is graded, the markers
+// read it AFTER. Swapping those is how a gate judges a signal by its own result.
+sweepState(simple int len) =>
+    maValue = maType == 'WMA' ? ta.wma(src, len) :
+         maType == 'EMA' ? ta.ema(src, len) :
+         maType == 'RMA' ? ta.rma(src, len) :
+         ta.sma(src, len)
+
+    int belowCount = 0
+    int aboveCount = 0
+    for i = 1 to trendBars
+        sep = atrVal[i] * trendSep
+        belowCount := belowCount + (close[i] <= maValue[i] - sep ? 1 : 0)
+        aboveCount := aboveCount + (close[i] >= maValue[i] + sep ? 1 : 0)
+
+    trendDown = belowCount == trendBars
+    trendUp   = aboveCount == trendBars
+
+    bodyRejectDown = allowBodyInside and open <= maValue and smallBody and upWick > bodySize
+    bodyRejectUp   = allowBodyInside and open >= maValue and smallBody and dnWick > bodySize
+
+    rejectDown = rangeSize > 0 and high >= maValue - tolVal and close <= maValue and (wickRejectDown or bodyRejectDown or longWickDown)
+    rejectUp   = rangeSize > 0 and low  <= maValue + tolVal and close >= maValue and (wickRejectUp or bodyRejectUp or longWickUp)
+
+    triggerShort = trendDown and (rejectDown or counterShort or dcShort)
+    triggerLong  = trendUp and (rejectUp or counterLong or dcLong)
+
+    var int lastLongBar  = -100000
+    var int lastShortBar = -100000
+    canFireLong  = bar_index - lastLongBar >= cooldown
+    canFireShort = bar_index - lastShortBar >= cooldown
+
+    buyFound  = triggerLong[1] and canFireLong and hoursOk
+    sellFound = triggerShort[1] and not triggerLong[1] and canFireShort and hoursOk
+
+    var int[] failHist    = array.new_int(16, 0)
+    var int   curFailRun  = 0
+    var int   streak      = 0
+    var int   distCache   = -1
+    var int   lockedLimit = 0
+
+    gateThreshold = gateMode == 'Off' ? 0 :
+         gateMode == 'Manual' ? minEntriesToStart :
+         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEntriesToStart) :
+         math.max(distCache, minEntriesToStart)
+
+    gateOk = streak >= gateThreshold
+
+    if streak == 0
+        lockedLimit := gateThreshold
+    colorLimit = gateMode == 'Off' ? 0 : lockedLimit
+
+    buyTaken     = buyFound and gateOk
+    sellTaken    = sellFound and gateOk
+    gateArmedNow = gateMode != 'Off' and streak == gateThreshold - 1
+    buyWarn      = buyFound and gateArmedNow
+    sellWarn     = sellFound and gateArmedNow
+
+    var int  entriesInWindow = 0
+    var bool windowOpen      = false
+
+    var int totClosures = 0
+    var int totEntries  = 0
+    var int worstWindow = 0
+
+    if barstate.isconfirmed
+        if buyFound
+            lastLongBar := bar_index
+            if not perDirectionCooldown
+                lastShortBar := bar_index
+        if sellFound
+            lastShortBar := bar_index
+            if not perDirectionCooldown
+                lastLongBar := bar_index
+
+        // Doji is a miss on both sides, matching the original exactly.
+        if not na(bodyRef) and (buyFound or sellFound)
+            hit = (buyFound and isBull) or (sellFound and isBear)
+
+            if hit
+                curFailRun := 0
+            else
+                curFailRun += 1
+                // ONCE A STREAK REACHES THE CATCH-ALL, NOTHING MOVES ANY MORE - and this
+                // used to keep moving it, which is the bug this guard fixes rather than a
+                // style choice.
+                //
+                // The transfer is what keeps a LIVE streak in exactly one bucket: as it grows
+                // past n it is added to bucket n and taken back out of n-1. Bucket 15 is a
+                // catch-all, so a streak that reaches 15 has ARRIVED and never leaves. With the
+                // index clamped by math.min, the sixteenth failure ran the transfer AGAIN -
+                // adding a second copy of one live streak to bucket 15 and taking a real one
+                // OUT of bucket 14, which went NEGATIVE by one per extra failure.
+                //
+                // THE TOTAL WAS NEVER AFFECTED, and that is what made it silent for as long as
+                // it was: the +1 and the -1 both sit inside the summed range 1..15, so the one
+                // number anybody could have checked by hand stayed exactly right while the
+                // shape underneath it did not.
+                //
+                // What it cost: calcIndex walks the cumulative distribution and takes the FIRST
+                // crossing of the percentage. A negative bucket 14 drags that cumulative back
+                // DOWN, so a crossing that belonged at 14 was missed and picked up at 15
+                // instead - one rung too high on the gate threshold, in Distribution and in Max
+                // of both. The gate then opens one loss LATER than the distribution says it
+                // should. The error is one-sided and bounded: never earlier, and never any
+                // bucket other than 14 -> 15.
+                //
+                // Worked example, 20 consecutive misses against 19 shorter streaks at 95%:
+                // bucket 14 reads -4 and bucket 15 reads 6 where they should read 1 and 1, the
+                // cumulative falls from 90% to 70% at bucket 14, and the answer comes back 15
+                // instead of 14.
+                //
+                // The same five lines live in SIX files. maRejection.pine is the one where this
+                // feeds the gate that decides real entries.
+                if curFailRun <= 15
+                    array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
+                    array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+
+            streak := hit ? 0 : streak + 1
+            distCache := calcIndex(failHist, basePercentage)
+
+        buyFailed    = (buyTaken or buyWarn) and not isBull
+        sellFailed   = (sellTaken or sellWarn) and not isBear
+        greenDiamond = (buyFailed or sellFailed) and colorLimit > 0 and streak == colorLimit
+
+        // 'Entries only' - a window is closed by a trade that was taken.
+        win        = (buyTaken and isBull) or (sellTaken and isBear)
+        entryTaken = buyTaken or sellTaken
+
+        if entryTaken
+            entriesInWindow += 1
+            if not windowOpen
+                windowOpen := true
+
+        if win
+            totClosures += 1
+            totEntries  += entriesInWindow
+            worstWindow := math.max(worstWindow, entriesInWindow)
+
+            windowOpen      := false
+            entriesInWindow := 0
+        else if greenDiamond
+            windowOpen      := true
+            entriesInWindow := 0
+
+    [totClosures, totEntries, worstWindow]
+
+// ---------------------------------------------------------------------------
+// The sweep
+// ---------------------------------------------------------------------------
+// Thirty-three call sites, thirty-three independent machines. Written out rather
+// than looped because that is exactly what buys the separate state - a loop
+// would run one machine thirty-three times and end with one answer.
+//
+// The length is built from the inputs, which works because arithmetic on inputs
+// stays a SIMPLE int and that is what ta.ema demands.
+[c01, e01, w01] = sweepState(sweepFrom + 0  * sweepStep)
+[c02, e02, w02] = sweepState(sweepFrom + 1  * sweepStep)
+[c03, e03, w03] = sweepState(sweepFrom + 2  * sweepStep)
+[c04, e04, w04] = sweepState(sweepFrom + 3  * sweepStep)
+[c05, e05, w05] = sweepState(sweepFrom + 4  * sweepStep)
+[c06, e06, w06] = sweepState(sweepFrom + 5  * sweepStep)
+[c07, e07, w07] = sweepState(sweepFrom + 6  * sweepStep)
+[c08, e08, w08] = sweepState(sweepFrom + 7  * sweepStep)
+[c09, e09, w09] = sweepState(sweepFrom + 8  * sweepStep)
+[c10, e10, w10] = sweepState(sweepFrom + 9  * sweepStep)
+[c11, e11, w11] = sweepState(sweepFrom + 10 * sweepStep)
+[c12, e12, w12] = sweepState(sweepFrom + 11 * sweepStep)
+[c13, e13, w13] = sweepState(sweepFrom + 12 * sweepStep)
+[c14, e14, w14] = sweepState(sweepFrom + 13 * sweepStep)
+[c15, e15, w15] = sweepState(sweepFrom + 14 * sweepStep)
+[c16, e16, w16] = sweepState(sweepFrom + 15 * sweepStep)
+[c17, e17, w17] = sweepState(sweepFrom + 16 * sweepStep)
+[c18, e18, w18] = sweepState(sweepFrom + 17 * sweepStep)
+[c19, e19, w19] = sweepState(sweepFrom + 18 * sweepStep)
+[c20, e20, w20] = sweepState(sweepFrom + 19 * sweepStep)
+[c21, e21, w21] = sweepState(sweepFrom + 20 * sweepStep)
+[c22, e22, w22] = sweepState(sweepFrom + 21 * sweepStep)
+[c23, e23, w23] = sweepState(sweepFrom + 22 * sweepStep)
+[c24, e24, w24] = sweepState(sweepFrom + 23 * sweepStep)
+[c25, e25, w25] = sweepState(sweepFrom + 24 * sweepStep)
+[c26, e26, w26] = sweepState(sweepFrom + 25 * sweepStep)
+[c27, e27, w27] = sweepState(sweepFrom + 26 * sweepStep)
+[c28, e28, w28] = sweepState(sweepFrom + 27 * sweepStep)
+[c29, e29, w29] = sweepState(sweepFrom + 28 * sweepStep)
+[c30, e30, w30] = sweepState(sweepFrom + 29 * sweepStep)
+[c31, e31, w31] = sweepState(sweepFrom + 30 * sweepStep)
+[c32, e32, w32] = sweepState(sweepFrom + 31 * sweepStep)
+[c33, e33, w33] = sweepState(sweepFrom + 32 * sweepStep)
+
+var int[]   swLen = array.new_int(0)
+var int[]   swCls = array.new_int(0)
+var int[]   swEnt = array.new_int(0)
+var int[]   swWst = array.new_int(0)
+var float[] swAvg = array.new_float(0)
+
+// Arrays are references, so a function can push into a global one - the only way
+// to collect thirty-three results without thirty-three more lines each time.
+addLen(int len, int c, int e, int w) =>
+    array.push(swLen, len)
+    array.push(swCls, c)
+    array.push(swEnt, e)
+    array.push(swWst, w)
+    array.push(swAvg, c > 0 ? 1.0 * e / c : na)
+
+posFor = tablePos == 'Middle left' ? position.middle_left :
+     tablePos == 'Middle center' ? position.middle_center :
+     tablePos == 'Top right' ? position.top_right :
+     tablePos == 'Bottom right' ? position.bottom_right :
+     tablePos == 'Top center' ? position.top_center :
+     tablePos == 'Bottom center' ? position.bottom_center :
+     position.middle_right
+
+txtSize = txtSizeName == 'Small' ? size.small : txtSizeName == 'Normal' ? size.normal : size.tiny
+
+// Three blocks of six columns with a blank between them, and the tallest a
+// single block can be plus two header rows and two footer rows. The declared
+// size has to exceed every index ever written, or the write is an out-of-bounds
+// error that kills the script rather than a cell quietly going missing.
+var table swTable = table.new(posFor, MAX_BLOCKS * 7 - 1, 40, border_width = 1)
+
+if barstate.islast
+    array.clear(swLen)
+    array.clear(swCls)
+    array.clear(swEnt)
+    array.clear(swWst)
+    array.clear(swAvg)
+
+    addLen(sweepFrom + 0  * sweepStep, c01, e01, w01)
+    addLen(sweepFrom + 1  * sweepStep, c02, e02, w02)
+    addLen(sweepFrom + 2  * sweepStep, c03, e03, w03)
+    addLen(sweepFrom + 3  * sweepStep, c04, e04, w04)
+    addLen(sweepFrom + 4  * sweepStep, c05, e05, w05)
+    addLen(sweepFrom + 5  * sweepStep, c06, e06, w06)
+    addLen(sweepFrom + 6  * sweepStep, c07, e07, w07)
+    addLen(sweepFrom + 7  * sweepStep, c08, e08, w08)
+    addLen(sweepFrom + 8  * sweepStep, c09, e09, w09)
+    addLen(sweepFrom + 9  * sweepStep, c10, e10, w10)
+    addLen(sweepFrom + 10 * sweepStep, c11, e11, w11)
+    addLen(sweepFrom + 11 * sweepStep, c12, e12, w12)
+    addLen(sweepFrom + 12 * sweepStep, c13, e13, w13)
+    addLen(sweepFrom + 13 * sweepStep, c14, e14, w14)
+    addLen(sweepFrom + 14 * sweepStep, c15, e15, w15)
+    addLen(sweepFrom + 15 * sweepStep, c16, e16, w16)
+    addLen(sweepFrom + 16 * sweepStep, c17, e17, w17)
+    addLen(sweepFrom + 17 * sweepStep, c18, e18, w18)
+    addLen(sweepFrom + 18 * sweepStep, c19, e19, w19)
+    addLen(sweepFrom + 19 * sweepStep, c20, e20, w20)
+    addLen(sweepFrom + 20 * sweepStep, c21, e21, w21)
+    addLen(sweepFrom + 21 * sweepStep, c22, e22, w22)
+    addLen(sweepFrom + 22 * sweepStep, c23, e23, w23)
+    addLen(sweepFrom + 23 * sweepStep, c24, e24, w24)
+    addLen(sweepFrom + 24 * sweepStep, c25, e25, w25)
+    addLen(sweepFrom + 25 * sweepStep, c26, e26, w26)
+    addLen(sweepFrom + 26 * sweepStep, c27, e27, w27)
+    addLen(sweepFrom + 27 * sweepStep, c28, e28, w28)
+    addLen(sweepFrom + 28 * sweepStep, c29, e29, w29)
+    addLen(sweepFrom + 29 * sweepStep, c30, e30, w30)
+    addLen(sweepFrom + 30 * sweepStep, c31, e31, w31)
+    addLen(sweepFrom + 31 * sweepStep, c32, e32, w32)
+    addLen(sweepFrom + 32 * sweepStep, c33, e33, w33)
+
+    shown = math.min(sweepCount, array.size(swLen))
+
+    // The layout is settled BEFORE the winner is picked, and the order matters:
+    // clipping afterwards could leave the header naming a best length whose row
+    // was never drawn, which is the one way a highlight can lie.
+    blocks = int(math.ceil(shown / math.max(rowsPerBlock, 1)))
+    blocks := math.min(math.max(blocks, 1), MAX_BLOCKS)
+
+    // Whatever the block arithmetic says, nothing may be drawn past the table's
+    // declared height - so the rows actually walked are clipped to what fits.
+    shown := math.min(shown, blocks * rowsPerBlock)
+
+    // The scale and the winner, over qualifying rows only. A length with four
+    // wins would stretch the bars around a number that is noise, and every real
+    // difference would collapse into the first character.
+    float bestAvg  = na
+    float worstAvg = na
+    int   bestLen  = 0
+    int   bestCls  = 0
+    int   trusted  = 0
+
+    for i = 0 to shown - 1
+        a = array.get(swAvg, i)
+        c = array.get(swCls, i)
+        if not na(a) and c >= minClosures
+            trusted += 1
+            if na(bestAvg) or a < bestAvg
+                bestAvg := a
+                bestLen := array.get(swLen, i)
+                bestCls := c
+            if na(worstAvg) or a > worstAvg
+                worstAvg := a
+
+    breakEven = 1.0 + payoutPct / 100.0
+    span      = na(bestAvg) or na(worstAvg) ? 0.0 : worstAvg - bestAvg
+
+    table.clear(swTable, 0, 0, MAX_BLOCKS * 7 - 2, 39)
+
+    hdrSpan  = blocks * 7 - 2
+    footRow  = rowsPerBlock + 2
+    verdRow  = rowsPerBlock + 3
+
+    // The winner, named in words at the top. The highlighted row answers it too,
+    // but a highlight has to be found and a sentence does not - and the whole
+    // complaint about the first version was that the row was easy to miss.
+    headBg = #0E2A1B
+    table.cell(swTable, 0, 0,
+         ' MA SWEEP  ' + syminfo.ticker + ' ' + timeframe.period +
+         (restrictToHours ? '  ·  ' + str.tostring(startHour) + '-' + str.tostring(endHour) + ' UTC+1' : '  ·  all hours') +
+         '  ·  break-even ' + str.tostring(breakEven, '#.00') +
+         (bestLen > 0 ?
+              '  ·  ★ BEST MA ' + str.tostring(bestLen) + ' at ' + str.tostring(bestAvg, '#.00000') +
+              (bestAvg < breakEven ? ' - under break-even' : ' - ABOVE break-even, none of these pay') :
+              '  ·  NO LENGTH HAS ' + str.tostring(minClosures) + '+ WINS YET') + ' ',
+         bgcolor = headBg, text_color = bestLen > 0 and bestAvg < breakEven ? #6EF0A5 : #FFC163, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, 0, '', bgcolor = headBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, 0, hdrSpan, 0)
+
+    // One header row per block that has something under it.
+    for b = 0 to blocks - 1
+        h = b * 7
+        table.cell(swTable, h + 0, 1, ' MA ',   bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
+        table.cell(swTable, h + 1, 1, ' Wins ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Windows this length closed over the loaded history.')
+        table.cell(swTable, h + 2, 1, ' Entries ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
+        table.cell(swTable, h + 3, 1, ' Avg ',  bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Entries per closed window, which is 1 / per-entry win rate. Green below break-even, red above.')
+        table.cell(swTable, h + 4, 1, ' Worst ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'The most entries any single window cost. Read THIS column, not Avg, if position size climbs the ladder.')
+        table.cell(swTable, h + 5, 1, ' lower avg → longer ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+             tooltip = 'Scaled across the qualifying rows only, so it shows the spread between lengths rather than their size. If every bar is nearly the same, MA Length does not matter on this data.')
+
+    for i = 0 to shown - 1
+        len  = array.get(swLen, i)
+        cls  = array.get(swCls, i)
+        ent  = array.get(swEnt, i)
+        wst  = array.get(swWst, i)
+        avg  = array.get(swAvg, i)
+        ok   = cls >= minClosures and not na(avg)
+        best = ok and len == bestLen
+
+        cells = not ok or span <= 0 ? 0 : int(math.round((worstAvg - avg) / span * barCells))
+        bar = ''
+        if cells > 0
+            for b = 1 to cells
+                bar := bar + '█'
+
+        // The winning row is solid lime with black text. It has to be findable
+        // from across the room without reading a single number, which is the one
+        // thing a transparent wash could not do.
+        rowBg = best ? #7CE23F :
+             not ok ? C_ROW_NO :
+             i % 2 == 0 ? C_ROW_A : C_ROW_B
+        rowFg = best ? #0A1400 :
+             not ok ? C_TXT_NO :
+             C_TXT
+
+        // Green and red are lifted off the palette defaults: color.lime is very
+        // bright against this slate and #ee8a8a was washed out at small sizes.
+        avgFg = best ? #0A1400 :
+             not ok ? C_TXT_NO :
+             avg < breakEven ? #6EF0A5 : #FF7B7B
+
+        blk = int(math.floor(i / math.max(rowsPerBlock, 1)))
+        c   = blk * 7
+        r   = i - blk * rowsPerBlock + 2
+
+        table.cell(swTable, c + 0, r, (best ? ' ★ ' : ' ') + str.tostring(len) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 1, r, ' ' + str.tostring(cls) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 2, r, ' ' + str.tostring(ent) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 3, r, na(avg) ? ' - ' : ' ' + str.tostring(avg, '#.00000') + ' ', bgcolor = rowBg, text_color = avgFg, text_size = txtSize)
+        table.cell(swTable, c + 4, r, ' ' + str.tostring(wst) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
+        table.cell(swTable, c + 5, r, bar, bgcolor = rowBg, text_color = best ? #0A1400 : rowFg, text_size = txtSize)
+
+    // How much history this saw, which is the answer to "is it using
+    // everything". Nothing here windows the history - this is simply how many
+    // bars TradingView handed the script, and it is a property of the plan and
+    // the timeframe rather than a setting. If the number looks small, the fix is
+    // to scroll left until the chart stops loading more, then let it recompute.
+    footBg = C_FOOT
+    table.cell(swTable, 0, footRow,
+         ' history ' + str.tostring(bar_index + 1) + ' bars, from ' +
+         (na(firstBarTime) ? '-' : str.format_time(firstBarTime, 'yyyy-MM-dd HH:mm', 'UTC+1')) +
+         '  ·  spread ' + (span > 0 ? str.tostring(span, '#.000') : '-') +
+         '  ·  ' + str.tostring(trusted) + ' of ' + str.tostring(shown) + ' rows have ' + str.tostring(minClosures) + '+ wins ',
+         bgcolor = footBg, text_color = #C9D1DA, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, footRow, '', bgcolor = footBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, footRow, hdrSpan, footRow)
+
+    // The honesty line. The spread between best and worst is the whole of what
+    // the table found, and it means nothing until it is read against the error
+    // bar of a single average - about 1.5 / sqrt(wins) for a distribution this
+    // shape. Under three of those, the ranking above is noise in five decimals.
+    errBar  = bestCls > 0 ? 1.5 / math.sqrt(bestCls) : float(na)
+    noisy   = span > 0 and not na(errBar) and span < errBar * 3
+    verdBg  = noisy ? #5C3A00 : #0E2A1B
+
+    table.cell(swTable, 0, verdRow,
+         (na(errBar) ? ' not enough data to judge anything yet ' :
+          noisy ? ' SPREAD ' + str.tostring(span, '#.000') + ' IS INSIDE THE NOISE (±' + str.tostring(errBar, '#.000') + ') - every length here is the same ' :
+          ' spread ' + str.tostring(span, '#.000') + ' clears the noise (±' + str.tostring(errBar, '#.000') + ') - MA ' + str.tostring(bestLen) + ' is a real winner '),
+         bgcolor = verdBg, text_color = noisy or na(errBar) ? #FFC163 : #6EF0A5, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, verdRow, '', bgcolor = verdBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, verdRow, hdrSpan, verdRow)

@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "PO Payout Filter",
+  "version": "1.0.0",
+  "description": "Hides favourite assets whose payout has fallen below a threshold. Local only - nothing is sent anywhere.",
+
+  "permissions": ["storage", "activeTab", "offscreen"],
+
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "PO Payout Filter"
+  },
+
+  "background": {
+    "service_worker": "background.js"
+  },
+
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.pocketoption.com/*",
+        "*://*.po.trade/*",
+        "*://*.pocket-option.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle",
+      "all_frames": true
+    },
+    {
+      "matches": ["*://*.tradingview.com/*"],
+      "js": ["tv-content.js"],
+      "css": ["tv-content.css"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "commands": {
+    "toggle-filter": {
+      "suggested_key": { "default": "Alt+Shift+P" },
+      "description": "Turn the payout filter off and on"
+    }
+  }
+}

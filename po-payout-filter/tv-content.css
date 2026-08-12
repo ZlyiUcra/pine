@@ -1,0 +1,152 @@
+/* PO Payout Filter - the TradingView line.
+ *
+ * Bottom left, because every other edge of a TradingView chart is occupied:
+ * the legend owns the top left, the chart controls the top right, the price
+ * scale the right edge, and the scanner's own table sits bottom right.
+ *
+ * pointer-events stays off. This line is read, never clicked, and it must never
+ * swallow a click meant for the chart underneath it. */
+
+.__po-tv-line {
+  position: fixed !important;
+  left: 12px !important;
+
+  /* Lifted clear of TradingView's own bottom bar. At 12px it sat on top of the
+   * 1D / 5D / 1M / YTD range buttons and the time axis - clicks still reached
+   * them, because of pointer-events below, but they were hidden underneath a
+   * line that has no business covering the chart's own controls.
+   *
+   * 64px clears the range buttons and the axis labels and lands inside the
+   * bottom-left of the plot area, which is empty far more often than not. One
+   * number, if it wants to be somewhere else. */
+  bottom: 64px !important;
+  z-index: 2147483000 !important;
+  pointer-events: none !important;
+
+  font: 600 13px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace !important;
+  letter-spacing: 0.02em !important;
+  padding: 7px 14px !important;
+  border-radius: 6px !important;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45) !important;
+  max-width: 80vw !important;
+
+  /* UP TO THREE LINES, where this used to be one line and an ellipsis.
+   *
+   * A busy morning puts five buckets on this line - tradeable, off board,
+   * below payout, market shut, pre-armed - and at 80vw the tail of it was
+   * simply cut off. The pre-armed bucket is last on purpose, so the section
+   * that lost the argument for space was always the same one, and it was lost
+   * silently: an ellipsis says something is missing, not what.
+   *
+   * Three is the ceiling rather than the target. A short line still draws as
+   * one; the box only grows when there is something in it, and it grows
+   * upwards, away from TradingView's own bottom bar.
+   *
+   * -webkit-line-clamp is what puts the ellipsis on the THIRD line instead of
+   * the first, and it needs the -webkit-box display to work at all. line-clamp
+   * without the prefix is the standard property and is honoured where it
+   * exists; both are set so this does not depend on which one the browser has.
+   *
+   * What must NOT break mid-way - a pair and its percentage, a heading and its
+   * colon - is held together with non-breaking spaces on the JS side, in
+   * tv-content.js. CSS cannot express that; only the text can. */
+  white-space: normal !important;
+  overflow-wrap: break-word !important;
+  display: -webkit-box !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 3 !important;
+  line-clamp: 3 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+/* Four states, four colours, and they are never the same colour by accident -
+ * the whole point of the failure messages is that they cannot be mistaken for
+ * each other or for a working line. */
+
+/* pairs to trade */
+.__po-tv-good {
+  background: #12261a !important;
+  color: #7ce0a5 !important;
+  border: 1px solid #2f6b48 !important;
+}
+
+/* working, but nothing to show */
+.__po-tv-idle {
+  background: rgba(20, 22, 26, 0.92) !important;
+  color: #8b93a1 !important;
+  border: 1px solid #2e3239 !important;
+}
+
+/* working, but something needs your attention */
+.__po-tv-warn {
+  background: #2a1f08 !important;
+  color: #e0b45c !important;
+  border: 1px solid #6b5321 !important;
+}
+
+/* not working - the reason is in the text */
+.__po-tv-bad {
+  background: #2a1113 !important;
+  color: #ee8a8a !important;
+  border: 1px solid #6b2b2b !important;
+}
+
+/* ---------------------------------------------------------------------------
+ * Segments inside the line.
+ *
+ * The pairs you can act on have to separate from the ones that were dropped
+ * before the line is read at all - in a glance, from the corner of the eye,
+ * while you are looking at the chart. That is what these do.
+ *
+ * They are a SECOND channel, never the only one: every section still names its
+ * reason in words, so the line survives a greyscale screenshot and anyone who
+ * does not distinguish these particular hues.
+ * ------------------------------------------------------------------------- */
+
+/* what to trade - the only thing here meant to catch the eye */
+.__po-seg-go {
+  color: #6ef0a5 !important;
+  font-weight: 700 !important;
+}
+
+/* the labels: present, deliberately quiet */
+.__po-seg-head {
+  color: #8b93a1 !important;
+  font-weight: 400 !important;
+}
+
+/* dropped because the broker is not quoting it - nothing you can do about it */
+.__po-seg-off {
+  color: #7b8494 !important;
+  text-decoration: line-through !important;
+  text-decoration-thickness: 1px !important;
+  opacity: 0.85 !important;
+}
+
+/* dropped for paying too little - it may come back, so it is dimmed, not struck */
+.__po-seg-low {
+  color: #e0b45c !important;
+}
+
+/* one step short of the gate - nothing is open on it yet.
+ *
+ * Deliberately quieter than go and cooler than low: this is a heads-up, not an
+ * offer, and it must not compete with a pair you can trade right now. Pale
+ * blue-white rather than a fourth hue, because the scanner already calls this
+ * state white on its own ladder - the large diamond it is predicting is a white
+ * one - and one colour for one meaning across the two screens is worth more
+ * than a colour that stands out here. */
+.__po-seg-near {
+  color: #9fb3d0 !important;
+}
+
+/* nothing to act on */
+.__po-seg-none {
+  color: #c9a227 !important;
+  font-weight: 700 !important;
+}
+
+.__po-seg-sep {
+  color: #4a5058 !important;
+}
