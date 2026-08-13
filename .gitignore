@@ -1,0 +1,13 @@
+# checks/ holds the reader scripts AND the data they are run against - pasted
+# Pine Logs, CSV dumps, whatever a session happened to produce. The code is the
+# project; the data is a snapshot of one morning and does not belong in it.
+#
+# A WHITELIST rather than a list of data extensions, so a dump saved tomorrow
+# under an extension nobody thought of is ignored by default instead of being
+# committed by accident.
+checks/*
+!checks/*.js
+!checks/*.mjs
+!checks/*.cjs
+!checks/*.mts
+!checks/*.ts
