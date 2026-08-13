@@ -763,6 +763,25 @@ async function tick() {
 
     const relay = borrowable(snap, Date.now(), PAGE_ID);
     if (!relay) {
+      // A SWEEP CHART GETS SILENCE, NOT THE COMPLAINT (user request,
+      // 2026-08-12). maSweepPairs.pine and maSweep.pine publish no packed
+      // values by design - they are calibration tables, not charts anybody
+      // trades from - so on a chart whose legend carries one of them every
+      // remedy the banner names is wrong: there is nothing here for the
+      // scanner to annotate. The line is taken OFF the page rather than left
+      // holding its last text, and the loop keeps running, so adding a
+      // scanner to the same chart later brings the readout back by itself.
+      //
+      // Only the no-values-at-all case is silenced. A scanner that IS on the
+      // chart but reads back broken (local truthy, wrong count) still gets its
+      // diagnostic below, sweep beside it or not - that message is about the
+      // scanner, and the sweep does not make it less true.
+      if (!local && /MA Sweep/i.test(legendAllText())) {
+        const bar = document.getElementById(LINE_ID);
+        if (bar) bar.remove();
+        return;
+      }
+
       // One message for what used to be two, and deliberately so. "The scanner
       // is not on the chart" and "its values are switched off" produce exactly
       // the same evidence - no packed numbers anywhere - and the attempt to tell

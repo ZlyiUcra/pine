@@ -439,12 +439,18 @@ forwardSteps = input.int(3, 'Forward window (rows after each row)', minval = 1, 
 pipSize = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
 
 // Pine has no single "moving average" call that takes a type, so the type input
-// is resolved by hand. All four are evaluated on every bar regardless of the
-// choice - that is how Pine works and it costs nothing here.
-maValue = maType == 'WMA' ? ta.wma(src, maLength) :
-     maType == 'EMA' ? ta.ema(src, maLength) :
-     maType == 'RMA' ? ta.rma(src, maLength) :
-     ta.sma(src, maLength)
+// is resolved by hand. switch, NOT the ?: chain this used to be: Pine evaluates
+// EVERY branch of a ternary, so the old spelling computed all four MAs on every
+// bar and kept one. A switch runs only the selected branch, and because maType
+// is a simple input the SAME branch runs on every bar - the series and its
+// history are identical, only the three dead MAs are gone. The compiler may
+// warn about ta.* inside a conditional; that warning is about conditions that
+// change bar to bar, which this one cannot.
+maValue = switch maType
+    'WMA' => ta.wma(src, maLength)
+    'EMA' => ta.ema(src, maLength)
+    'RMA' => ta.rma(src, maLength)
+    => ta.sma(src, maLength)
 
 isBullishBar = open < close
 isBearishBar = open > close
@@ -558,8 +564,13 @@ trendUp   = nz(math.sum(aboveNow, trendBars)[1]) == trendBars
 upperWickRef = ta.sma(upperWick, refLen)[1]
 lowerWickRef = ta.sma(lowerWick, refLen)[1]
 
-wickRejectDown = upperWick >= wickRatio * candleRange and upperWick >= minPips * pipSize
-wickRejectUp   = lowerWick >= wickRatio * candleRange and lowerWick >= minPips * pipSize
+// The two shared factors, computed once - both tests and the debug section
+// below read the same values.
+wickShareMin = wickRatio * candleRange
+pipFloor     = minPips * pipSize
+
+wickRejectDown = upperWick >= wickShareMin and upperWick >= pipFloor
+wickRejectUp   = lowerWick >= wickShareMin and lowerWick >= pipFloor
 smallBody      = not na(bodyRef) and body < bodyRef
 bodyRejectDown = allowBodyInside and open <= maValue and smallBody and upperWick > body
 bodyRejectUp   = allowBodyInside and open >= maValue and smallBody and lowerWick > body
@@ -725,12 +736,12 @@ gFlat = 'Flat filter'
 // reading the chart without knowing which is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this script had before the filter existed.')
-flatLen = input.int(10, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
 flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.40, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(2, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // na for the first flatLen bars, because math.sum propagates na - and na fails
@@ -909,6 +920,7 @@ calculateIndex(int[] arr, float perc) =>
             // at all, since the cumulative caps at exactly 100.
             if cumSum >= perc and index == -1
                 index := i
+                break
         index
 
 // The gate. distIndex is read from the histogram as it stands BEFORE this bar is
@@ -919,7 +931,19 @@ calculateIndex(int[] arr, float perc) =>
 //
 // A -1 from calculateIndex means the histogram is still empty; falling back to
 // the manual floor keeps the gate shut rather than wide open.
-distIndex = calculateIndex(combinedFailedAfterSuccess, basePercentage)
+//
+// CACHED. calculateIndex is a pure function of the histogram, and the
+// histogram only moves inside the statistics block below - recordStreak on
+// combinedFailedAfterSuccess, which raises failHistDirty. On every other bar
+// the walk returned exactly what it returned the bar before, so it is only
+// re-run when the histogram actually changed. The cache starts at -1, which
+// is also what calculateIndex says about an empty histogram.
+var int  distIndexCache = -1
+var bool failHistDirty  = false
+if failHistDirty
+    distIndexCache := calculateIndex(combinedFailedAfterSuccess, basePercentage)
+    failHistDirty  := false
+distIndex = distIndexCache
 gateThreshold = gateMode == 'Off' ? 0 :
      gateMode == 'Manual' ? minEntriesToStart :
      gateMode == 'Distribution' ? (distIndex > 0 ? distIndex : minEntriesToStart) :
@@ -1194,6 +1218,7 @@ if barstate.isconfirmed and not na(bodyRef)
 
                 currentCombinedFailedAfterSuccess += 1
                 recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+                failHistDirty := true
 
         if sellFound
             totalSellSignals += 1
@@ -1229,6 +1254,7 @@ if barstate.isconfirmed and not na(bodyRef)
 
                 currentCombinedFailedAfterSuccess += 1
                 recordStreak(combinedFailedAfterSuccess, currentCombinedFailedAfterSuccess)
+                failHistDirty := true
 
         if (buyFound and not isBullishBar) or (sellFound and not isBearishBar)
             totalFalseSignals += 1
@@ -1339,7 +1365,14 @@ var table failedAfterSuccessTable = table.new(position.top_right, 6, 19, border_
 // earlier one even when its own cells are never written.
 var table successedAfterFailTable = table.new(position.bottom_center, 6, 19, border_width = 2)
 
-if barstate.islast and showStatsTable
+// barstate.isconfirmed joined the guard on all three stats tables (and the
+// debug legend below): every number they print comes from state that mutates
+// only on confirmed bars, so re-rendering on every realtime tick rewrote
+// identical cells. Historical bars are always confirmed, so the initial render
+// on load is unchanged; in realtime the cells refresh exactly when the
+// numbers can actually move - at bar close. The attention popup keeps its
+// per-tick guard: its blink is deliberately tick-driven.
+if barstate.islast and barstate.isconfirmed and showStatsTable
     totalSignals    = totalBuySignals + totalSellSignals
     totalSuccessful = successfulBuySignals + successfulSellSignals
     totalBigBody    = bigBodyBuySignals + bigBodySellSignals
@@ -1537,7 +1570,7 @@ if barstate.islast and showStatsTable
 
 // Distribution of losing streaks: how often a run of N consecutive failures
 // happened after a success. The point is to see where the tail actually ends.
-if barstate.islast and showFailedAfterSuccessTable
+if barstate.islast and barstate.isconfirmed and showFailedAfterSuccessTable
     table.cell(failedAfterSuccessTable, 0, 0, ' FAILS AFTER SUCCESS ', bgcolor = color.black, text_color = color.white, width = 7, text_size = txtSize)
     table.cell(failedAfterSuccessTable, 0, 1, ' Signals After Success ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
     table.cell(failedAfterSuccessTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
@@ -1584,7 +1617,7 @@ if barstate.islast and showFailedAfterSuccessTable
     table.cell(failedAfterSuccessTable, 5,  17, '', bgcolor = color.gray, text_size = txtSize)
 
 // Mirror image of the table above, for winning streaks.
-if barstate.islast and showSuccessedAfterFailTable
+if barstate.islast and barstate.isconfirmed and showSuccessedAfterFailTable
     table.cell(successedAfterFailTable, 0, 0, ' SUCCESSES AFTER FAIL ', bgcolor = color.black, text_color = color.white, width = 7, text_size = txtSize)
     table.cell(successedAfterFailTable, 0, 1, ' Signals After Fail ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
     table.cell(successedAfterFailTable, 1, 1, ' Count ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
@@ -1842,15 +1875,19 @@ plotshape(sellTaken, 'Entry Short', shape.diamond, location.abovebar,
 // The previews. No offset, because they already sit on the candle they describe
 // - the settled marker reaches this same candle from the next bar with an offset
 // of -1, so the faded diamond simply turns solid where it stands.
+// One faded colour, built once and handed to all four - the same series either
+// way, constructed once instead of four times per bar.
+liveFadedColor = color.new(liveEntryColor, liveFade)
+
 plotshape(liveBuyWarn, 'Warning Long (live)', shape.diamond, location.belowbar,
-  color = color.new(liveEntryColor, liveFade), size = size.normal)
+  color = liveFadedColor, size = size.normal)
 plotshape(liveSellWarn, 'Warning Short (live)', shape.diamond, location.abovebar,
-  color = color.new(liveEntryColor, liveFade), size = size.normal)
+  color = liveFadedColor, size = size.normal)
 
 plotshape(liveBuyTaken, 'Entry Long (live)', shape.diamond, location.belowbar,
-  color = color.new(liveEntryColor, liveFade), size = size.normal)
+  color = liveFadedColor, size = size.normal)
 plotshape(liveSellTaken, 'Entry Short (live)', shape.diamond, location.abovebar,
-  color = color.new(liveEntryColor, liveFade), size = size.normal)
+  color = liveFadedColor, size = size.normal)
 
 alertcondition(buyTaken, 'MAR1 Buy', 'MAR1 {{ticker}} {{interval}}: entry long')
 alertcondition(sellTaken, 'MAR1 Sell', 'MAR1 {{ticker}} {{interval}}: entry short')
@@ -2078,8 +2115,9 @@ sellSucceeded = successSellSet and isBearishBar
 // than one being the negation of the other, so a dead-flat stretch - and the
 // warmup, where the older value is still na - falls through to the direction of
 // the signal itself instead of silently defaulting to one side.
-stampSlopeUp = not na(maValue[successSlopeLen]) and maValue > maValue[successSlopeLen]
-stampSlopeDn = not na(maValue[successSlopeLen]) and maValue < maValue[successSlopeLen]
+maSlopeRef   = maValue[successSlopeLen]
+stampSlopeUp = not na(maSlopeRef) and maValue > maSlopeRef
+stampSlopeDn = not na(maSlopeRef) and maValue < maSlopeRef
 
 stampBelow = successPlace == 'Always below' ? true :
      successPlace == 'Always above' ? false :
@@ -2117,6 +2155,7 @@ var int windowEntryTime = na
 var int doneBar      = na
 var int doneEntries  = 0
 var int doneOpenTime = na
+var int doneOpenHHMM = 0
 
 // Confirmed bars only. The result of a signal is decided by the close of the
 // candle it grades, so on a live candle both the hit test and the entry count
@@ -2204,6 +2243,12 @@ if barstate.isconfirmed
         // Still na when the window closed without an entry, and the flag then
         // simply has no opening time to publish.
         doneOpenTime := windowEntryTime
+        // Packed once at capture rather than per bar below: hour()/minute()
+        // with a timezone are pure functions of doneOpenTime, which only
+        // changes on this line - recomputing the four digits every bar re-ran
+        // the timezone conversion forever after the first closed series for
+        // the same answer.
+        doneOpenHHMM := na(windowEntryTime) ? 0 : hour(windowEntryTime, 'UTC+1') * 100 + minute(windowEntryTime, 'UTC+1')
         popBar       := na
 
     if buySucceeded or sellSucceeded or greenDiamond
@@ -2240,8 +2285,8 @@ plot(popFlag and doneLive ? -(424300 + math.min(doneEntries, 99)) : 0, 'DONEFLAG
 //
 // Zero when the window closed without an entry to date it from, which is what
 // the widened success scopes can produce. The popup then just omits it rather
-// than inventing a time.
-doneOpenHHMM = na(doneOpenTime) ? 0 : hour(doneOpenTime, 'UTC+1') * 100 + minute(doneOpenTime, 'UTC+1')
+// than inventing a time. The value itself is a var, packed at the capture site
+// beside doneOpenTime - see the note there.
 
 plot(popFlag and doneLive and doneOpenHHMM > 0 ? -(500000 + doneOpenHHMM) : 0, 'DONEOPEN', color = color.new(color.gray, 0),
   display = display.status_line + display.data_window)
@@ -2277,23 +2322,28 @@ alertcondition(buySucceeded or sellSucceeded, 'MAR1 Series Closed', 'MAR1 {{tick
 // The side under examination. When both are true - possible once the comparisons
 // against the MA went inclusive - long wins, matching the tie-break used for the
 // signals themselves.
-dbgSideUp = trendUp
+//
+// Every intermediate below is prefixed with debugMode: their only consumers
+// are the dbg* codes, which already carry the same prefix, so with debug off
+// the comparisons are short-circuited away instead of computed and discarded.
+// Forced false, not skipped - the values are unobservable either way.
+dbgSideUp = debugMode and trendUp
 
-dbgNoTrend   = not trendUp and not trendDown
-dbgNoTouch   = dbgSideUp ? not (low <= maValue + tol) : not (high >= maValue - tol)
-dbgWrongSide = dbgSideUp ? not (close >= maValue) : not (close <= maValue)
+dbgNoTrend   = debugMode and not trendUp and not trendDown
+dbgNoTouch   = debugMode and (dbgSideUp ? not (low <= maValue + tol) : not (high >= maValue - tol))
+dbgWrongSide = debugMode and (dbgSideUp ? not (close >= maValue) : not (close <= maValue))
 
 // The trigger is an or of two paths, so "first failure wins" needs care: a code
 // may only be reported once BOTH paths have failed.
-dbgBodyPath = dbgSideUp ? bodyRejectUp : bodyRejectDown
+dbgBodyPath = debugMode and (dbgSideUp ? bodyRejectUp : bodyRejectDown)
 
-dbgShareFail = dbgSideUp ? not (lowerWick >= wickRatio * candleRange) : not (upperWick >= wickRatio * candleRange)
-dbgPipsFail  = dbgSideUp ? not (lowerWick >= minPips * pipSize) : not (upperWick >= minPips * pipSize)
+dbgShareFail = debugMode and (dbgSideUp ? not (lowerWick >= wickShareMin) : not (upperWick >= wickShareMin))
+dbgPipsFail  = debugMode and (dbgSideUp ? not (lowerWick >= pipFloor) : not (upperWick >= pipFloor))
 
 // The body path was available - the open sat on the trend side - but the size
 // test turned it away. Worth its own code, because otherwise these candles are
 // reported as wick failures and the wick is not what stopped them.
-dbgBodyBlocked = allowBodyInside and (dbgSideUp ? open >= maValue : open <= maValue) and not dbgBodyPath
+dbgBodyBlocked = debugMode and allowBodyInside and (dbgSideUp ? open >= maValue : open <= maValue) and not dbgBodyPath
 
 // With three paths joined by or, a failure code may only be reported once ALL
 // three have failed. Reporting on the first one alone would put W under candles
@@ -2314,7 +2364,7 @@ dbgTinyWick = dbgTrigFail and not dbgBodyBlocked and not dbgShareFail and dbgPip
 // MODULE: dcLong / dcShort belong in here for the same reason - that path skips
 // the touch and closing-side tests too, so a candle it carried must not be
 // reported as a D or an X. Drop them from this line when removing the module.
-dbgCounterPath = dbgSideUp ? (counterLong or dcLong) : (counterShort or dcShort)
+dbgCounterPath = debugMode and (dbgSideUp ? (counterLong or dcLong) : (counterShort or dcShort))
 dbgRejectStage = not dbgNoTrend and not dbgCounterPath
 
 dbgT = debugMode and dbgNoTrend
@@ -2325,8 +2375,8 @@ dbgW = debugMode and dbgRejectStage and not dbgNoTouch and not dbgWrongSide and 
 dbgP = debugMode and dbgRejectStage and not dbgNoTouch and not dbgWrongSide and dbgTinyWick
 
 // Signal-level checks, evaluated on the bar after a valid trigger.
-dbgTrigAny  = triggerLong[1] or triggerShort[1]
-dbgCooldOk  = triggerLong[1] ? canFireLong : canFireShort
+dbgTrigAny  = debugMode and (triggerLong[1] or triggerShort[1])
+dbgCooldOk  = debugMode and (triggerLong[1] ? canFireLong : canFireShort)
 
 dbgH = debugMode and dbgTrigAny and not hoursOk
 dbgC = debugMode and dbgTrigAny and hoursOk and not dbgCooldOk
@@ -2353,7 +2403,7 @@ plotchar(dbgOk, 'dbg taken',   '^', location.bottom, color.new(color.lime, 0), o
 // the pattern failing, the second is the pattern succeeding and a filter
 // stopping the signal. Knowing which line a letter came from already tells you
 // which settings group to go and change.
-if barstate.islast and debugMode
+if barstate.islast and barstate.isconfirmed and debugMode
     table.cell(debugTable, 0, 0, ' DEBUG CODES ', bgcolor = color.black, text_color = color.white, text_size = txtSize)
     table.cell(debugTable, 0, 1, ' T no trend | D not near MA | X closed past MA | B body too big | W wick share | P wick under spread ',
          bgcolor = color.new(#333333, 65), text_color = color.silver, text_size = txtSize)

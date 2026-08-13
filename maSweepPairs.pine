@@ -216,23 +216,19 @@ gSwp = 'Sweep range'
 // Both minimums are 1 so that First + i·Step can never reach zero, which is what
 // lets the lengths be built from inputs at all: ta.ema needs a SIMPLE int, and
 // arithmetic on inputs stays simple.
-// 10 to 49 rather than 3 to 42, and the two have the same SHAPE - forty lengths
-// at step 1, exactly filling the forty slots. What moved is where the window
-// sits: the short end went from 3 to 10.
+// 5 to 44 (2026-08-12, user request - these are the values the sweeps are
+// actually run at now), and the shape is unchanged: forty lengths at step 1,
+// exactly filling the forty slots. Only where the window sits has moved twice -
+// 3..42 originally, then 10..49, now 5..44.
 //
-// The three lengths gate A actually runs on are 30 and 28 on M1 and 34 on M3, so
-// the interesting part of the range was crowded into its top third while the
-// bottom third held lengths nothing has ever chosen. Moving the window up spends
-// the same forty machines on the part of the range that decides anything.
-//
-// The single-digit lengths are not gone, they are one setting away: type 3 back
-// into First and the old sweep is back, at the cost of the top end.
-sweepFrom = input.int(10, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
+// The single-digit lengths below 5 are not gone, they are one setting away:
+// type 3 back into First and the old sweep is back, at the cost of the top end.
+sweepFrom = input.int(5, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
      tooltip = 'The shortest moving average in the sweep. Type 3 to get the old range back - it costs the top end, since forty lengths is forty lengths.', display = display.none)
 sweepStep = input.int(1, 'Step', minval = 1, maxval = 50, group = gSwp,
      tooltip = 'The gap between one swept length and the next. Forty lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between.', display = display.none)
-sweepTo = input.int(49, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
-     tooltip = 'Where the sweep stops. Forty lengths exist, so if First, Step and this ask for more than forty the sweep ends at First + 39 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 10 to 49 at step 1 is exactly forty and fills the table.', display = display.none)
+sweepTo = input.int(44, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
+     tooltip = 'Where the sweep stops. Forty lengths exist, so if First, Step and this ask for more than forty the sweep ends at First + 39 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 5 to 44 at step 1 is exactly forty and fills the table.', display = display.none)
 
 // How many of the forty call sites land inside the requested range. Guarded on
 // both ends: a Last at or below First gives one row rather than a negative
@@ -276,18 +272,12 @@ slotsShort = sweepFit > SWEEP_N
 // nobody trades. Only the header above them is different.
 gTune = 'Gate and window (must match MAR1)'
 
-// 98 / 6 and not 95 / 5, and this is the one place in the file where the header
-// above is now OUT OF DATE about its own defaults.
-//
-// maRejection.pine and mar1Scanner.pine still ship 95 / 5. That gate was dropped
-// after this sweeper measured the watchlist: the three that survived are 98/6,
-// 99/8 and 99.5/9, and A is the one these lengths are being ranked for. Ranking
-// them at 95 / 5 would be measuring a gate nobody opens any more.
-//
-// So "must match MAR1" now means match whichever gate you are sweeping for, and
-// the two files disagree out of the box on purpose. If a sweep is ever run
-// against MAR1 as shipped, these two have to come back to 95 / 5 first.
-basePercentage    = input.float(98.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+// 55 / 6 (2026-08-12, user request - the values the sweeps are actually run
+// at). "Must match MAR1" means match whichever gate you are sweeping for: 55
+// is gate A's percentage in mar1Gates.pine, and the files are free to disagree
+// out of the box - a sweep is always run FOR some gate, and the gate of the
+// moment is what these two should hold.
+basePercentage    = input.float(55.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
 minEntriesToStart = input.int(6, 'Min entries to start', minval = 1, group = gTune, display = display.none)
 
 // Which successes close a window. 'Entries only' is the strict reading and the
@@ -402,7 +392,7 @@ redAt = input.int(3, 'A window is RED at this many entries', minval = 2, maxval 
 //
 // All five read low-is-better, so the order is always ascending and ★ is always
 // the top row.
-rankBy = input.string('Balanced (+1σ & Red)', 'Rank and sort by',
+rankBy = input.string('Links, then Score', 'Rank and sort by',
      options = ['Balanced (+1σ & Red)', 'Avg +1σ', 'Avg', 'Red share', 'Links, then Score'], group = gOut,
      tooltip = 'Balanced puts a length at the top only if it is good on BOTH the pessimistic average and the deep runs - each is scaled 0..1 across the visible rows and mixed by Tail weight. Avg +1σ, Avg and Red share sort on one column outright.\n\nLinks, then Score - THE DEFAULT - is a three-level hierarchy, not a blend: raw link count first (a hard gate - a real difference in links always wins), then a sample-size-aware reading of that count (the same caution behind Avg +1σ and Red\'s pessimistic share, reused for Links), then Score as the final tie-break. Since Links reads zero on most rows, the raw count rarely speaks and the order runs on sample-size confidence, settled by Score - it differs from Balanced only where a length actually stacked deep windows back to back, and then it sinks that length whatever its average says.', display = display.none)
 
@@ -900,12 +890,12 @@ gFlat = 'Flat filter'
 // is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this file had before the filter existed.')
-flatLen = input.int(10, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
 flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.40, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(2, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // request.security refuses an empty symbol, so a blank slot is pointed at the
@@ -957,6 +947,7 @@ calcIndex(int[] arr, float perc) =>
             cumSum += array.get(arr, i) / total * 100
             if cumSum >= perc and index == -1
                 index := i
+                break
         index
 
 // ---------------------------------------------------------------------------
@@ -978,19 +969,31 @@ calcIndex(int[] arr, float perc) =>
 // called inside request.security evaluates in the REQUESTED symbol's context and
 // those builtins already carry that pair's prices.
 //
-// atrVal[i] in the trend loop is a historical reference to a function PARAMETER,
-// which Pine allows: a series argument keeps its history across the call.
+// sepVal arrives PRE-MULTIPLIED - atrVal * trendSep, computed once in
+// pairState - because the ATR itself was only ever read here to make that
+// product, forty times per pair for one answer. The historical [1] read of a
+// function parameter is still allowed the same way it always was: a series
+// argument keeps its history across the call.
 //
 // Returns ONE number, the five totals packed - see the packing block above.
-sweepOne(simple int len, float srcVal, float atrVal, float bodyRef, float rangeSize,
+sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeSize,
      float bodySize, float upWick, float dnWick, float tolVal,
      bool isBull, bool isBear, bool wickRejectDown, bool wickRejectUp, bool smallBody,
      bool longWickDown, bool longWickUp, bool counterShort, bool counterLong,
      bool dcShort, bool dcLong, bool hoursOk, bool flatOk, bool active) =>
-    maValue = maType == 'WMA' ? ta.wma(srcVal, len) :
-         maType == 'EMA' ? ta.ema(srcVal, len) :
-         maType == 'RMA' ? ta.rma(srcVal, len) :
-         ta.sma(srcVal, len)
+    // switch, NOT the ?: chain this used to be. Pine evaluates EVERY branch of
+    // a ternary, so the old spelling computed all four moving averages per
+    // machine per bar and kept one - a thousand machines deep, the dominant
+    // cost of the whole file. A switch runs only the selected branch, and
+    // because maType is a simple input the SAME branch runs on every bar - the
+    // series and its history are identical, only the three dead MAs are gone.
+    // The compiler may warn about ta.* inside a conditional; that warning is
+    // about conditions that change bar to bar, which this one cannot.
+    maValue = switch maType
+        'WMA' => ta.wma(srcVal, len)
+        'EMA' => ta.ema(srcVal, len)
+        'RMA' => ta.rma(srcVal, len)
+        => ta.sma(srcVal, len)
 
     // THE TREND TEST, AS A ROLLING SUM RATHER THAN A LOOP (2026-08-12), and it
     // is the same test to the bit - not an approximation of it.
@@ -1021,9 +1024,8 @@ sweepOne(simple int len, float srcVal, float atrVal, float bodyRef, float rangeS
     // loop reached past the start of history there and compared against na,
     // which is false, so it counted zero - nz gives the same zero and the same
     // false verdict. Nothing changes at the left edge of the chart.
-    sepNow   = atrVal * trendSep
-    belowNow = close <= maValue - sepNow ? 1 : 0
-    aboveNow = close >= maValue + sepNow ? 1 : 0
+    belowNow = close <= maValue - sepVal ? 1 : 0
+    aboveNow = close >= maValue + sepVal ? 1 : 0
 
     trendDown = nz(math.sum(belowNow, trendBars)[1]) == trendBars
     trendUp   = nz(math.sum(aboveNow, trendBars)[1]) == trendBars
@@ -1108,6 +1110,7 @@ sweepOne(simple int len, float srcVal, float atrVal, float bodyRef, float rangeS
         // Doji is a miss on both sides, matching the original exactly.
         if not na(bodyRef) and (buyFound or sellFound)
             hit = (buyFound and isBull) or (sellFound and isBear)
+            histChanged = false
 
             if hit
                 curFailRun := 0
@@ -1147,9 +1150,14 @@ sweepOne(simple int len, float srcVal, float atrVal, float bodyRef, float rangeS
                 if curFailRun <= 15
                     array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
                     array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+                    histChanged := true
 
             streak := hit ? 0 : streak + 1
-            distCache := calcIndex(failHist, basePercentage)
+            // Recomputed only when the histogram itself moved - on a hit, and
+            // on a miss already past the catch-all bucket, calcIndex would
+            // return exactly what distCache already holds.
+            if histChanged
+                distCache := calcIndex(failHist, basePercentage)
 
         buyFailed    = (buyTaken or buyWarn) and not isBull
         sellFailed   = (sellTaken or sellWarn) and not isBear
@@ -1288,6 +1296,9 @@ pairState() =>
     // Resolved inside the requested context, so a JPY cross gets its own pip.
     pipSizeSym = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
     tolVal     = atrVal * touchTol
+    // The trend separation, once per pair instead of once per machine - the
+    // ATR was only ever read inside sweepOne to make this product.
+    sepVal     = atrVal * trendSep
 
     wickRejectDown = upWick >= wickRatio * rangeSize and upWick >= minPips * pipSizeSym
     wickRejectUp   = dnWick >= wickRatio * rangeSize and dnWick >= minPips * pipSizeSym
@@ -1354,46 +1365,46 @@ pairState() =>
     active = scanBars <= 0 or bar_index > last_bar_index - scanBars
 
     // GENERATED - forty call sites and the tuple they feed.
-    q1 = sweepOne(sweepFrom + 0 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q2 = sweepOne(sweepFrom + 1 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q3 = sweepOne(sweepFrom + 2 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q4 = sweepOne(sweepFrom + 3 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q5 = sweepOne(sweepFrom + 4 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q6 = sweepOne(sweepFrom + 5 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q7 = sweepOne(sweepFrom + 6 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q8 = sweepOne(sweepFrom + 7 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q9 = sweepOne(sweepFrom + 8 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q10 = sweepOne(sweepFrom + 9 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q11 = sweepOne(sweepFrom + 10 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q12 = sweepOne(sweepFrom + 11 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q13 = sweepOne(sweepFrom + 12 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q14 = sweepOne(sweepFrom + 13 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q15 = sweepOne(sweepFrom + 14 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q16 = sweepOne(sweepFrom + 15 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q17 = sweepOne(sweepFrom + 16 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q18 = sweepOne(sweepFrom + 17 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q19 = sweepOne(sweepFrom + 18 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q20 = sweepOne(sweepFrom + 19 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q21 = sweepOne(sweepFrom + 20 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q22 = sweepOne(sweepFrom + 21 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q23 = sweepOne(sweepFrom + 22 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q24 = sweepOne(sweepFrom + 23 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q25 = sweepOne(sweepFrom + 24 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q26 = sweepOne(sweepFrom + 25 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q27 = sweepOne(sweepFrom + 26 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q28 = sweepOne(sweepFrom + 27 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q29 = sweepOne(sweepFrom + 28 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q30 = sweepOne(sweepFrom + 29 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q31 = sweepOne(sweepFrom + 30 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q32 = sweepOne(sweepFrom + 31 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q33 = sweepOne(sweepFrom + 32 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q34 = sweepOne(sweepFrom + 33 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q35 = sweepOne(sweepFrom + 34 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q36 = sweepOne(sweepFrom + 35 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q37 = sweepOne(sweepFrom + 36 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q38 = sweepOne(sweepFrom + 37 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q39 = sweepOne(sweepFrom + 38 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
-    q40 = sweepOne(sweepFrom + 39 * sweepStep, srcVal, atrVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q1 = sweepOne(sweepFrom + 0 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q2 = sweepOne(sweepFrom + 1 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q3 = sweepOne(sweepFrom + 2 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q4 = sweepOne(sweepFrom + 3 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q5 = sweepOne(sweepFrom + 4 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q6 = sweepOne(sweepFrom + 5 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q7 = sweepOne(sweepFrom + 6 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q8 = sweepOne(sweepFrom + 7 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q9 = sweepOne(sweepFrom + 8 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q10 = sweepOne(sweepFrom + 9 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q11 = sweepOne(sweepFrom + 10 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q12 = sweepOne(sweepFrom + 11 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q13 = sweepOne(sweepFrom + 12 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q14 = sweepOne(sweepFrom + 13 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q15 = sweepOne(sweepFrom + 14 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q16 = sweepOne(sweepFrom + 15 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q17 = sweepOne(sweepFrom + 16 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q18 = sweepOne(sweepFrom + 17 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q19 = sweepOne(sweepFrom + 18 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q20 = sweepOne(sweepFrom + 19 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q21 = sweepOne(sweepFrom + 20 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q22 = sweepOne(sweepFrom + 21 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q23 = sweepOne(sweepFrom + 22 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q24 = sweepOne(sweepFrom + 23 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q25 = sweepOne(sweepFrom + 24 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q26 = sweepOne(sweepFrom + 25 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q27 = sweepOne(sweepFrom + 26 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q28 = sweepOne(sweepFrom + 27 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q29 = sweepOne(sweepFrom + 28 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q30 = sweepOne(sweepFrom + 29 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q31 = sweepOne(sweepFrom + 30 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q32 = sweepOne(sweepFrom + 31 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q33 = sweepOne(sweepFrom + 32 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q34 = sweepOne(sweepFrom + 33 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q35 = sweepOne(sweepFrom + 34 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q36 = sweepOne(sweepFrom + 35 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q37 = sweepOne(sweepFrom + 36 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q38 = sweepOne(sweepFrom + 37 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q39 = sweepOne(sweepFrom + 38 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
+    q40 = sweepOne(sweepFrom + 39 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, active)
 
     [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19, q20, q21, q22, q23, q24, q25, q26, q27, q28, q29, q30, q31, q32, q33, q34, q35, q36, q37, q38, q39, q40]
 
@@ -2043,33 +2054,39 @@ if redrawNow
         table.cell(swTable, k, 0, '', bgcolor = headBg, text_size = txtSize)
     table.merge_cells(swTable, 0, 0, hdrSpan, 0)
 
-    // One header row per block that has something under it.
+    // One header row per block that has something under it. The labels and
+    // tooltips are built ONCE, above the loop - nothing in them depends on b,
+    // and the Score and Links tooltips are the longest string concatenations
+    // in the file, so rebuilding them per block was up to four copies of the
+    // same work per redraw.
+    hdrRedTxt   = ' Red ' + str.tostring(redAt) + '+ '
+    hdrLinksTxt = ' Links ' + str.tostring(deepAt) + '+ '
+    tipMA    = 'Rows are ordered best first, on ' + rankBy + ' - change that in Sweep output. ★ best   ☆ second best   ≈ the middle pair   ▽ second worst   ▼ worst, over the rows that clear the win threshold.\n\nThe two blue ≈ rows are the middle of the ORDER, not the rows nearest the average of the column: half the qualifying rows rank better than them and half rank worse. On an odd count there is one true median row and the mark beside it goes to the row directly below. Blue because the middle of a ranking is not a verdict - green means take it and red means avoid it, and this pair means neither.\n\nThe rows under the threshold follow, greyed and unmarked, in the same order on the same column - they are placed but not trusted. Last of all come the lengths that closed nothing, which have no column to be placed on.'
+    tipWins  = 'Windows closed at this length, summed over every scanned pair. The same number the scanner prints after CLOSED.'
+    tipAvg   = 'Entries per closed window, which is 1 / per-entry win rate. Green below break-even, red above.'
+    tipHi    = 'avg + sqrt(avg² - avg) / sqrt(wins) - the average plus one standard error, and the column the table is SORTED and RANKED on. Entries-per-window is a geometric count, whose variance is avg² - avg, so this is the same sample read pessimistically: what the average would look like if this run had been one error bar unlucky. A length with forty wins cannot outrank one with four hundred on luck alone, because this column has already charged it for the small sample.'
+    tipRed   = 'How many closed windows cost ' + str.tostring(redAt) + ' entries or more, and what share of this length\'s wins that was. ' + str.tostring(redAt) + ' is where the diamond ladder turns red, so this is the count of runs that went red at least once.\n\nThis is the column the average cannot give you. Two lengths can average the same and be nothing alike - one closes almost everything on the second entry, the other pays for cheap wins with runs that go five and six deep - and only this column tells them apart.\n\nThe share is coloured against what a geometric run of that average would produce on its own: green means this length goes deep LESS often than its own average implies, red means the tail is fatter than the mean is admitting. Grey means the average is at or below 1 and the comparison has nothing to say.'
+    tipScore = 'The two columns to the left, combined into one number: 0 is the best row in the table on both, 1 is the worst on both.\n\nHow it is built. Avg +1σ and the Red share are stretched separately onto 0..1 across the rows that clear the win threshold, then mixed - ' + str.tostring(100 - tailWeight) + '% average, ' + str.tostring(tailWeight) + '% tail, set by Tail weight. They cannot simply be added: one is entries per window and the other is a proportion, and no honest constant converts one into the other.\n\nThe Red side is read pessimistically, the same way Avg +1σ is: a length with no deep runs in forty windows has not proved as much as one with no deep runs in four hundred, and the score charges it for that.\n\nWhat it is NOT: an absolute measure. 0 and 1 are the best and worst rows CURRENTLY on screen, so changing the range or the win threshold changes what the number means. Compare lengths to each other with it, never to a fixed standard - the four columns to the left are the absolute ones.\n\nIt is blank on a row under the win threshold, because that row is not part of the population the 0..1 was stretched across. Those rows are ordered on Avg +1σ instead.' + (rankBy == 'Balanced (+1σ & Red)' ? '\n\nThe table is sorted and ranked on this column.' : rankBy == 'Links, then Score' ? '\n\nThe table is sorted on Links first and settles the ties on THIS column. Since Links reads zero on most rows, this is usually the column actually deciding the order.' : '\n\nThe table is currently sorted on ' + rankBy + ', so this column is shown but not acted on.')
+    tipWorst = 'The most entries ONE window cost at this length, and the pair it happened on. This is a count of entries, not an identifier - 11 means a single series took eleven attempts before it closed on a win. Where Red says how OFTEN this length goes deep, this says how deep the single worst run got, and which pair to go and look at. 99 is the ceiling the packed format clamps to, and means 99 or more.'
+    tipPairs = 'How many pairs closed at least one window at this length. A good average carried by three pairs is a different finding from the same average across twenty.'
+    tipLinks = 'How many times a window of ' + str.tostring(deepAt) + '+ entries opened within ' + str.tostring(chainWithin) + ' minutes of another ' + str.tostring(deepAt) + '+ window CLOSING ON THE SAME PAIR, summed over every scanned pair. Shallow windows in the gap are ignored.\n\nRed says how often this length goes deep and Worst says how deep the single worst run got. Neither says whether the deep ones arrived TOGETHER, and that is the one that kills a recovery ladder: evenly spaced deep windows let the stake return to base between them, two in a row do not.\n\nTWO THINGS THIS NUMBER IS NOT.\n\nIt is not the CHAINS figure from checks/closed-chains.js. That script counts across the WHOLE watchlist - a deep window on one pair followed by a deep window on another - and this cannot see that at all: one packed number crosses request.security per pair-and-length, and there is no shared timeline on this side to lay them on. What you get here is a strict lower bound on that figure. It is also LINKS rather than runs: a chain of three deep windows is two links here and one chain there.\n\nAnd the tolerance is not the script\'s --within either. Merging every pair onto one timeline puts windows about sixteen minutes apart, so two minutes is tight there. One pair on its own sees a window roughly every twenty-three hours, so the equivalent tolerance scales by the number of pairs - which is why the default here is 180 and not 2.\n\nExpect zero on most rows. This is a tripwire, not a scale: it is meant to be blank until a length is one you should not be trading.\n\nThe table is SORTED on it by default - "Links, then Score" under Rank and sort by. A real difference in the raw count always wins first; among rows that tie on the count (usually every row, at zero), a sample-size-aware reading of it decides - the same caution behind Avg +1σ, now applied here - and Score settles anything still tied. No amount of Score or sample size can move a row past one with a genuinely different link count.'
     for b = 0 to blocks - 1
         h = b * 11
-        table.cell(swTable, h + 0, 1, ' MA ',   bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'Rows are ordered best first, on ' + rankBy + ' - change that in Sweep output. ★ best   ☆ second best   ≈ the middle pair   ▽ second worst   ▼ worst, over the rows that clear the win threshold.\n\nThe two blue ≈ rows are the middle of the ORDER, not the rows nearest the average of the column: half the qualifying rows rank better than them and half rank worse. On an odd count there is one true median row and the mark beside it goes to the row directly below. Blue because the middle of a ranking is not a verdict - green means take it and red means avoid it, and this pair means neither.\n\nThe rows under the threshold follow, greyed and unmarked, in the same order on the same column - they are placed but not trusted. Last of all come the lengths that closed nothing, which have no column to be placed on.')
-        table.cell(swTable, h + 1, 1, ' Wins ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'Windows closed at this length, summed over every scanned pair. The same number the scanner prints after CLOSED.')
+        table.cell(swTable, h + 0, 1, ' MA ',   bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipMA)
+        table.cell(swTable, h + 1, 1, ' Wins ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipWins)
         table.cell(swTable, h + 2, 1, ' Entries ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
-        table.cell(swTable, h + 3, 1, ' Avg ',  bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'Entries per closed window, which is 1 / per-entry win rate. Green below break-even, red above.')
-        table.cell(swTable, h + 4, 1, ' Avg +1σ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'avg + sqrt(avg² - avg) / sqrt(wins) - the average plus one standard error, and the column the table is SORTED and RANKED on. Entries-per-window is a geometric count, whose variance is avg² - avg, so this is the same sample read pessimistically: what the average would look like if this run had been one error bar unlucky. A length with forty wins cannot outrank one with four hundred on luck alone, because this column has already charged it for the small sample.')
-        table.cell(swTable, h + 5, 1, ' Red ' + str.tostring(redAt) + '+ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'How many closed windows cost ' + str.tostring(redAt) + ' entries or more, and what share of this length\'s wins that was. ' + str.tostring(redAt) + ' is where the diamond ladder turns red, so this is the count of runs that went red at least once.\n\nThis is the column the average cannot give you. Two lengths can average the same and be nothing alike - one closes almost everything on the second entry, the other pays for cheap wins with runs that go five and six deep - and only this column tells them apart.\n\nThe share is coloured against what a geometric run of that average would produce on its own: green means this length goes deep LESS often than its own average implies, red means the tail is fatter than the mean is admitting. Grey means the average is at or below 1 and the comparison has nothing to say.')
-        table.cell(swTable, h + 6, 1, ' Score ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'The two columns to the left, combined into one number: 0 is the best row in the table on both, 1 is the worst on both.\n\nHow it is built. Avg +1σ and the Red share are stretched separately onto 0..1 across the rows that clear the win threshold, then mixed - ' + str.tostring(100 - tailWeight) + '% average, ' + str.tostring(tailWeight) + '% tail, set by Tail weight. They cannot simply be added: one is entries per window and the other is a proportion, and no honest constant converts one into the other.\n\nThe Red side is read pessimistically, the same way Avg +1σ is: a length with no deep runs in forty windows has not proved as much as one with no deep runs in four hundred, and the score charges it for that.\n\nWhat it is NOT: an absolute measure. 0 and 1 are the best and worst rows CURRENTLY on screen, so changing the range or the win threshold changes what the number means. Compare lengths to each other with it, never to a fixed standard - the four columns to the left are the absolute ones.\n\nIt is blank on a row under the win threshold, because that row is not part of the population the 0..1 was stretched across. Those rows are ordered on Avg +1σ instead.' + (rankBy == 'Balanced (+1σ & Red)' ? '\n\nThe table is sorted and ranked on this column.' : rankBy == 'Links, then Score' ? '\n\nThe table is sorted on Links first and settles the ties on THIS column. Since Links reads zero on most rows, this is usually the column actually deciding the order.' : '\n\nThe table is currently sorted on ' + rankBy + ', so this column is shown but not acted on.'))
-        table.cell(swTable, h + 7, 1, ' Worst · pair ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'The most entries ONE window cost at this length, and the pair it happened on. This is a count of entries, not an identifier - 11 means a single series took eleven attempts before it closed on a win. Where Red says how OFTEN this length goes deep, this says how deep the single worst run got, and which pair to go and look at. 99 is the ceiling the packed format clamps to, and means 99 or more.')
-        table.cell(swTable, h + 8, 1, ' Pairs ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'How many pairs closed at least one window at this length. A good average carried by three pairs is a different finding from the same average across twenty.')
+        table.cell(swTable, h + 3, 1, ' Avg ',  bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipAvg)
+        table.cell(swTable, h + 4, 1, ' Avg +1σ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipHi)
+        table.cell(swTable, h + 5, 1, hdrRedTxt, bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipRed)
+        table.cell(swTable, h + 6, 1, ' Score ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipScore)
+        table.cell(swTable, h + 7, 1, ' Worst · pair ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipWorst)
+        table.cell(swTable, h + 8, 1, ' Pairs ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipPairs)
         // Last in the row on purpose, and not next to Red where it reads best.
         // The Score tooltip says "the two columns to the left", and Score sits
         // at h + 6 with Avg +1σ and Red at h + 4 and h + 5. Inserting anything
         // between them turns that sentence into a lie with nothing to catch it.
         // Append; do not insert.
-        table.cell(swTable, h + 9, 1, ' Links ' + str.tostring(deepAt) + '+ ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-             tooltip = 'How many times a window of ' + str.tostring(deepAt) + '+ entries opened within ' + str.tostring(chainWithin) + ' minutes of another ' + str.tostring(deepAt) + '+ window CLOSING ON THE SAME PAIR, summed over every scanned pair. Shallow windows in the gap are ignored.\n\nRed says how often this length goes deep and Worst says how deep the single worst run got. Neither says whether the deep ones arrived TOGETHER, and that is the one that kills a recovery ladder: evenly spaced deep windows let the stake return to base between them, two in a row do not.\n\nTWO THINGS THIS NUMBER IS NOT.\n\nIt is not the CHAINS figure from checks/closed-chains.js. That script counts across the WHOLE watchlist - a deep window on one pair followed by a deep window on another - and this cannot see that at all: one packed number crosses request.security per pair-and-length, and there is no shared timeline on this side to lay them on. What you get here is a strict lower bound on that figure. It is also LINKS rather than runs: a chain of three deep windows is two links here and one chain there.\n\nAnd the tolerance is not the script\'s --within either. Merging every pair onto one timeline puts windows about sixteen minutes apart, so two minutes is tight there. One pair on its own sees a window roughly every twenty-three hours, so the equivalent tolerance scales by the number of pairs - which is why the default here is 180 and not 2.\n\nExpect zero on most rows. This is a tripwire, not a scale: it is meant to be blank until a length is one you should not be trading.\n\nThe table is SORTED on it by default - "Links, then Score" under Rank and sort by. A real difference in the raw count always wins first; among rows that tie on the count (usually every row, at zero), a sample-size-aware reading of it decides - the same caution behind Avg +1σ, now applied here - and Score settles anything still tied. No amount of Score or sample size can move a row past one with a genuinely different link count.')
+        table.cell(swTable, h + 9, 1, hdrLinksTxt, bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize, tooltip = tipLinks)
 
     // i is where the row is DRAWN, k is which LENGTH it is. They were the same
     // number until the table learned to sort, and keeping them apart is what

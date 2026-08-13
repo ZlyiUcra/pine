@@ -630,6 +630,7 @@ calcIndex(int[] arr, float perc) =>
             cumSum += array.get(arr, i) / total * 100
             if cumSum >= perc and index == -1
                 index := i
+                break
         index
 
 // ---------------------------------------------------------------------------
@@ -655,9 +656,21 @@ dnWickRef = ta.sma(dnWick, refLen)[1]
 pipSize = syminfo.mintick * (syminfo.type == 'forex' ? 10.0 : 1.0)
 tolVal  = atrVal * touchTol
 
+// Length-independent facts every machine reads, hoisted out of gateOne so they
+// are computed once per bar rather than once per machine. Same values, same
+// operand order - only the repetition is gone.
+sepNow        = atrVal * trendSep
+bodyRefReady  = not na(bodyRef)
+gateIsOff     = gateMode == 'Off'
+gateIsManual  = gateMode == 'Manual'
+gateIsDist    = gateMode == 'Distribution'
+gateNeedsDist = gateIsDist or gateMode == 'Max of both'
+scopeAllFound = successScope == 'All found signals'
+scopeWarns    = successScope == 'Entries and warnings'
+
 wickRejectDown = upWick >= wickRatio * rangeSize and upWick >= minPips * pipSize
 wickRejectUp   = dnWick >= wickRatio * rangeSize and dnWick >= minPips * pipSize
-smallBody      = not na(bodyRef) and bodySize < bodyRef
+smallBody      = bodyRefReady and bodySize < bodyRef
 longWickDown   = allowLongWick and not na(upWickRef) and upWick > upWickRef
 longWickUp     = allowLongWick and not na(dnWickRef) and dnWick > dnWickRef
 
@@ -765,12 +778,12 @@ gFlat = 'Flat filter'
 // reading the chart without knowing which is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this file had before the filter existed.')
-flatLen = input.int(10, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
 flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.40, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(2, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // na for the first flatLen bars, because math.sum propagates na - and na fails
@@ -1100,10 +1113,19 @@ logClose(int slot, int openMs, int rankMs, int entries, int dir, int step, strin
 // this function read an input that has not been declared yet. See livePrev()
 // near THE EIGHT MARKS.
 gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
-    maValue = maType == 'WMA' ? ta.wma(src, len) :
-         maType == 'EMA' ? ta.ema(src, len) :
-         maType == 'RMA' ? ta.rma(src, len) :
-         ta.sma(src, len)
+    // switch, NOT the ?: chain this used to be. Pine evaluates EVERY branch of
+    // a ternary, so the old spelling computed all four moving averages per
+    // machine per bar and kept one. A switch runs only the selected branch,
+    // and because maType is a simple input the SAME branch runs on every bar -
+    // the series and its history are identical, only the three dead MAs are
+    // gone. The compiler may warn about ta.* inside a conditional; that
+    // warning is about conditions that change bar to bar, which this one
+    // cannot.
+    maValue = switch maType
+        'WMA' => ta.wma(src, len)
+        'EMA' => ta.ema(src, len)
+        'RMA' => ta.rma(src, len)
+        => ta.sma(src, len)
 
     // THE TREND TEST, AS A ROLLING SUM RATHER THAN A LOOP (2026-08-12). Same
     // test to the bit - not an approximation - and the same rewrite now lives
@@ -1137,7 +1159,8 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
     // than for speed: eight machines on one chart is not what strains anything.
     // The signal block is meant to read identically wherever it appears, and a
     // file left on the old spelling is one somebody has to diff by hand later.
-    sepNow   = atrVal * trendSep
+    // sepNow itself is global now - it does not depend on the MA, so it lives
+    // with the rest of the shared block.
     belowNow = close <= maValue - sepNow ? 1 : 0
     aboveNow = close >= maValue + sepNow ? 1 : 0
 
@@ -1172,9 +1195,9 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
     var int   distCache   = -1
     var int   lockedLimit = 0
 
-    gateThreshold = gateMode == 'Off' ? 0 :
-         gateMode == 'Manual' ? minEnt :
-         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEnt) :
+    gateThreshold = gateIsOff ? 0 :
+         gateIsManual ? minEnt :
+         gateIsDist ? (distCache > 0 ? distCache : minEnt) :
          math.max(distCache, minEnt)
 
     gateOk = streak >= gateThreshold
@@ -1184,11 +1207,11 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
     // has just pushed up.
     if streak == 0
         lockedLimit := gateThreshold
-    colorLimit = gateMode == 'Off' ? 0 : lockedLimit
+    colorLimit = gateIsOff ? 0 : lockedLimit
 
     buyTaken     = buyFound and gateOk
     sellTaken    = sellFound and gateOk
-    gateArmedNow = gateMode != 'Off' and streak == gateThreshold - 1
+    gateArmedNow = not gateIsOff and streak == gateThreshold - 1
     buyWarn      = buyFound and gateArmedNow
     sellWarn     = sellFound and gateArmedNow
 
@@ -1257,8 +1280,9 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
                 lastLongBar := bar_index
 
         // Doji is a miss on both sides, matching the original exactly.
-        if not na(bodyRef) and (buyFound or sellFound)
+        if bodyRefReady and (buyFound or sellFound)
             hit = (buyFound and isBull) or (sellFound and isBear)
+            histChanged = false
 
             if hit
                 curFailRun := 0
@@ -1298,9 +1322,17 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
                 if curFailRun <= 15
                     array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
                     array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+                    histChanged := true
 
             streak := hit ? 0 : streak + 1
-            distCache := calcIndex(failHist, pct)
+            // Recomputed only when the histogram itself moved - on a hit, and
+            // on a miss already past the catch-all bucket, calcIndex would
+            // return exactly what distCache already holds. gateNeedsDist skips
+            // it in Off/Manual, where distCache goes stale but nothing reads
+            // it - if a future mode starts reading it there, drop gateNeedsDist
+            // from this test.
+            if histChanged and gateNeedsDist
+                distCache := calcIndex(failHist, pct)
 
         // Ladder bookkeeping, deliberately after the grading so the streak it
         // reads already includes this signal's own result. A marker that failed
@@ -1314,11 +1346,11 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt) =>
         greenDiamond = (buyFailed or sellFailed) and colorLimit > 0 and streak == colorLimit
 
         // Which successes close a window, exactly as the scanner reads it.
-        buySet = successScope == 'All found signals' ? buyFound :
-             successScope == 'Entries and warnings' ? (buyTaken or buyWarn) :
+        buySet = scopeAllFound ? buyFound :
+             scopeWarns ? (buyTaken or buyWarn) :
              buyTaken
-        sellSet = successScope == 'All found signals' ? sellFound :
-             successScope == 'Entries and warnings' ? (sellTaken or sellWarn) :
+        sellSet = scopeAllFound ? sellFound :
+             scopeWarns ? (sellTaken or sellWarn) :
              sellTaken
 
         win        = (buySet and isBull) or (sellSet and isBear)
@@ -3108,7 +3140,7 @@ livePrev(bool trL, bool trS, bool bf, bool sf, int llb, int lsb, int streak, int
     lFoundS = trS and not trL and liveCanShort and hoursOk and flatOkLive
     lStreak = (lFoundL and not isBull) or (lFoundS and not isBear) ? streak + 1 : (lFoundL or lFoundS) ? 0 : streak
     lGateOk    = lStreak >= thr
-    lGateArmed = gateMode != 'Off' and lStreak == thr - 1
+    lGateArmed = not gateIsOff and lStreak == thr - 1
     lBuy   = liveBar and lFoundL and lGateOk
     lSell  = liveBar and lFoundS and lGateOk
     lBuyW  = liveBar and lFoundL and lGateArmed

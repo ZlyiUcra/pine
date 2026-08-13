@@ -718,6 +718,7 @@ calcIndex(int[] arr, float perc) =>
             cumSum += array.get(arr, i) / total * 100
             if cumSum >= perc and index == -1
                 index := i
+                break
         index
 
 // ---------------------------------------------------------------------------
@@ -865,12 +866,16 @@ slotName(int s) => s == 0 ? 'A1' : s == 1 ? 'A2' : s == 2 ? 'B1' : s == 3 ? 'B2'
      s == 4 ? 'C1' : s == 5 ? 'C2' : s == 6 ? 'D1' : 'D2'
 
 // Comma separated, 'MM-dd HH:mm' UTC+1 - the same shape mar1Gates.pine's own
-// joinTimes uses, so a line from either file reads the same way.
+// joinTimes uses, so a line from either file reads the same way. Built through
+// array.join rather than repeated concatenation - byte-identical output, minus
+// the O(n^2) string rebuilding the += spelling paid on long entry lists.
 joinTimes(int[] arr) =>
     string s = ''
     if array.size(arr) > 0
+        parts = array.new_string(0)
         for i = 0 to array.size(arr) - 1
-            s := s + (i > 0 ? ',' : '') + str.format_time(array.get(arr, i), 'MM-dd HH:mm', 'UTC+1')
+            array.push(parts, str.format_time(array.get(arr, i), 'MM-dd HH:mm', 'UTC+1'))
+        s := array.join(parts, ',')
     s
 
 // ---------------------------------------------------------------------------
@@ -901,10 +906,19 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt,
      bool isBull, bool isBear, bool wickRejectDown, bool wickRejectUp, bool smallBody,
      bool longWickDown, bool longWickUp, bool counterShort, bool counterLong,
      bool dcShort, bool dcLong, bool hoursOk, bool flatOk, bool active, bool sessionJustEnded) =>
-    maValue = maType == 'WMA' ? ta.wma(srcVal, len) :
-         maType == 'EMA' ? ta.ema(srcVal, len) :
-         maType == 'RMA' ? ta.rma(srcVal, len) :
-         ta.sma(srcVal, len)
+    // switch, NOT the ?: chain this used to be. Pine evaluates EVERY branch of
+    // a ternary, so the old spelling computed all four moving averages per
+    // machine per bar and kept one - two hundred and forty machines deep. A
+    // switch runs only the selected branch, and because maType is a simple
+    // input the SAME branch runs on every bar - the series and its history are
+    // identical, only the three dead MAs are gone. The compiler may warn about
+    // ta.* inside a conditional; that warning is about conditions that change
+    // bar to bar, which this one cannot.
+    maValue = switch maType
+        'WMA' => ta.wma(srcVal, len)
+        'EMA' => ta.ema(srcVal, len)
+        'RMA' => ta.rma(srcVal, len)
+        => ta.sma(srcVal, len)
 
     // THE TREND TEST, AS A ROLLING SUM RATHER THAN A LOOP (2026-08-12). Same
     // test to the bit - not an approximation - and the same rewrite now lives
@@ -1048,6 +1062,7 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt,
         // Doji is a miss on both sides, matching the original exactly.
         if not na(bodyRef) and (buyFound or sellFound)
             hit = (buyFound and isBull) or (sellFound and isBear)
+            histChanged = false
 
             if hit
                 curFailRun := 0
@@ -1087,9 +1102,14 @@ gateOne(simple int slot, simple int len, float pct, simple int minEnt,
                 if curFailRun <= 15
                     array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
                     array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+                    histChanged := true
 
             streak := hit ? 0 : streak + 1
-            distCache := calcIndex(failHist, pct)
+            // Recomputed only when the histogram itself moved - on a hit, and
+            // on a miss already past the catch-all bucket, calcIndex would
+            // return exactly what distCache already holds.
+            if histChanged
+                distCache := calcIndex(failHist, pct)
 
         buyFailed    = (buyTaken or buyWarn) and not isBull
         sellFailed   = (sellTaken or sellWarn) and not isBear
@@ -1619,12 +1639,12 @@ gFlat = 'Flat filter'
 // is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this file had before the filter existed.')
-flatLen = input.int(10, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
 flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.40, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(2, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // ignore_invalid_symbol keeps one mistyped ticker from killing the whole script;
@@ -1735,7 +1755,11 @@ diagLog = false
 
 logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4, float k5, float k6, float k7, float k8) =>
     if on and raw != ''
-        nm = shortName(raw)
+        // var, split ONCE per call site rather than on every confirmed bar:
+        // raw is an input string, constant for the whole run, and a var in a
+        // function belongs to the call site - thirty pairs, thirty splits,
+        // ever, instead of thirty per bar.
+        var string nm = shortName(raw)
         for s = 0 to 7
             kv = s == 0 ? k1 : s == 1 ? k2 : s == 2 ? k3 : s == 3 ? k4 :
                  s == 4 ? k5 : s == 5 ? k6 : s == 6 ? k7 : k8
@@ -2219,7 +2243,9 @@ scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, 
         else if not tfOk
             array.set(tally, 3, array.get(tally, 3) + 1)
         else
-            nm = shortName(raw)
+            // var - raw is a constant input, so the split runs once per call
+            // site ever instead of once per pair per tick. Same string.
+            var string nm = shortName(raw)
 
             // Counted before the quiet test, and deliberately: a pair standing
             // aside for a flat usually HAS nothing open and would be hidden, so
@@ -2312,9 +2338,17 @@ if barstate.islast
     // wiped another three hundred and fifty two. A table nothing is ever
     // written into has nothing to clear.
     if showGrid
-        table.clear(gTable, 0, 0, 8, 35)
+        // Rows 0-1 are the header, built entirely from inputs - constant for
+        // the whole run - so they are drawn ONCE behind gHdrDrawn below, and
+        // the per-tick clear starts at row 2 instead of wiping and rebuilding
+        // them on every tick.
+        table.clear(gTable, 0, 2, 8, 35)
     if showRun
-        table.clear(rTable, 0, 0, 15, 43)
+        // Row 1 is the column headings - constant labels and tooltips, drawn
+        // once behind rHdrDrawn in the live-list block - so the clear skips it:
+        // the dynamic header row 0 and the data rows from 2 down.
+        table.clear(rTable, 0, 0, 15, 0)
+        table.clear(rTable, 0, 2, 15, 43)
     for k = 0 to 4
         array.set(tally, k, 0)
     for s = 0 to 7
@@ -2338,7 +2372,9 @@ if barstate.islast
     // is on a timeframe the grid has no lengths for - in which case every number
     // under it would be a length measured somewhere else.
     hdBg = tfOk ? #0E2A1B : #553300
-    if showGrid
+    var bool gHdrDrawn = false
+    if showGrid and not gHdrDrawn
+        gHdrDrawn := true
         table.cell(gTable, 0, 0,
              (tfOk ? ' MAR1 GATES · SCANNER  ·  ' + timeframe.period + 'm column ' :
               ' MAR1 GATES · SCANNER  ·  ' + timeframe.period + ' IS NOT ' + TF_LIVE + ' - the grid has no lengths for this timeframe ') +
@@ -2546,22 +2582,28 @@ if barstate.islast and showRun
     // is twice the width, so every column that can be named in four or five
     // characters is. What the heading meant in full lives in its tooltip, which
     // did not change.
-    for b = 0 to 8 by 8
-        table.cell(rTable, b + 0, 1, 'Pair', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
-        table.cell(rTable, b + 1, 1, 'Gate', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'Which of the eight machines this row belongs to - the SAME glyph it wears on the chart, and the MA length it is running on this timeframe. ▲ ⬆ gate A, ● ■ gate B, ⚑ ◆ gate C, ☀ ❄ gate D - the first of each pair is the best length, the second is the control. ▲ and ⬆ are the two machines that draw a pointing shape on the chart, so on a short their glyph and the side arrow beside it face opposite ways: the glyph is always first, the arrow always second.')
-        table.cell(rTable, b + 2, 1, 'State', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - one step short of the anchor, so the next marker would come out white. Nothing is open on a pre-armed gate and none of it reaches the closed log; it is there to be watched before it costs anything.')
-        table.cell(rTable, b + 3, 1, 'Mkt', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'Whether a position is live on the candle now forming. An entry grades exactly one candle - taken at its open, settled at its close - so IN lasts one candle, while RUNNING can stand for an hour across candles you were flat for. The word flat here means the opposite of a position: the pair is inside a stretch that went nowhere, so no entry is being taken on any of its eight gates. White pre-armed and dark green ARMED are the same states the State column names, given the same big plate for as long as they hold, not just a row tint - nothing is at risk on either, there is simply nothing else on screen that says so as plainly as IN does. A pale ≈ won is a warn signal - one short of the gate - that matched the candle anyway: no window ever opened and nothing was risked, but the direction would have paid; it shows for one bar only, because the streak resets and there is no state left to hold a plate open.')
-        table.cell(rTable, b + 4, 1, 'Ent', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'What the open window has cost so far. This is the number a recovery ladder dies on, and it is what the list is sorted by inside each state.')
-        table.cell(rTable, b + 5, 1, 'Since', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'When the gate opened - the green diamond, or the first entry when the streak gate is Off. UTC+1, to the minute: the age travels back from the pair as a whole number of minutes, not as a timestamp.')
-        table.cell(rTable, b + 6, 1, 'Stk/g', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'Streak / gate. Consecutive failures against the threshold that opens the gate. On a pre-armed row this is the whole of what the row says: one short.')
-        table.cell(rTable, b + 7, 1, 'Side', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-             tooltip = 'The side the last entry of this window was taken on - the arrow alone, up for long and down for short. Blank while nothing has been entered.')
+    //
+    // Drawn ONCE - labels and tooltips are constants, the per-tick clear above
+    // skips this row, so rebuilding sixteen cells of it per tick bought nothing.
+    var bool rHdrDrawn = false
+    if not rHdrDrawn
+        rHdrDrawn := true
+        for b = 0 to 8 by 8
+            table.cell(rTable, b + 0, 1, 'Pair', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+            table.cell(rTable, b + 1, 1, 'Gate', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'Which of the eight machines this row belongs to - the SAME glyph it wears on the chart, and the MA length it is running on this timeframe. ▲ ⬆ gate A, ● ■ gate B, ⚑ ◆ gate C, ☀ ❄ gate D - the first of each pair is the best length, the second is the control. ▲ and ⬆ are the two machines that draw a pointing shape on the chart, so on a short their glyph and the side arrow beside it face opposite ways: the glyph is always first, the arrow always second.')
+            table.cell(rTable, b + 2, 1, 'State', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - one step short of the anchor, so the next marker would come out white. Nothing is open on a pre-armed gate and none of it reaches the closed log; it is there to be watched before it costs anything.')
+            table.cell(rTable, b + 3, 1, 'Mkt', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'Whether a position is live on the candle now forming. An entry grades exactly one candle - taken at its open, settled at its close - so IN lasts one candle, while RUNNING can stand for an hour across candles you were flat for. The word flat here means the opposite of a position: the pair is inside a stretch that went nowhere, so no entry is being taken on any of its eight gates. White pre-armed and dark green ARMED are the same states the State column names, given the same big plate for as long as they hold, not just a row tint - nothing is at risk on either, there is simply nothing else on screen that says so as plainly as IN does. A pale ≈ won is a warn signal - one short of the gate - that matched the candle anyway: no window ever opened and nothing was risked, but the direction would have paid; it shows for one bar only, because the streak resets and there is no state left to hold a plate open.')
+            table.cell(rTable, b + 4, 1, 'Ent', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'What the open window has cost so far. This is the number a recovery ladder dies on, and it is what the list is sorted by inside each state.')
+            table.cell(rTable, b + 5, 1, 'Since', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'When the gate opened - the green diamond, or the first entry when the streak gate is Off. UTC+1, to the minute: the age travels back from the pair as a whole number of minutes, not as a timestamp.')
+            table.cell(rTable, b + 6, 1, 'Stk/g', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'Streak / gate. Consecutive failures against the threshold that opens the gate. On a pre-armed row this is the whole of what the row says: one short.')
+            table.cell(rTable, b + 7, 1, 'Side', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+                 tooltip = 'The side the last entry of this window was taken on - the arrow alone, up for long and down for short. Blank while nothing has been entered.')
 
     if n > 0
         // Sorted here rather than kept sorted, because the list is rebuilt from
@@ -2834,7 +2876,14 @@ if barstate.islast and showLog != 'Hidden'
     // Over ALL rows on purpose, not the drawn ones. An average taken over
     // whatever happened to fit on screen is not an average of anything; it would
     // move when the text size changed.
-    totalEnt = 0
+    // CACHED between bar closes (the var block below): the j* arrays only move
+    // inside the confirmed-bar recorder above, so walking every row and
+    // rebuilding the by-cost string on every realtime tick produced the same
+    // numbers tick after tick. Recomputed on each confirmed bar - and once on
+    // first draw - reused in between.
+    var int      totalEntC = 0
+    var string   costTxtC  = ''
+    var bool     sumDone   = false
 
     // AND THE SHAPE THE AVERAGE HIDES, which is the whole reason this histogram
     // sits beside it.
@@ -2859,13 +2908,27 @@ if barstate.islast and showLog != 'Hidden'
     // Counted over ALL rows in the window, exactly like the average above it, and
     // not over the rows that happened to fit on screen. Across thirty pairs that
     // difference is most of the log.
-    costHist = array.new_int(7, 0)
-    if rows > 0
-        for i = 0 to rows - 1
-            costE = array.get(jEnt, i)
-            totalEnt += costE
-            costB = costE < 0 ? 0 : costE > 6 ? 6 : costE
-            array.set(costHist, costB, array.get(costHist, costB) + 1)
+    var int[] costHist = array.new_int(7, 0)
+    if barstate.isconfirmed or not sumDone
+        sumDone   := true
+        totalEntC := 0
+        array.fill(costHist, 0)
+        if rows > 0
+            for i = 0 to rows - 1
+                costE = array.get(jEnt, i)
+                totalEntC += costE
+                costB = costE < 0 ? 0 : costE > 6 ? 6 : costE
+                array.set(costHist, costB, array.get(costHist, costB) + 1)
+        // The by-cost line, rebuilt in the same pass - see the bucket notes
+        // below, which describe exactly what this string carries.
+        costTxtC := ''
+        if rows > 0
+            costTxtC := '  ·  by cost'
+            for cb = 0 to 6
+                costN = array.get(costHist, cb)
+                if cb > 0 or costN > 0
+                    costTxtC := costTxtC + '  ' + (cb == 6 ? '6+' : str.tostring(cb)) + '×' + str.tostring(costN) +
+                         ' (' + str.tostring(100.0 * costN / rows, '#') + '%)'
 
     // EACH BUCKET CARRIES ITS SHARE AS WELL AS ITS COUNT, because a count on its
     // own is only comparable inside one window. Twelve windows won on the first
@@ -2877,18 +2940,12 @@ if barstate.islast and showLog != 'Hidden'
     // Rounded to whole percent, so the buckets can add to 99 or to 101. That is
     // the rounding and not a miscount: the counts beside them are exact and they
     // are what sum to the closure total on the left of the line.
-    costTxt = ''
-    if rows > 0
-        costTxt := '  ·  by cost'
-        for cb = 0 to 6
-            costN = array.get(costHist, cb)
-            // Every bucket from one upwards is printed even when it is empty, so
-            // the positions hold still and two logs can be compared by shape
-            // rather than by reading the labels each time. Zero is the exception
-            // and appears only when it has something in it.
-            if cb > 0 or costN > 0
-                costTxt := costTxt + '  ' + (cb == 6 ? '6+' : str.tostring(cb)) + '×' + str.tostring(costN) +
-                     ' (' + str.tostring(100.0 * costN / rows, '#') + '%)'
+    // Every bucket from one upwards is printed even when it is empty, so the
+    // positions hold still and two logs can be compared by shape rather than by
+    // reading the labels each time. Zero is the exception and appears only when
+    // it has something in it. Built in the cached pass above; read here.
+    totalEnt = totalEntC
+    costTxt  = costTxtC
 
     // The block count first, because the automatic row height is derived from
     // it: asking for two blocks and letting the rows size themselves has to
@@ -3114,6 +3171,10 @@ digitFor(bool on, string raw, float v1, float v2, float v3, float v4, float v5, 
                 r = uEnt(vv) > 0 ? 3 : uOpen(vv) == 1 ? 2 : uStep(vv) == 1 ? 1 : 0
                 if r > best
                     best := r
+            // 3 is the top of the rank - no later slot can raise it, so the
+            // remaining unpacks are dead work. Same answer, sooner.
+            if best == 3
+                break
         best == 3 ? 4 : best == 2 ? 3 : best == 1 ? 6 : 2
 
 // Slot 1 is the most significant digit, so the row reads left to right in the

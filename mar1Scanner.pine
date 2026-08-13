@@ -837,12 +837,12 @@ gFlat = 'Flat filter'
 // is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this file had before the filter existed.')
-flatLen = input.int(10, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
 flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.40, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(2, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // ---------------------------------------------------------------------------
@@ -882,6 +882,7 @@ calcIndex(int[] arr, float perc) =>
             cumSum += array.get(arr, i) / total * 100
             if cumSum >= perc and index == -1
                 index := i
+                break
         index
 
 // Where a streak sits on maRejection.pine's colour ladder, as a step number.
@@ -1043,10 +1044,19 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
          srcName == 'hlc3' ? hlc3 :
          ohlc4
 
-    maValue = maType == 'WMA' ? ta.wma(srcVal, maLength) :
-         maType == 'EMA' ? ta.ema(srcVal, maLength) :
-         maType == 'RMA' ? ta.rma(srcVal, maLength) :
-         ta.sma(srcVal, maLength)
+    // switch, NOT the ?: chain this used to be. Pine evaluates EVERY branch of
+    // a ternary, so the old spelling computed all four moving averages per
+    // symbol per bar and kept one - thirty security contexts deep. A switch
+    // runs only the selected branch, and because maType is a simple input the
+    // SAME branch runs on every bar - the series and its history are
+    // identical, only the three dead MAs are gone. The compiler may warn about
+    // ta.* inside a conditional; that warning is about conditions that change
+    // bar to bar, which this one cannot.
+    maValue = switch maType
+        'WMA' => ta.wma(srcVal, maLength)
+        'EMA' => ta.ema(srcVal, maLength)
+        'RMA' => ta.rma(srcVal, maLength)
+        => ta.sma(srcVal, maLength)
 
     isBull = open < close
     isBear = open > close
@@ -1298,6 +1308,7 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
         // in the other.
         if not na(bodyRef) and (buyFound or sellFound)
             hit = (buyFound and isBull) or (sellFound and isBear)
+            histChanged = false
 
             if hit
                 curFailRun := 0
@@ -1337,9 +1348,14 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
                 if curFailRun <= 15
                     array.set(failHist, curFailRun, array.get(failHist, curFailRun) + 1)
                     array.set(failHist, curFailRun - 1, array.get(failHist, curFailRun - 1) - 1)
+                    histChanged := true
 
             streak := hit ? 0 : streak + 1
-            distCache := calcIndex(failHist, basePercentage)
+            // Recomputed only when the histogram itself moved - on a hit, and
+            // on a miss already past the catch-all bucket, calcIndex would
+            // return exactly what distCache already holds.
+            if histChanged
+                distCache := calcIndex(failHist, basePercentage)
 
         // The markers, reading the streak the grading just updated. That single
         // fact is what a green diamond is: a failure that landed exactly on the
@@ -1579,6 +1595,11 @@ var array<int> tally = array.new_int(3, 0)
 addRow(bool on, string raw, int slotIndex, int st, int en, int ot, int sk, int gt, int sd, int ld, bool pre, int wt, bool mkt) =>
     live = on and raw != ''
 
+    // var, split ONCE per call site rather than on every tick: raw is an input
+    // string, constant for the whole run, and a var in a function belongs to
+    // the call site - thirty pairs, thirty splits, ever.
+    var string nm = shortName(raw)
+
     // A pale row for a pair that does not exist would be a promise about
     // nothing, so an unresolved ticker has to be excluded here too.
     //
@@ -1604,7 +1625,7 @@ addRow(bool on, string raw, int slotIndex, int st, int en, int ot, int sk, int g
     // security call ran and the state machine produced an answer. What the skip
     // list suppresses is the row, not the work. Keeping the two apart is what
     // makes the footer honest about where the execution budget went.
-    skipped = live and array.includes(skipArr, shortName(raw))
+    skipped = live and array.includes(skipArr, nm)
 
     if live
         array.set(tally, 0, array.get(tally, 0) + 1)
@@ -1618,7 +1639,7 @@ addRow(bool on, string raw, int slotIndex, int st, int en, int ot, int sk, int g
     // that prints every idle pair on the list - so the one row worth seeing
     // would arrive buried in twenty that are not.
     if live and not skipped and (nz(st, -1) > 0 or preOk or mktOk or showIdle or na(st))
-        array.push(rowSym, shortName(raw))
+        array.push(rowSym, nm)
         array.push(rowState, nz(st, -1))
         array.push(rowEntry, nz(en))
         array.push(rowOpen, nz(ot))
@@ -1713,7 +1734,11 @@ if barstate.islast
             armedCount   += s == 1 ? 1 : 0
             preCount     += s == 0 and array.get(rowPre, i) ? 1 : 0
 
-    table.clear(scanTable, 0, 0, 6, 33)
+    // Row 1 is the column headings - constant labels and tooltips, drawn once
+    // behind scanHdrDrawn below - so the per-tick clear skips it: the dynamic
+    // headline row 0 and the data rows from 2 down.
+    table.clear(scanTable, 0, 0, 6, 0)
+    table.clear(scanTable, 0, 2, 6, 33)
 
     // NOTHING OPEN still means nothing open. A pre-armed pair has no window, so
     // it cannot change that verdict - it is appended as a separate clause rather
@@ -1732,24 +1757,29 @@ if barstate.islast
          text_color = runningCount > 0 or armedCount > 0 ? color.black : color.silver,
          text_size = txtSize)
 
-    table.cell(scanTable, 0, 1, ' Pair ',    bgcolor = color.gray, text_color = color.white, text_size = txtSize)
-    table.cell(scanTable, 1, 1, ' State ',   bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-         tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - the pair is on the white step of the colour ladder, so the next large diamond on it would come out white. Nothing is open on a pre-armed pair and none of it reaches the closed log. Read against the ladder anchor, not the live gate, so while the two have drifted the Streak / gate column can read more than one apart.')
-    // Its own column rather than a word bolted onto State, because the two are
-    // orthogonal and folding them together would hide that. ARMED with a live
-    // position is the first entry of a window happening right now; RUNNING
-    // without one is a window that is between entries and costing nothing at
-    // this moment. Both are real, and a single combined label could not say so.
-    table.cell(scanTable, 2, 1, ' Market ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-         tooltip = 'Whether a position is live on the candle now forming. An entry in this system grades exactly one candle - taken at its open, settled at its close - so IN lasts one candle and then stops, while RUNNING can stand for an hour across candles you were flat for. wait means the window is open and nothing is in the market until the next trigger.')
-    table.cell(scanTable, 3, 1, ' Entries ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-         tooltip = 'Entries taken since this window opened, none of which has come out right yet.')
-    table.cell(scanTable, 4, 1, ' Open since ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-         tooltip = 'On an open window: when the gate opened - the green diamond, or the first entry when the streak gate is Off. On a pre-armed row: when the pair reached the white step of the ladder, which is the moment it started waiting. UTC+1.')
+    // Drawn ONCE - labels and tooltips are constants, and the per-tick clear
+    // above skips this row, so rebuilding it per tick bought nothing.
+    var bool scanHdrDrawn = false
+    if not scanHdrDrawn
+        scanHdrDrawn := true
+        table.cell(scanTable, 0, 1, ' Pair ',    bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+        table.cell(scanTable, 1, 1, ' State ',   bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+             tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - the pair is on the white step of the colour ladder, so the next large diamond on it would come out white. Nothing is open on a pre-armed pair and none of it reaches the closed log. Read against the ladder anchor, not the live gate, so while the two have drifted the Streak / gate column can read more than one apart.')
+        // Its own column rather than a word bolted onto State, because the two are
+        // orthogonal and folding them together would hide that. ARMED with a live
+        // position is the first entry of a window happening right now; RUNNING
+        // without one is a window that is between entries and costing nothing at
+        // this moment. Both are real, and a single combined label could not say so.
+        table.cell(scanTable, 2, 1, ' Market ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+             tooltip = 'Whether a position is live on the candle now forming. An entry in this system grades exactly one candle - taken at its open, settled at its close - so IN lasts one candle and then stops, while RUNNING can stand for an hour across candles you were flat for. wait means the window is open and nothing is in the market until the next trigger.')
+        table.cell(scanTable, 3, 1, ' Entries ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+             tooltip = 'Entries taken since this window opened, none of which has come out right yet.')
+        table.cell(scanTable, 4, 1, ' Open since ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+             tooltip = 'On an open window: when the gate opened - the green diamond, or the first entry when the streak gate is Off. On a pre-armed row: when the pair reached the white step of the ladder, which is the moment it started waiting. UTC+1.')
 
-    table.cell(scanTable, 5, 1, ' Streak / gate ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
-         tooltip = 'Current losing streak against the threshold entries resume at.')
-    table.cell(scanTable, 6, 1, ' Last ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
+        table.cell(scanTable, 5, 1, ' Streak / gate ', bgcolor = color.gray, text_color = color.white, text_size = txtSize,
+             tooltip = 'Current losing streak against the threshold entries resume at.')
+        table.cell(scanTable, 6, 1, ' Last ', bgcolor = color.gray, text_color = color.white, text_size = txtSize)
 
     // Same rule as the closed log: Auto is day and month, on every row. An open
     // window has no end at all, so how far back its start might be is exactly
@@ -2107,11 +2137,15 @@ logClose(bool fired, string raw, int en, int sd, int op, int ld) =>
         // the one field a copied line is reconciled by. So the day is carried
         // whenever the two ends fall on different ones, and only then, which
         // leaves every intraday line byte-for-byte what it was.
-        openDayLog  = nz(op) > 0 ? str.format_time(op, 'yyyy-MM-dd', 'UTC+1') : ''
-        closeDayLog = str.format_time(time_close, 'yyyy-MM-dd', 'UTC+1')
-        openFmtLog  = openDayLog == closeDayLog ? 'HH:mm' : 'yyyy-MM-dd HH:mm'
-
+        //
+        // Inside the logClosures test, because the log.info below is the only
+        // reader - with the export off these three format calls were built per
+        // closure and thrown away.
         if logClosures
+            openDayLog  = nz(op) > 0 ? str.format_time(op, 'yyyy-MM-dd', 'UTC+1') : ''
+            closeDayLog = str.format_time(time_close, 'yyyy-MM-dd', 'UTC+1')
+            openFmtLog  = openDayLog == closeDayLog ? 'HH:mm' : 'yyyy-MM-dd HH:mm'
+
             log.info('MAR1CLOSE;{0};{1};{2};{3};{4}',
                  shortName(raw),
                  nz(op) > 0 ? str.format_time(op, openFmtLog, 'UTC+1') : '',
@@ -2287,7 +2321,18 @@ logTxtName = input.string('Same as the tables', 'CLOSED log: text size',
 logTxt = logTxtName == 'Tiny' ? size.tiny : logTxtName == 'Small' ? size.small :
      logTxtName == 'Normal' ? size.normal : logTxtName == 'Large' ? size.large : txtSize
 
-if barstate.islast and journalShow != 'Hidden'
+// Redrawn on bar close, on the first draw, and when the calendar day rolls
+// over - not on every realtime tick. Everything this block prints comes from
+// the j* arrays, which move only inside the confirmed-bar recorder above, and
+// from day-granularity window anchors; the day term covers the midnight flip
+// of pinToday and the TODAY anchor, so no tick can show anything a close-gated
+// redraw would not. The scan table above keeps its per-tick redraw - its
+// footer clock is deliberately live.
+var bool jrnDrawn    = false
+var int  jrnDrawnDay = -1
+if barstate.islast and journalShow != 'Hidden' and (barstate.isconfirmed or not jrnDrawn or nowDayIdx != jrnDrawnDay)
+    jrnDrawn    := true
+    jrnDrawnDay := nowDayIdx
     table.clear(jrnTable, 0, 0, JRN_MAX_BLOCKS * 6 - 2, JRN_DRAW_MAX + 1)
 
     rows = array.size(jSym)
