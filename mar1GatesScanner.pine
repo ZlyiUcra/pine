@@ -84,9 +84,11 @@
 //
 // ONE TIMEFRAME AT A TIME, AND WHY
 // -------------------------------
-// The chart's timeframe picks the column: on 1m the eight 1-minute lengths run,
-// on 3m the eight 3-minute ones, and on anything else the tables draw nothing and
-// say so. Both timeframes at once is not a decision, it is a ceiling -
+// The chart's timeframe picks the column: the two timeframes are inputs at the
+// top of the dialog - 1m and 3m by default - and matching the first runs the
+// first eight lengths, matching the second the other eight. On anything else
+// the tables draw nothing and say so. Both timeframes at once is not a
+// decision, it is a ceiling -
 // TradingView allows a script forty request.security calls, and thirty pairs on
 // two timeframes is sixty. Open the script twice on two charts if both are
 // wanted; the alternative was cutting the watchlist to twenty.
@@ -165,6 +167,32 @@ indicator('MAR1 Gates - scanner', overlay = true, max_bars_back = 200)
 // TO BRING ANY OTHER ONE BACK: delete ', display = display.none' from its line.
 // To hide one of the two above: add it. There is nothing to keep in sync - the
 // flag is per input and reaches no logic.
+// ---------------------------------------------------------------------------
+// The timeframes
+// ---------------------------------------------------------------------------
+// Which timeframe each COLUMN of the grid was measured on. First in the dialog,
+// because everything below reads through them: every gate block carries two MA
+// lengths per column, and the chart's timeframe picks the column by matching
+// one of these two. On a chart timeframe that matches neither, the tables draw
+// nothing and say so - the same behaviour the hard-wired 1m/3m pair always had.
+//
+// VISIBLE in the status line on purpose, like the streak gate and the hours
+// filter: these two decide which set of lengths is live, and reading the tables
+// without knowing that is reading fiction.
+//
+// The MA input NAMES below (maA11, maA31, ...) keep the 1 and 3 digits from
+// when the columns were hard-wired to 1m and 3m. They are column positions
+// now, not timeframes: the column's timeframe is whatever these two inputs
+// hold.
+//
+// These two must match mar1Gates.pine, like everything else the two files
+// share - the scanner watching one timeframe while the chart draws another is
+// two files describing different mornings under one name.
+gTF = 'Timeframes'
+tfA = input.timeframe('1', 'First / second lengths column', inline = 'tf', group = gTF,
+     tooltip = 'The timeframe each column of MA lengths was measured on. The chart timeframe picks the column: on the first of these two the first lengths run, on the second the second, and on anything else the tables draw nothing and say so. Defaults are the 1m and 3m the grid was always wired to.')
+tfB = input.timeframe('3', '', inline = 'tf', group = gTF)
+
 gA = 'Gate A  ·  ▲ triangle + ⬆ arrow'
 gB = 'Gate B  ·  ● circle + ■ square'
 gC = 'Gate C  ·  ⚑ flag + ◆ diamond'
@@ -174,9 +202,9 @@ onA  = input.bool(true, 'Gate A on', group = gA, display = display.none)
 pctA = input.float(55.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'ga', group = gA,
      tooltip = 'Gate A. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minA = input.int(4, '', minval = 1, inline = 'ga', group = gA, display = display.none)
-maA11 = input.int(49, 'MA on 1m:  best  /  second', minval = 1, maxval = 1000, inline = 'a1', group = gA, display = display.none)
+maA11 = input.int(49, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a1', group = gA, display = display.none)
 maA12 = input.int(48, '', minval = 1, maxval = 1000, inline = 'a1', group = gA, display = display.none)
-maA31 = input.int(25, 'MA on 3m:  best  /  second', minval = 1, maxval = 1000, inline = 'a3', group = gA, display = display.none)
+maA31 = input.int(25, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a3', group = gA, display = display.none)
 maA32 = input.int(15, '', minval = 1, maxval = 1000, inline = 'a3', group = gA, display = display.none)
 
 
@@ -184,27 +212,27 @@ onB  = input.bool(true, 'Gate B on', group = gB, display = display.none)
 pctB = input.float(80.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gb', group = gB,
      tooltip = 'Gate B. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minB = input.int(5, '', minval = 1, inline = 'gb', group = gB, display = display.none)
-maB11 = input.int(25, 'MA on 1m:  best  /  second', minval = 1, maxval = 1000, inline = 'b1', group = gB, display = display.none)
+maB11 = input.int(25, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b1', group = gB, display = display.none)
 maB12 = input.int(26, '', minval = 1, maxval = 1000, inline = 'b1', group = gB, display = display.none)
-maB31 = input.int(15, 'MA on 3m:  best  /  second', minval = 1, maxval = 1000, inline = 'b3', group = gB, display = display.none)
+maB31 = input.int(15, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b3', group = gB, display = display.none)
 maB32 = input.int(25, '', minval = 1, maxval = 1000, inline = 'b3', group = gB, display = display.none)
 
 onC  = input.bool(true, 'Gate C on', group = gC, display = display.none)
 pctC = input.float(90.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gc', group = gC,
      tooltip = 'Gate C. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minC = input.int(6, '', minval = 1, inline = 'gc', group = gC, display = display.none)
-maC11 = input.int(30, 'MA on 1m:  best  /  second', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
+maC11 = input.int(30, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
 maC12 = input.int(29, '', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
-maC31 = input.int(14, 'MA on 3m:  best  /  second', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
+maC31 = input.int(14, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
 maC32 = input.int(11, '', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
 
 onD  = input.bool(true, 'Gate D on', group = gD, display = display.none)
 pctD = input.float(95.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gd', group = gD,
      tooltip = 'Gate D. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minD = input.int(7, '', minval = 1, inline = 'gd', group = gD, display = display.none)
-maD11 = input.int(49, 'MA on 1m:  best  /  second', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
+maD11 = input.int(49, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
 maD12 = input.int(41, '', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
-maD31 = input.int(25, 'MA on 3m:  best  /  second', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
+maD31 = input.int(25, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
 maD32 = input.int(11, '', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
 
 // WHETHER A SLOT IS TICKED - and until now this file DECLARED the four tick
@@ -226,48 +254,43 @@ slotOn(int s) => s < 2 ? onA : s < 4 ? onB : s < 6 ? onC : onD
 // nothing is happening.
 gatesLive = (onA ? 2 : 0) + (onB ? 2 : 0) + (onC ? 2 : 0) + (onD ? 2 : 0)
 
-// timeframe.period is a SIMPLE string, so the lengths chosen from it stay simple
-// ints - the only reason they can be handed to ta.ema at all.
+// Which column of the grid the chart is asking for.
 //
-// On a timeframe that is neither, the 1-minute lengths still reach the moving
-// averages, because a length has to be something, and tfOk stops the tables from
-// reporting any of it. A length measured on M1 is not evidence about M5.
-// THREE-MINUTE SUPPORT IS ON.
+// The two timeframes are the tfA / tfB inputs at the top of the dialog - they
+// used to be hard-wired to 1m and 3m behind a TF3_ON constant, and the whole
+// mechanism became these two inputs (2026-08-13, user request).
 //
-// It was off for a while and one word brought it back, which is the whole point
-// of keeping it as a switch: the eight 3-minute lengths below stayed inputs,
-// stayed in their positions and stayed read by the ternaries underneath the
-// entire time. Nothing was ever deleted:
+// The comparison runs through timeframe.in_seconds rather than string
+// equality, so '60' and '1H' name the same column instead of accidentally
+// missing each other. Both inputs are SIMPLE strings, so the lengths chosen
+// from them stay simple ints - the only reason they can be handed to ta.ema at
+// all.
 //
-//   TradingView maps saved settings onto inputs BY POSITION. Removing eight
-//   inputs would slide every setting under them on any chart already carrying
-//   this script, and putting them back later would cost a second reset.
+// On a timeframe that matches neither, the first column's lengths still reach
+// the moving averages, because a length has to be something, and tfOk stops
+// the tables from reporting any of it. A length measured on one timeframe is
+// not evidence about another.
 //
-//   A constant keeps them read. Cutting the 3-minute branch out instead would
-//   leave eight inputs nothing looks at - dead weight that still has to be
-//   scrolled past, and that nothing would notice had stopped working.
-//
-// The 3-minute column is a real measurement for all four gates - every one of
-// them has been through maSweepPairs.pine on 3m. Nothing in the grid is
-// inherited. See the grid
-// at the top of the file.
-TF3_ON = true
+// The same timeframe in both inputs is not an error: the first column simply
+// wins the tie and the second one never runs.
 
 // What the tables call the timeframes they accept. One string, so a message
-// cannot claim 3m is welcome while the switch above says otherwise.
-TF_LIVE = TF3_ON ? '1m OR 3m' : '1m'
+// cannot claim a timeframe is welcome while the inputs say otherwise.
+TF_LIVE = tfA + ' OR ' + tfB
 
-tfIs3 = TF3_ON and timeframe.period == '3'
-tfOk  = timeframe.period == '1' or tfIs3
+secA  = timeframe.in_seconds(tfA)
+secB  = timeframe.in_seconds(tfB)
+tfIsB = timeframe.in_seconds(timeframe.period) == secB and secB != secA
+tfOk  = timeframe.in_seconds(timeframe.period) == secA or tfIsB
 
-lenA1 = tfIs3 ? maA31 : maA11
-lenA2 = tfIs3 ? maA32 : maA12
-lenB1 = tfIs3 ? maB31 : maB11
-lenB2 = tfIs3 ? maB32 : maB12
-lenC1 = tfIs3 ? maC31 : maC11
-lenC2 = tfIs3 ? maC32 : maC12
-lenD1 = tfIs3 ? maD31 : maD11
-lenD2 = tfIs3 ? maD32 : maD12
+lenA1 = tfIsB ? maA31 : maA11
+lenA2 = tfIsB ? maA32 : maA12
+lenB1 = tfIsB ? maB31 : maB11
+lenB2 = tfIsB ? maB32 : maB12
+lenC1 = tfIsB ? maC31 : maC11
+lenC2 = tfIsB ? maC32 : maC12
+lenD1 = tfIsB ? maD31 : maD11
+lenD2 = tfIsB ? maD32 : maD12
 
 // ---------------------------------------------------------------------------
 // Signal settings - mirrors of maRejection.pine
@@ -1743,7 +1766,7 @@ shortName(string raw) =>
 // TEMPORARY DIAGNOSTIC (2026-08-10) - remove this line and the two log.info
 // blocks below once the missing-row investigation is done. A plain constant
 // rather than an input, so flipping it costs no saved setting's position -
-// same reasoning as TF3_ON above (edit the line, reload).
+// same reasoning as LOG_ENTRY_TIMES above (edit the line, reload).
 //
 // OFF (2026-08-12) rather than deleted. Both blocks below build their line by
 // string CONCATENATION, which is among the most expensive things a Pine script
@@ -2376,7 +2399,7 @@ if barstate.islast
     if showGrid and not gHdrDrawn
         gHdrDrawn := true
         table.cell(gTable, 0, 0,
-             (tfOk ? ' MAR1 GATES · SCANNER  ·  ' + timeframe.period + 'm column ' :
+             (tfOk ? ' MAR1 GATES · SCANNER  ·  ' + timeframe.period + ' column ' :
               ' MAR1 GATES · SCANNER  ·  ' + timeframe.period + ' IS NOT ' + TF_LIVE + ' - the grid has no lengths for this timeframe ') +
              (restrictToHours ? ' ·  ' + str.tostring(startHour) + '-' + str.tostring(endHour) + ' UTC+1 ' : ' ·  all hours '),
              bgcolor = hdBg, text_color = tfOk ? #6EF0A5 : #FFC163, text_size = txtSize)
