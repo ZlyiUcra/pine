@@ -343,7 +343,7 @@ minClosures = input.int(30, 'Ignore lengths with fewer wins than', minval = 1, m
 // average tend to separate earlier on the ladder before they separate on red
 // itself. Set it to the rung the ladder actually turns red on to count only the
 // genuinely red windows.
-redAt = input.int(3, 'A window is RED at this many entries', minval = 2, maxval = 50, group = gOut,
+redAt = input.int(2, 'A window is RED at this many entries', minval = 2, maxval = 50, group = gOut,
      tooltip = 'How deep a window has to go before the Red column counts it. The default sits short of the rung where the diamond ladder actually turns red, on purpose - two lengths that look alike on the raw average tend to separate earlier on the ladder before they separate on red itself. Set it to the rung the ladder actually turns red on to count only the genuinely red windows.', display = display.none)
 
 // What the table is ORDERED and RANKED by. The ★ ☆ ▽ ▼ marks follow this too -
@@ -369,7 +369,7 @@ redAt = input.int(3, 'A window is RED at this many entries', minval = 2, maxval 
 // The other three are unchanged and each answers one question outright:
 // Avg +1σ for a flat stake, Avg for the raw mean, Red share for the tail alone.
 //
-// LINKS, THEN SCORE is the fifth, THE DEFAULT, and the only THREE-LEVEL key.
+// LINKS, THEN SCORE is the fifth, and the only THREE-LEVEL key.
 // It is not a blend and there is no weight to set - it is a strict hierarchy:
 //
 //   1. the raw link count - a HARD GATE. Two lengths with different counts are
@@ -392,9 +392,9 @@ redAt = input.int(3, 'A window is RED at this many entries', minval = 2, maxval 
 //
 // All five read low-is-better, so the order is always ascending and ★ is always
 // the top row.
-rankBy = input.string('Links, then Score', 'Rank and sort by',
+rankBy = input.string('Balanced (+1σ & Red)', 'Rank and sort by',
      options = ['Balanced (+1σ & Red)', 'Avg +1σ', 'Avg', 'Red share', 'Links, then Score'], group = gOut,
-     tooltip = 'Balanced puts a length at the top only if it is good on BOTH the pessimistic average and the deep runs - each is scaled 0..1 across the visible rows and mixed by Tail weight. Avg +1σ, Avg and Red share sort on one column outright.\n\nLinks, then Score - THE DEFAULT - is a three-level hierarchy, not a blend: raw link count first (a hard gate - a real difference in links always wins), then a sample-size-aware reading of that count (the same caution behind Avg +1σ and Red\'s pessimistic share, reused for Links), then Score as the final tie-break. Since Links reads zero on most rows, the raw count rarely speaks and the order runs on sample-size confidence, settled by Score - it differs from Balanced only where a length actually stacked deep windows back to back, and then it sinks that length whatever its average says.', display = display.none)
+     tooltip = 'Balanced - THE DEFAULT - puts a length at the top only if it is good on BOTH the pessimistic average and the deep runs - each is scaled 0..1 across the visible rows and mixed by Tail weight. Avg +1σ, Avg and Red share sort on one column outright.\n\nLinks, then Score is a three-level hierarchy, not a blend: raw link count first (a hard gate - a real difference in links always wins), then a sample-size-aware reading of that count (the same caution behind Avg +1σ and Red\'s pessimistic share, reused for Links), then Score as the final tie-break. Since Links reads zero on most rows, the raw count rarely speaks and the order runs on sample-size confidence, settled by Score - it differs from Balanced only where a length actually stacked deep windows back to back, and then it sinks that length whatever its average says.', display = display.none)
 
 // How much of the Balanced score is the tail. 50 is an even split; 0 makes it
 // Avg +1σ exactly and 100 makes it Red share exactly, so the two endpoints
@@ -600,7 +600,7 @@ trendBars = input.int(3, 'Bars that must close on the trend side of MA', minval 
 trendSep  = input.float(0.30, 'Min distance of trend closes from MA (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
 wickRatio = input.float(0.60, 'Min wick share of candle range', minval = 0.30, maxval = 0.95, step = 0.05, group = gSig, display = display.none)
 touchTol  = input.float(0.30, 'Almost-reached tolerance (x ATR)', minval = 0.0, maxval = 2.0, step = 0.05, group = gSig, display = display.none)
-atrLen    = input.int(8, 'ATR length', minval = 2, group = gSig, display = display.none)
+atrLen    = input.int(3, 'ATR length', minval = 2, group = gSig, display = display.none)
 
 allowBodyInside    = input.bool(true, 'Accept small body fully on the trend side', group = gSig, display = display.none)
 allowLongWick      = input.bool(true, 'Accept wick longer than its running average', group = gSig, display = display.none)
@@ -838,7 +838,7 @@ sym25 = input.symbol('', '', inline = 'p25', group = gList3, display = display.n
 // populations of windows unless these two settings are equal. Set them equal
 // and they describe the same one, and Links becomes a strict refinement of Red -
 // "of the windows Red counted, how many arrived on the heels of another".
-deepAt = input.int(4, 'A window is DEEP at this many entries', minval = 2, maxval = 50, group = gOut, display = display.none,
+deepAt = input.int(3, 'A window is DEEP at this many entries', minval = 2, maxval = 50, group = gOut, display = display.none,
      tooltip = 'How deep a window has to go before the Links column will pair it with another. Set it equal to the Red threshold to make the two columns describe the same set of windows - then Links reads as a refinement of Red rather than as a separate question.')
 
 // How long after a deep window closes another deep window may open on THAT SAME
@@ -890,12 +890,12 @@ gFlat = 'Flat filter'
 // is reading fiction.
 flatOn = input.bool(true, 'Stand aside while flat', group = gFlat,
      tooltip = 'Suppresses the DETECTED signal, in exactly the place the hours filter does. An open window keeps its entries and its rung and stands still until the flat ends - the ladder is deferred, never abandoned - and the streak does not move while it is paused. Untick to get the behaviour this file had before the filter existed.')
-flatLen = input.int(3, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
+flatLen = input.int(4, 'Bars measured', minval = 2, maxval = 500, group = gFlat,
      tooltip = 'How far back the efficiency ratio looks: net displacement over these bars divided by the path actually walked. Shorter reacts sooner and calls more stretches flat; longer only notices the long ones.', display = display.none)
-flatLo = input.float(0.25, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
+flatLo = input.float(0.2, 'Enter flat below  /  leave above', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat,
      tooltip = 'Two thresholds, and the second must be the higher of the two. The state enters flat below the first and leaves only above the second - with a single threshold the verdict flickers bar by bar around it and windows end up half blocked, which is worse than no filter at all. On the ratio itself, 1.0 is a straight line and 0.0 is a walk that ended where it started.', display = display.none)
-flatHi = input.float(0.5, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
-flatWait = input.int(1, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
+flatHi = input.float(0.45, '', minval = 0.01, maxval = 1.0, step = 0.01, inline = 'fl', group = gFlat, display = display.none)
+flatWait = input.int(0, 'Bars to keep standing aside after it ends', minval = 0, maxval = 100, group = gFlat,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // request.security refuses an empty symbol, so a blank slot is pointed at the
