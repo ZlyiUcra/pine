@@ -50,16 +50,33 @@ const ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
 // half-hour-old payout list is worse than no filter.
 const PAYOUT_STALE_MS = 5 * 60 * 1000;
 
-// The two scripts that publish a packed state, named together because either
-// one will do and the messages used to name only the first. mar1Scanner.pine
-// sends ten digits per number; mar1GatesScanner.pine sends the same ten behind a
-// 7 - see parseLegend - and the reader takes whichever it finds.
+// The three scripts that publish a packed state, named together because any
+// one of them will do and the messages used to name only the first.
+// mar1Scanner.pine sends ten digits per number; mar1GatesScanner.pine sends the
+// same ten behind a 7; mar1Rotation.pine sends them behind an 8 - see
+// parseLegend - and the reader takes whichever it finds.
 //
 // It was a `cfg` object with a pairList and a threshold in it, and both were
 // dead: the list comes from chrome.storage on every tick and the threshold is
 // never read on this side at all. A settings object nothing sets is a place for
 // a stale value to hide, so what is left is the one string that is actually used.
-const SCANNERS = 'MAR1 Scanner or MAR1 Gates - scanner';
+const SCANNERS = 'MAR1 Rotation, MAR1 Scanner or MAR1 Gates - scanner';
+
+// Which publisher wins when more than one is in reach, on one chart or across
+// two tabs (user decision, 2026-08-15). The rotation outranks both scanners
+// because it is the file that CHOOSES the length being traded: a scanner
+// publishing states for some other length describes a machine nobody is
+// trading. Ranked rather than special-cased, so the rule is one table and every
+// place that needs it reads the same one.
+const SRC_RANK = { scanner: 0, gates: 1, rotation: 2 };
+const TOP_SOURCE = 'rotation';
+
+// A declaration rather than a const arrow, and not by taste: checks/cfg-reader.js
+// tests the reader as it is WRITTEN, lifting functions out of this file by name,
+// and it can only lift what is declared.
+function rankOf(source) {
+  return SRC_RANK[source] === undefined ? -1 : SRC_RANK[source];
+}
 
 // ---------------------------------------------------------------------------
 // The relay - one scanner, every TradingView tab
@@ -194,10 +211,11 @@ function normalise(text) {
 // parseLegend makes the actual decision, so a false positive here costs one
 // measurement and nothing else.
 //
-// The leading class runs to 7 because mar1GatesScanner.pine prefixes its states
-// with one - see parseLegend. A 7 here costs nothing: this is a prefilter, and
-// widening it only offers parseLegend more candidates to reject.
-const PACKED = /[1-7][\d,\u00a0\u202f]{9,}/;
+// The leading class runs to 8 because mar1GatesScanner.pine prefixes its states
+// with a 7 and mar1Rotation.pine with an 8 - see parseLegend. Widening it costs
+// nothing: this is a prefilter, and a wider one only offers parseLegend more
+// candidates to reject.
+const PACKED = /[1-8][\d,\u00a0\u202f]{9,}/;
 
 let cachedRow = null;
 let cachedHow = '';
@@ -206,9 +224,21 @@ let cachedHow = '';
 const WALK_MS = 1000;
 let lastWalk = 0;
 
-function rowLooksRight(el) {
-  return !!el && parseLegend(el.innerText || '').ok;
+// Whether an element is a legend row worth reading, and WHICH publisher it
+// belongs to. -1 is "nothing readable here"; the rest is SRC_RANK.
+//
+// It answers the rank rather than a yes or no because each indicator gets its
+// own legend row, so a chart carrying the rotation and a scanner offers two
+// rows that both parse - and taking the first would hand the line to whichever
+// TradingView happened to list first. Inside ONE row, parseLegend settles the
+// same question by itself.
+function rowRank(el) {
+  if (!el) return -1;
+  const parsed = parseLegend(el.innerText || '');
+  return parsed.ok ? rankOf(parsed.source) : -1;
 }
+
+let lastRankScan = 0;
 
 // The fast path, and it is here because it was MEASURED, not guessed.
 //
@@ -224,18 +254,39 @@ function rowLooksRight(el) {
 const FAST_ROW = '[class*="sourcesWrapper"] [class*="item"]';
 
 function findLegendRow() {
-  if (cachedRow && document.contains(cachedRow) && rowLooksRight(cachedRow)) return cachedRow;
+  const nowRank = Date.now();
+
+  // The cache is kept only while nothing better can be standing beside it. A
+  // row that already belongs to the top-ranked publisher can never be beaten,
+  // so it is held outright; anything below that is re-checked once a second,
+  // which is what lets a rotation ADDED to the chart later take the line over
+  // from a scanner that was cached first. The floor is the walk's, and for the
+  // same reason: innerText forces layout, and this runs on every frame.
+  if (cachedRow && document.contains(cachedRow)) {
+    const rank = rowRank(cachedRow);
+    if (rank >= 0 && (rank === SRC_RANK[TOP_SOURCE] || nowRank - lastRankScan < WALK_MS)) {
+      return cachedRow;
+    }
+  }
 
   try {
+    lastRankScan = nowRank;
+    let best = null;
+    let bestRank = -1;
     for (const row of document.querySelectorAll(FAST_ROW)) {
-      if (rowLooksRight(row)) {
-        if (cachedHow !== 'fast') {
-          cachedHow = 'fast';
-          console.log(`[PO Payout Filter] legend row found via ${FAST_ROW}`);
-        }
-        cachedRow = row;
-        return row;
+      const rank = rowRank(row);
+      if (rank > bestRank) {
+        best = row;
+        bestRank = rank;
       }
+    }
+    if (best) {
+      if (cachedHow !== 'fast') {
+        cachedHow = 'fast';
+        console.log(`[PO Payout Filter] legend row found via ${FAST_ROW}`);
+      }
+      cachedRow = best;
+      return best;
     }
   } catch (e) {
     // A selector TradingView's DOM no longer understands is not fatal - the
@@ -257,7 +308,9 @@ function findLegendRow() {
   //
   // Document order is pre-order, so ancestors are seen before descendants and
   // the LAST element that still parses is the tightest container - which keeps
-  // this from settling on <body>.
+  // this from settling on <body>. Ranked the same way the fast path is, and the
+  // tie is what keeps the old rule: among elements that read the same
+  // publisher, the last one still wins.
   //
   // Rate limited, and the relay is what made that necessary. This walk is one
   // querySelectorAll over every div and span on the page plus innerText on
@@ -272,9 +325,14 @@ function findLegendRow() {
   lastWalk = now;
 
   let found = null;
+  let foundRank = -1;
   for (const el of document.querySelectorAll('div, span')) {
     if (!PACKED.test(el.textContent || '')) continue;
-    if (rowLooksRight(el)) found = el;
+    const rank = rowRank(el);
+    if (rank >= 0 && rank >= foundRank) {
+      found = el;
+      foundRank = rank;
+    }
   }
 
   if (found) {
@@ -290,6 +348,31 @@ function findLegendRow() {
 
   cachedHow = '';
   return null;
+}
+
+// The whole legend, parsed, at most once a second.
+//
+// Reading it costs an innerText - which forces layout - and until the MA-length
+// check existed it was only read on a chart that had a scanner on it. Now every
+// chart needs it, including the one being watched, and tick() runs on every
+// animation frame a price moves in.
+//
+// What comes out of it is SETTINGS: two checksums and two MA lengths. They
+// change when a dialog is touched, never when a price ticks, so a one-second
+// floor - the same one the document walk uses - costs nothing anybody can
+// notice and takes the read off the hot path.
+let confCache = null;
+let confRaw = '';
+let confAt = 0;
+
+function readLegendConfig() {
+  const now = Date.now();
+  if (!confCache || now - confAt >= WALK_MS) {
+    confAt = now;
+    confRaw = legendAllText();
+    confCache = parseConfig(confRaw);
+  }
+  return confCache;
 }
 
 function legendText() {
@@ -352,63 +435,67 @@ function legendAllText() {
 // mar1Scanner.pine. TradingView's status line shows the bar under the CROSSHAIR,
 // so a reader that ignores the sign reports whatever bar the mouse happens to be
 // resting on as though it were now.
-// TWO SCANNERS PUBLISH NOW, and they are told apart by shape as well
-// -------------------------------------------------------------------
+// THREE SCRIPTS PUBLISH NOW, and they are told apart by shape as well
+// --------------------------------------------------------------------
 // mar1Scanner.pine sends exactly ten digits. mar1GatesScanner.pine sends the
-// same ten with a 7 in front, and the 7 exists for this function alone: without
-// it, a chart carrying both would hand six ten-digit states to a reader that
-// wants three, and the line would report a parse failure - correct, and useless.
+// same ten with a 7 in front, mar1Rotation.pine the same ten with an 8, and
+// those prefixes exist for this function alone: without them, a chart carrying
+// two of the scripts would hand six ten-digit states to a reader that wants
+// three, and the line would report a parse failure - correct, and useless.
 //
 // The gates scanner runs six machines per pair and flattens them to one digit,
 // the most advanced state any of the six reached. That is the right flattening
 // for THIS side, because the question here is about a pair - can I trade this
 // symbol - and not about which of six gates got there first.
 //
-// Both families are collected and the gates one wins when both are complete.
-// That is deliberate rather than arbitrary: a chart carrying both is a chart the
-// newer script was added to on purpose. Which one was read is reported, because
-// a preference nobody can see is a preference nobody can debug.
+// Every family is collected and the HIGHEST RANKED one wins - see SRC_RANK. The
+// rotation outranks both scanners because it is the file that chooses the
+// length being traded, so its digits describe the machine actually in use; the
+// gates scanner outranks the plain one because a chart carrying both is a chart
+// the newer script was added to on purpose. Which one was read is reported,
+// because a preference nobody can see is a preference nobody can debug.
 function parseLegend(text) {
   const flat = normalise(text);
   const tokens = flat.match(/-?\d+(?:\.\d+)?/g) || [];
 
-  const plain = [];
-  const gates = [];
-  let plainSum = null;
-  let gatesSum = null;
+  const found = { scanner: [], gates: [], rotation: [] };
+  const sums = { scanner: null, gates: null, rotation: null };
 
   for (let i = 0; i < tokens.length; i++) {
     const whole = tokens[i].split('.')[0];
-    const isGates = /^7[1-6]{10}$/.test(whole);
-    if (!isGates && !/^[1-6]{10}$/.test(whole)) continue;
+    const family = /^7[1-6]{10}$/.test(whole) ? 'gates' :
+      /^8[1-6]{10}$/.test(whole) ? 'rotation' :
+      /^[1-6]{10}$/.test(whole) ? 'scanner' : null;
+    if (!family) continue;
 
-    const list = isGates ? gates : plain;
-    list.push(isGates ? whole.slice(1) : whole);
+    const list = found[family];
+    list.push(family === 'scanner' ? whole : whole.slice(1));
 
     // LISTSUM is published immediately after the third state, so the token
-    // following it is the checksum. Each family carries its own - the two
-    // scripts have different pair lists in principle, and reading one script's
-    // checksum against the other's states would fail the paste check for a paste
-    // that was never wrong.
+    // following it is the checksum. Each family carries its own - the scripts
+    // have different pair lists in principle, and reading one script's checksum
+    // against another's states would fail the paste check for a paste that was
+    // never wrong.
     if (list.length === 3 && i + 1 < tokens.length) {
-      const after = Number(tokens[i + 1].split('.')[0]);
-      if (isGates) gatesSum = after; else plainSum = after;
+      sums[family] = Number(tokens[i + 1].split('.')[0]);
     }
   }
 
-  const useGates = gates.length === 3;
-  const states = useGates ? gates : plain;
-  const sumAfter = useGates ? gatesSum : plainSum;
+  const complete = Object.keys(found).filter((f) => found[f].length === 3);
+  const total = found.scanner.length + found.gates.length + found.rotation.length;
 
-  if (states.length !== 3) {
-    return { ok: false, err: 'parse', found: plain.length + gates.length };
+  if (!complete.length) {
+    return { ok: false, err: 'parse', found: total };
   }
+
+  const source = complete.sort((a, b) => rankOf(b) - rankOf(a))[0];
+  const sumAfter = sums[source];
 
   return {
     ok: true,
-    source: useGates ? 'gates' : 'scanner',
-    both: useGates && plain.length === 3,
-    digits: states.join('').split('').map(Number),
+    source,
+    both: complete.length > 1,
+    digits: found[source].join('').split('').map(Number),
     listSum: sumAfter === null ? null : Math.abs(sumAfter),
     live: sumAfter === null ? true : sumAfter >= 0
   };
@@ -449,16 +536,29 @@ function listSum(pairs) {
 // The group names must stay in the order the Pine files pack them.
 const CFG_GROUPS = ['moving average', 'candle shape', 'relaxations', 'filters', 'hours', 'statistics'];
 
-// 6xxxxx  scanner CFGSUM      7xxxxx   MAR1 CFGSUM
-// 8xxxxxx scanner CFGGRP      9xxxxxxx MAR1 CFGGRP
+// 6xxxxx  scanner CFGSUM      7xxxxx  MAR1 CFGSUM
+// 8xxxxxx scanner CFGGRP      9xxxxxx MAR1 CFGGRP
+// 4xxxxxx MAR1 MALEN          5xxxxxx rotation MALEN
+//
+// The last pair is the newest and answers a question a fold cannot. CFGSUM says
+// "something drifted"; MALEN says WHICH length each side is on, which is the one
+// setting a human has to copy by hand - mar1Rotation.pine picks the length to
+// trade and Pine has no route into another script's input, so the number is
+// retyped into maRejection.pine or it is not. Both publish it and the reader
+// compares them.
 //
 // Tokenised the same way parseLegend does rather than matched with word
 // boundaries, because the status line renders these as '668,175.00000' - the
 // separators and the symbol's own decimals are inherited, and only the integer
-// part means anything.
+// part means anything. The sign is kept for the same reason it is kept there:
+// MAR1's own flags are published NEGATIVE, and -500123 must not be read as a
+// rotation trading MA 123.
 function parseConfig(text) {
   const tokens = normalise(text).match(/-?\d+(?:\.\d+)?/g) || [];
-  const out = { scanner: null, mar1: null, scannerGroups: null, mar1Groups: null };
+  const out = {
+    scanner: null, mar1: null, scannerGroups: null, mar1Groups: null,
+    mar1Len: null, rotLen: null
+  };
 
   for (const token of tokens) {
     const whole = token.split('.')[0];
@@ -468,6 +568,12 @@ function parseConfig(text) {
     } else if (/^[89]\d{6}$/.test(whole)) {
       const digits = whole.slice(1).split('').map(Number);
       if (whole[0] === '8') out.scannerGroups = digits; else out.mar1Groups = digits;
+    } else if (/^[45]\d{6}$/.test(whole)) {
+      // 0 is "no length" - the rotation publishes it before its ranking has
+      // trusted anything - and it is carried as 0 rather than dropped, so the
+      // caller can tell "not publishing" from "publishing nothing yet".
+      const value = Number(whole.slice(1));
+      if (whole[0] === '4') out.mar1Len = value; else out.rotLen = value;
     }
   }
   return out;
@@ -503,8 +609,12 @@ function noteSourceOnce(source, both) {
   if (srcNoted === state) return;
   srcNoted = state;
   if (both) {
-    console.warn('[PO Payout Filter] both scanners are on this chart; reading MAR1 Gates ' +
-      '(each digit is the deepest of that pair’s six gates). Remove one if you meant the other.');
+    console.warn(`[PO Payout Filter] more than one publisher is on this chart; reading ${source}` +
+      ' - the rotation outranks both scanners, and the gates scanner outranks the plain one.' +
+      ' Remove one if you meant the other.');
+  } else if (source === 'rotation') {
+    console.log('[PO Payout Filter] reading MAR1 Rotation; the digits are the traded length\'s ' +
+      'pairs table, inside its trading hours.');
   } else if (source === 'gates') {
     console.log('[PO Payout Filter] reading MAR1 Gates - scanner; each digit is the deepest of six gates.');
   } else {
@@ -530,10 +640,32 @@ let lastWritten = '';
 // pointless traffic: the timestamp is the borrower's proof that this tab is
 // still alive, and a publisher that only wrote on a change would look dead
 // through every quiet stretch - which is most of them.
-function publish(parsed) {
-  const body = parsed.digits.join('') + ':' + parsed.listSum;
+async function publish(parsed, rotLen) {
+  const body = parsed.digits.join('') + ':' + parsed.listSum + ':' + rotLen;
   const now = Date.now();
   if (body === lastWritten && now - lastWrite < SCAN_WRITE_MS) return;
+
+  // THE RANK DECIDES THE RELAY TOO, not only one chart's legend. A tab with a
+  // scanner and a tab with the rotation both have something worth publishing
+  // and only one snapshot exists, so without this the two would take turns and
+  // every borrowing tab would flip between two readings of two different
+  // lengths. The lower-ranked publisher stands down instead - and resumes by
+  // itself the moment the other tab is closed and its snapshot goes stale,
+  // because that is the only thing keeping it quiet.
+  if (parsed.source !== TOP_SOURCE) {
+    let held;
+    try {
+      held = (await chrome.storage.local.get(['scanNow'])).scanNow;
+    } catch (e) {
+      shutdown();
+      return;
+    }
+    if (held && held.source === TOP_SOURCE && held.page !== PAGE_ID &&
+        Date.now() - held.t >= 0 && Date.now() - held.t <= SCAN_STALE_MS) {
+      return;
+    }
+  }
+
   lastWritten = body;
   lastWrite = now;
   try {
@@ -544,7 +676,10 @@ function publish(parsed) {
         from: chartName(),
         source: parsed.source,
         digits: parsed.digits,
-        listSum: parsed.listSum
+        listSum: parsed.listSum,
+        // The traded length travels with the states, because the tab that has
+        // to compare it against MAR1's is the one that cannot see this legend.
+        rotLen: rotLen === undefined ? null : rotLen
       }
     });
   } catch (e) {
@@ -576,9 +711,14 @@ function borrowable(snap, now, pageId) {
   return {
     age,
     from: snap.from || '',
+    // The publisher's traded length, or null when it published none. Carried
+    // BESIDE parsed rather than inside it, because parsed is deliberately the
+    // same shape parseLegend returns and nothing downstream may be able to tell
+    // a borrowed reading from a local one.
+    rotLen: snap.rotLen === undefined ? null : snap.rotLen,
     parsed: {
       ok: true,
-      source: snap.source === 'gates' ? 'gates' : 'scanner',
+      source: snap.source === 'gates' ? 'gates' : snap.source === 'rotation' ? 'rotation' : 'scanner',
       both: false,
       digits: snap.digits,
       listSum: snap.listSum === undefined ? null : snap.listSum,
@@ -749,10 +889,21 @@ async function tick() {
   const text = legendText();
   const local = text ? parseLegend(text) : null;
 
-  // No scanner on THIS chart is no longer the end of it - see the relay above.
-  // What is on the chart in front of you and what the scanner knows are two
-  // different questions, and only the first one is local.
-  if (!local || !local.ok) {
+  // The whole legend, parsed. Three answers come out of it: whether the two
+  // scripts agree on their settings, what MA Length maRejection.pine is set to,
+  // and what length a rotation on THIS chart is trading. Cached for a second -
+  // see readLegendConfig - and confRaw is the text it was read from.
+  const conf = readLegendConfig();
+
+  // A LOCAL READING NO LONGER WINS OUTRIGHT, and the rank is why (user
+  // decision, 2026-08-15). A scanner on this chart and the rotation on another
+  // tab are both readable, and they can describe different MA lengths - only
+  // one of them is the length being traded, and it is the rotation's. So the
+  // stored reading is fetched whenever this chart is not already carrying the
+  // top-ranked publisher, and it is preferred only when it actually outranks
+  // what is here.
+  let relay = null;
+  if (!local || !local.ok || local.source !== TOP_SOURCE) {
     let snap;
     try {
       snap = (await chrome.storage.local.get(['scanNow'])).scanNow;
@@ -761,7 +912,17 @@ async function tick() {
       return;
     }
 
-    const relay = borrowable(snap, Date.now(), PAGE_ID);
+    const borrowed = borrowable(snap, Date.now(), PAGE_ID);
+    if (borrowed && (!local || !local.ok ||
+        rankOf(borrowed.parsed.source) > rankOf(local.source))) {
+      relay = borrowed;
+    }
+  }
+
+  // No scanner on THIS chart is no longer the end of it - see the relay above.
+  // What is on the chart in front of you and what the scanner knows are two
+  // different questions, and only the first one is local.
+  if (!local || !local.ok) {
     if (!relay) {
       // A SWEEP CHART GETS SILENCE, NOT THE COMPLAINT (user request,
       // 2026-08-12). maSweepPairs.pine and maSweep.pine publish no packed
@@ -776,7 +937,7 @@ async function tick() {
       // chart but reads back broken (local truthy, wrong count) still gets its
       // diagnostic below, sweep beside it or not - that message is about the
       // scanner, and the sweep does not make it less true.
-      if (!local && /MA Sweep/i.test(legendAllText())) {
+      if (!local && /MA Sweep/i.test(confRaw)) {
         const bar = document.getElementById(LINE_ID);
         if (bar) bar.remove();
         return;
@@ -799,8 +960,20 @@ async function tick() {
         'bad');
       return;
     }
+  }
 
+  // A borrowed reading takes the line whenever it got this far: either there is
+  // nothing readable here, or what is here is outranked - see the rank note
+  // above. The length check runs on it too, and it is the whole reason the
+  // rotation's traded length travels with the digits: the tab that has to
+  // compare it against MAR1's is exactly the tab that cannot see the rotation.
+  if (relay) {
     noteRelayOnce(relay);
+    const clash = lengthMessage(conf.mar1Len, relay.rotLen);
+    if (clash) {
+      renderPlain(`${clash}   |   relayed from ${relay.from || 'another tab'}, ${ago(relay.age)} old`, 'bad');
+      return;
+    }
     await merge(relay.parsed, relay);
     return;
   }
@@ -835,7 +1008,7 @@ async function tick() {
   everLive = true;
   noteSourceOnce(parsed.source, parsed.both);
 
-  const drift = settingsMessage();
+  const drift = settingsMessage(conf, confRaw);
   if (drift) {
     renderPlain(drift, 'bad');
     return;
@@ -844,9 +1017,56 @@ async function tick() {
   // Everything above this point is a check on the reading, and the reading has
   // passed all of them - so this is where it becomes fit to hand to another tab.
   // A tab that would not act on its own numbers does not publish them.
-  publish(parsed);
+  //
+  // The traded length goes with it, and it is the length read from THIS legend:
+  // a tab that is not carrying the rotation has none to send, and null is what
+  // "I cannot tell you" looks like on the other side.
+  await publish(parsed, conf.rotLen);
+
+  // Last of the refusals, and after publishing on purpose. The digits are worth
+  // relaying whatever this chart's MA Length says - the disagreement is about
+  // THIS chart, not about the reading - but they must not be drawn as a list of
+  // pairs to enter while the two lengths differ.
+  const clash = lengthMessage(conf.mar1Len, conf.rotLen);
+  if (clash) {
+    renderPlain(clash, 'bad');
+    return;
+  }
 
   await merge(parsed, null);
+}
+
+// The one setting a human still has to carry between two scripts by hand.
+//
+// mar1Rotation.pine picks the MA length to trade out of its own ranking, and
+// maRejection.pine - where the entries are actually taken - has it typed into
+// an input. Pine cannot write another script's input, so nothing but a person
+// keeps the two equal, and until both published the number nothing could even
+// tell they had drifted. A pair armed on MA 41 is not a pair to enter while the
+// chart in front of you is drawing MA 32: the diamonds, the gate and the streak
+// all belong to a different machine.
+//
+// Both zero and null mean "no comparison": null is a script that is not on the
+// chart at all, zero is a rotation whose ranking has not trusted a length yet.
+// Neither is a disagreement, and reporting one as such would put a red line on
+// a perfectly ordinary chart.
+let lenNoted = '';
+
+function lengthMessage(mar1Len, rotLen) {
+  if (!mar1Len || !rotLen) return null;
+
+  if (mar1Len === rotLen) {
+    if (lenNoted !== String(rotLen)) {
+      lenNoted = String(rotLen);
+      console.log(`[PO Payout Filter] MAR1 and the rotation are both on MA ${rotLen}`);
+    }
+    return null;
+  }
+
+  lenNoted = `${mar1Len}!=${rotLen}`;
+  return `MAR1 is drawing MA ${mar1Len} and the rotation is trading MA ${rotLen} - ` +
+    `set MAR1's MA Length to ${rotLen}. No pairs are named while the two differ: ` +
+    'they were armed by a machine this chart is not drawing';
 }
 
 // Settings drift outranks everything the line could say. If the two scripts are
@@ -854,18 +1074,18 @@ async function tick() {
 // by rules the chart is not drawing, and a confident green line would be worse
 // than no line at all.
 //
-// Returns the refusal, or null when there is nothing to refuse. It reads the
-// legend of THIS chart, which is why the caller only runs it on a local reading:
-// a relayed one was checked in the tab that published it, and re-running it here
-// would compare a scanner in another window against nothing at all.
+// Returns the refusal, or null when there is nothing to refuse. It is handed
+// the parse of THIS chart's legend, which is why the caller only runs it on a
+// local reading: a relayed one was checked in the tab that published it, and
+// re-running it here would compare a scanner in another window against nothing
+// at all. The raw text comes with it for the diagnostic at the bottom, which
+// reports what was actually read rather than what was expected.
 //
 // The comparison happens only when BOTH numbers are present. Running the scanner
 // without MAR1 on the chart is a legitimate thing to do, and blocking it because
 // one number is missing would break a working setup to protect against a
 // hypothetical one.
-function settingsMessage() {
-  const legendRaw = legendAllText();
-  const conf = parseConfig(legendRaw);
+function settingsMessage(conf, legendRaw) {
   if (conf.scanner !== null && conf.mar1 !== null) {
     if (conf.scanner !== conf.mar1) {
       return `MAR1 and the scanner disagree on settings (${conf.mar1} vs ${conf.scanner}) - ` +

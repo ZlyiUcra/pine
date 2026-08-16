@@ -981,6 +981,12 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
      bool isBull, bool isBear, bool wickRejectDown, bool wickRejectUp, bool smallBody,
      bool longWickDown, bool longWickUp, bool counterShort, bool counterLong,
      bool dcShort, bool dcLong, bool hoursOk, bool flatOk, bool active) =>
+    // SYNC:BEGIN mar1-signal-core
+    // From here to the SYNC:END line is the shared MAR1 state machine.
+    // checks/block-sync.js compares this region byte-for-byte across the
+    // registered files and then asserts the tail below the END marker only
+    // READS the machine's variables. Edit the block in one file, run the
+    // checker, carry the same bytes to the others.
     // switch, NOT the ?: chain this used to be. Pine evaluates EVERY branch of
     // a ternary, so the old spelling computed all four moving averages per
     // machine per bar and kept one - a thousand machines deep, the dominant
@@ -1000,9 +1006,10 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
     //
     // It used to be `for i = 1 to trendBars`, reading atrVal[i], close[i] and
     // maValue[i] on every iteration. Nine history reads at a VARIABLE index per
-    // machine per bar, and in this file there are eight hundred and forty
-    // machines - twenty-one pairs times forty lengths - so that is the single
-    // most repeated piece of arithmetic in the script. A variable index is also
+    // machine per bar, and this file runs ONE MACHINE PER PAIR PER SWEPT
+    // LENGTH - several hundred of them, and the exact product is worked out at
+    // the head of each file - so that is the single most repeated piece of
+    // arithmetic in the script. A variable index is also
     // the expensive kind: Pine can resolve a constant offset at compile time
     // and cannot resolve a loop counter, and it has to keep a deeper buffer for
     // every series read that way.
@@ -1243,6 +1250,7 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
         else if greenDiamond
             windowOpen      := true
             entriesInWindow := 0
+    // SYNC:END mar1-signal-core
 
     // -1 rather than a packed number the moment any field could corrupt its
     // neighbours. See the packing block: a total that cannot be trusted must not
@@ -1688,8 +1696,10 @@ if na(firstBarTime)
     firstBarTime := time
 
 // Four blocks of ten columns with a blank between them, and the tallest a
-// single block can be plus two header rows and two footer rows. The declared
-// size has to exceed every index ever written, or the write is an out-of-bounds
+// single block can be plus two header rows and three footer rows - the footer,
+// the verdict line and the WORST WINDOW line under it. rowsPerBlock reaches 40,
+// so the last row written is 44 and fifty leaves the margin. The declared size
+// has to exceed every index ever written, or the write is an out-of-bounds
 // error that kills the script rather than a cell quietly going missing.
 //
 // The stride is 11 and it appears in five places - this declaration, the clear,
@@ -2290,3 +2300,70 @@ if redrawNow
     for k = 1 to hdrSpan
         table.cell(swTable, k, verdRow, '', bgcolor = verdBg, text_size = txtSize)
     table.merge_cells(swTable, 0, verdRow, hdrSpan, verdRow)
+
+    // ------------------------------------------------------------------
+    // THE WORST-WINDOW LINE - statistics, and nothing acts on it
+    // ------------------------------------------------------------------
+    // The Worst column averaged DOWN THE SWEPT LENGTHS: the mean of the very
+    // numbers printed beside the pair names above, 7, 12, 11, 9, 15 and so on.
+    // The same line mar1Rotation.pine carries in its cockpit, on the table that
+    // cockpit was cloned from (user request, 2026-08-16).
+    //
+    // What it answers: the deepest single window at ONE length says nothing
+    // about whether that length was lucky. The mean of the same figure over
+    // every swept length is the watchlist's own scale - "a run on this list
+    // costs about eleven entries at worst" - which is what makes any one row's
+    // Worst readable as good or bad rather than merely as a number. Set Step to
+    // 1 and the same line describes a continuous grid instead of every other
+    // length; nothing here has to change for that.
+    //
+    // A ROW rather than a column, because it is one number for the whole table
+    // and not one per length. It also buys the highlight: a Pine table cell has
+    // one text colour, and part of a cell cannot be coloured on its own.
+    //
+    // A length that closed nothing prints '-' in that column and is left OUT of
+    // both the sum and the count - there is no worst window to average, and
+    // counting it as a zero would report a watchlist calmer than it is. The
+    // count is printed beside the average so a short history says so.
+    //
+    // It takes no part in the ranking. When that changes it becomes an option in
+    // 'Rank and sort by' and a key in the second pass, and nothing here moves.
+    statRow  = rowsPerBlock + 4
+    statSum  = 0
+    statN    = 0
+    statMax  = 0
+    statMaxK = -1
+    for k = 0 to usedN - 1
+        w = array.get(agW, k)
+        if w > 0
+            statSum += w
+            statN   += 1
+            if w > statMax
+                statMax  := w
+                statMaxK := k
+    statAvg = statN > 0 ? 1.0 * statSum / statN : float(na)
+    // Every index below is clamped, and not out of caution: Pine evaluates BOTH
+    // branches of a ternary, so a -1 sitting in the branch that is never chosen
+    // still reads element -1 and kills the script.
+    statMaxLen = sweepFrom + math.max(statMaxK, 0) * sweepStep
+    statMaxWho = array.get(agWho, math.max(statMaxK, 0))
+    // The winner's own figure, for the same reason the rotation's line prints
+    // the traded length's: an average is a scale, and a scale is only useful
+    // beside the one number being read against it. bestLen is always
+    // sweepFrom + k * sweepStep for some qualifying k, so the division is exact
+    // - the clamp is there for the na-ish -1 case alone.
+    statBestK = bestLen > 0 ? int((bestLen - sweepFrom) / sweepStep) : -1
+    statBestW = array.get(agW, math.min(math.max(statBestK, 0), SWEEP_N - 1))
+    statTxt = statN == 0 ? ' WORST WINDOW  ·  no length has closed a window yet ' :
+         ' WORST WINDOW  ·  avg ' + str.tostring(statAvg, '#.00') + ' entries across ' +
+         str.tostring(statN) + ' MA lengths' +
+         (statMaxK < 0 ? '' : '  ·  deepest ' + str.tostring(statMax) + ' on MA ' +
+              str.tostring(statMaxLen) + (statMaxWho == '' ? '' : ' · ' + statMaxWho)) +
+         (statBestK < 0 ? '' : '  ·  best MA ' + str.tostring(bestLen) + ': ' +
+              str.tostring(statBestW)) + ' '
+    statBg = statN == 0 ? #5C3A00 : #0E2A1B
+    table.cell(swTable, 0, statRow, statTxt, bgcolor = statBg,
+         text_color = statN == 0 ? #FFC163 : #6EF0A5, text_size = txtSize)
+    for k = 1 to hdrSpan
+        table.cell(swTable, k, statRow, '', bgcolor = statBg, text_size = txtSize)
+    table.merge_cells(swTable, 0, statRow, hdrSpan, statRow)

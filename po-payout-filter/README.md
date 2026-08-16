@@ -301,9 +301,10 @@ The extension also runs on `tradingview.com`, where it does the opposite job: it
 **reads**, and never touches the page.
 
 `mar1Scanner.pine` packs the state of all thirty scanner slots into three
-ten-digit numbers in the status line. This side parses them, merges them with
-what it knows from Pocket Option, and draws one line in the bottom-left of the
-chart:
+ten-digit numbers in the status line - and so do `mar1GatesScanner.pine` and
+`mar1Rotation.pine`, each behind its own leading digit. This side parses them,
+merges them with what it knows from Pocket Option, and draws one line in the
+bottom-left of the chart:
 
 ```
 OPEN & TRADEABLE:  USDCAD* 91%   EURJPY* 82%   |   below 78%: GBPCAD 71%   |   market shut: EURGBP
@@ -356,6 +357,54 @@ there first". Open the scanner's own RUNNING list for that.
 With both scripts on one chart the gates one wins, and the console says so once.
 The pasted pair list has to be the list of whichever is being read.
 
+### And it reads the rotation, which outranks both
+
+`mar1Rotation.pine` publishes the same three numbers with an **8 in front**, and
+it is the publisher the reader prefers over either scanner - on one chart, and
+across tabs.
+
+The rank is not a preference about scripts, it is about which one is describing
+the machine you are trading. The rotation CHOOSES the MA length: it ranks twenty
+of them over the whole watchlist and re-reads that ranking whenever a window
+closes past its band. Its digits are that length's pairs table, measured inside
+its own trading hours - the same pairs its cockpit lists. A scanner sitting on
+some other length publishes a perfectly correct board about a machine nobody is
+trading, so when both are in reach the rotation wins and the scanner tab stands
+down rather than taking turns writing the shared snapshot.
+
+Two things a digit means slightly differently here:
+
+- **HELD is published as ARMED.** The rotation splits them - a pair whose gate
+  is open but whose clock is outside the trading hours cannot fire, and its own
+  cockpit never proposes one - but the reader has no third answer and the
+  scanner has no HELD state at all, so the line reads it as armed. The
+  distinction stays where it can be acted on.
+- **Before the rotation has picked a length** every live slot reads 5, "no
+  data". There is no traded length, so there is no machine to report, and the
+  line says nothing is open - which is true.
+
+### The MA length is checked, because a human carries it
+
+`mar1Rotation.pine` picks the length; `maRejection.pine`, where the entries are
+actually taken, has it **typed into an input by hand**. Pine cannot write another
+script's input, so nothing but a person keeps the two equal - and until both
+published the number, nothing could tell they had drifted.
+
+Both publish it now: `5xxxxxx` from the rotation, `4xxxxxx` from MAR1, seven
+digits behind a fixed leading digit like `CFGSUM` and `CFGGRP`. The reader
+compares them, and the length travels with the digits through the relay, so the
+comparison works on the chart that cannot see the rotation at all:
+
+```
+MAR1 is drawing MA 32 and the rotation is trading MA 41 - set MAR1's MA Length to 41. No pairs are named while the two differ ...
+```
+
+No pairs are drawn while they disagree. It is not a second opinion on `CFGSUM`,
+which already covers the length among its twenty-two settings: `CFGSUM` answers
+"did anything drift", this answers "to what" for the one setting that is copied
+between two scripts by hand. Nothing to compare (either script absent, or the
+rotation with no pick yet) is silence, not an alarm.
+
 **Setup:** paste the scanner's pairs, in slot order, into **TradingView pair
 list** in the popup. Pine cannot tell the browser what its slots are called — a
 plot title is a constant string — so this copy is what puts a name to a slot. A
@@ -388,8 +437,12 @@ Four rules keep it honest:
 - **Only a reading the publisher accepted crosses.** The write happens after the
   live-bar guard and after the settings check, so a tab refusing to act on its
   own numbers does not hand them to anybody else.
-- **A local reading always wins.** The relay is only consulted when this chart
-  has none.
+- **A local reading wins unless it is outranked.** The relay is consulted when
+  this chart has no reading of its own, and also when what it has ranks below
+  what another tab is publishing - a scanner here against the rotation there.
+  The lower-ranked publisher also stops writing the shared snapshot while a
+  fresh higher-ranked one is in it, and resumes by itself once that tab is
+  closed and its reading goes stale.
 - **The age is always printed**, and past a minute the line drops to the warning
   colour. Chrome throttles timers in a hidden tab to roughly one a minute, so a
   relayed reading can honestly be a whole candle old. The publisher refreshes its
@@ -397,7 +450,9 @@ Four rules keep it honest:
   alive; past **5 minutes** the reading is dropped rather than shown.
 - **The settings check does not cross tabs.** It reads this chart's legend, and
   on a chart with no scanner there is nothing to compare. It ran in the tab that
-  published, which is where both scripts are.
+  published, which is where both scripts are. The MA-length check is the one
+  exception, and deliberately so: the number it compares belongs to the chart
+  you are looking at, so the rotation's half is carried across with the digits.
 
 One case the relay made easy to hit, so it is now named rather than shown as
 calm: **every slot reading 1**. `digitFor` returns 1 for every pair when `tfOk`
@@ -411,7 +466,10 @@ The scanner is publishing nothing - every slot reads "not in the scan".
 Its chart is not on 1m, or every pair is unticked
 ```
 
-`node checks/cfg-reader.js` section 8 covers the borrow decision: age at and past
+`node checks/cfg-reader.js` section 8 covers the rotation: its 8 prefix, the rank
+that puts it above a scanner in the same legend, and both MA-length plots
+including the negative flags that must not be mistaken for one. Section 9 covers
+the borrow decision: age at and past
 the ceiling, a future timestamp, a tab borrowing its own reading back, a
 half-written snapshot, and that what comes back is shaped exactly like a locally
 parsed reading — the same keys, so nothing downstream can tell the two apart.
@@ -422,6 +480,11 @@ sharing one storage — one with a scanner in its legend, one with nothing — a
 checks that the second draws **the same line as the first**, with the relay note
 appended and nothing else changed. A correct decision can still end in a blank
 screen three hundred lines later; this is what says it does not.
+
+Its sections 6 and 7 run the rotation the same way: that a scanner tab joining
+afterwards neither overwrites the snapshot nor draws its own reading, and that a
+chart carrying `maRejection.pine` on the wrong MA Length gets the length message
+instead of a list of pairs - and gets the pairs back the moment the two agree.
 
 ### What this half does not record
 
@@ -462,9 +525,9 @@ and wrong. Over all 71 single-setting changes the two dialogs can make, 0 slip
 past `CFGSUM` and 2 collide on the hint.
 
 Each value names its own author in its leading digit — `6`/`8` the scanner,
-`7`/`9` MAR1 — so both can be picked out of one legend without working out which
-row belongs to which indicator. That row-identification is exactly what broke
-twice already.
+`7`/`9` MAR1, and `4`/`5` the two MA lengths - so all of them can be picked out
+of one legend without working out which row belongs to which indicator. That
+row-identification is exactly what broke twice already.
 
 **Both indicators have to be on the same chart** for the comparison to happen at
 all. Running the scanner alone is legitimate, so a missing number does not block
@@ -518,4 +581,6 @@ Without the sign check, a four-hour-old picture would be reported as current.
 
 Two `chrome.storage.local` keys carry everything between the halves and between
 the tabs: **`hiddenNow`**, the board snapshot Pocket Option writes, and
-**`scanNow`**, the scanner reading one TradingView tab publishes for the others.
+**`scanNow`**, the reading one TradingView tab publishes for the others - the
+thirty digits, which script they came from, the pair-list checksum and, when the
+publisher was the rotation, the MA length it is trading.

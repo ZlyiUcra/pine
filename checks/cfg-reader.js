@@ -32,6 +32,8 @@ const mod = {};
 new Function('exports', `
   ${groupsLine[0]}
   ${liftConst('SCAN_STALE_MS')}
+  ${liftConst('SRC_RANK')}
+  ${lift('rankOf')}
   ${lift('normalise')}
   ${lift('parseConfig')}
   ${lift('driftHint')}
@@ -175,7 +177,49 @@ console.log('\n7. The second scanner, told apart by its leading 7\n');
   check('an 11-digit number outside the alphabet is not a state', !decoy.ok, `found ${decoy.found}`);
 }
 
-console.log('\n8. The relay - a reading borrowed from another tab\n');
+console.log('\n8. The rotation, told apart by its leading 8 and outranking both scanners\n');
+{
+  // mar1Rotation.pine publishes the scanner's format behind an 8, then its
+  // checksum, then the length it is trading. Slot 21 armed, slot 5 pre-armed,
+  // slots 26-30 absent - it carries 25 pairs where the scanner carries 30.
+  const rotRow =
+    'MAR1 Rotation\nEMA Max of both false\n' +
+    '82,222,622,222.00000 82,222,222,222.00000 83,222,211,111.00000 41,204.00000 5,000,041.00000';
+
+  const r = parseLegend(rotRow);
+  check('a rotation legend parses', r.ok, r.ok ? '' : `found ${r.found}`);
+  check('the 8 is stripped, thirty digits remain', r.ok && r.digits.length === 30, String(r.digits.length));
+  check('the armed slot survives as 3', r.ok && r.digits[20] === 3, String(r.digits[20]));
+  check('and the pre-armed one as 6', r.ok && r.digits[4] === 6, String(r.digits[4]));
+  check('the source is named', r.source === 'rotation', r.source);
+  check('its own LISTSUM is read', r.listSum === 41204, String(r.listSum));
+
+  // The whole reason for the rank: on a chart carrying both, the rotation is
+  // the file that chose the length, so the scanner's digits are about a machine
+  // nobody is trading.
+  const mixed = parseLegend(scannerRow + '\n' + rotRow);
+  check('with a scanner beside it the rotation wins', mixed.source === 'rotation', mixed.source);
+  check('and the collision is reported', mixed.both === true);
+  check('the digits are the rotation\'s, not a mixture',
+    mixed.digits.join('') === r.digits.join(''));
+  check('the checksum belongs to the same script as the digits',
+    mixed.listSum === 41204, String(mixed.listSum));
+
+  // MALEN, the one setting a human copies between two scripts by hand.
+  const lens = parseConfig(rotRow + '\n' + mar1Row + ' 4,000,032.00000');
+  check('the rotation\'s traded length is read', lens.rotLen === 41, String(lens.rotLen));
+  check('and MAR1\'s own length beside it', lens.mar1Len === 32, String(lens.mar1Len));
+  check('neither is invented when the plots are absent',
+    parseConfig(scannerRow).rotLen === null && parseConfig(scannerRow).mar1Len === null);
+  check('a rotation with no pick yet reads 0, not null',
+    parseConfig('MAR1 Rotation 5,000,000.00000').rotLen === 0,
+    String(parseConfig('MAR1 Rotation 5,000,000.00000').rotLen));
+  // MAR1 publishes its popup flags NEGATIVE and one of them is -(500000 + HHMM).
+  check('a negative flag is not mistaken for a length',
+    parseConfig('MAR1 -500,845.00000 -424,242.00000').rotLen === null);
+}
+
+console.log('\n9. The relay - a reading borrowed from another tab\n');
 {
   // The scanner belongs on its own tab and the markers are watched on another,
   // so the tab being looked at is the one with no scanner in its legend. A
@@ -209,6 +253,14 @@ console.log('\n8. The relay - a reading borrowed from another tab\n');
     got && got.parsed.digits.join('') === gates.digits.join(''));
   check('and it is presented as live - a publisher never writes a crosshair bar',
     got && got.parsed.live === true);
+
+  // The traded length rides beside the digits rather than inside them: the tab
+  // that has to compare it against MAR1's is the one that cannot see the
+  // rotation's legend at all.
+  check('the traded length crosses with the digits',
+    borrowable({ ...snap, rotLen: 41 }, NOW, 'mine').rotLen === 41);
+  check('a snapshot written before it existed reads null, not undefined',
+    got.rotLen === null, String(got.rotLen));
 
   check('a tab does not borrow its own reading back',
     borrowable({ ...snap, page: 'mine' }, NOW, 'mine') === null);

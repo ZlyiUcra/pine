@@ -49,11 +49,47 @@ gTune = 'Gate and window'
 // historical streak distribution is already accounted for. Feeds both the
 // highlighted row in the two streak tables and, when the gate runs in
 // Distribution or Max of both mode, the gate threshold itself.
-basePercentage = input.float(95.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+basePercentage = input.float(90.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
 
 // Manual streak threshold. Used by the marker colour scale, and by the gate in
 // Manual or Max of both mode.
-minEntriesToStart = input.int(5, 'Min entries to start (floor for calculateIndex)', minval = 1, group = gTune, display = display.none)
+minEntriesToStart = input.int(8, 'Min entries to start (floor for calculateIndex)', minval = 1, group = gTune, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The MA length - a group of its own, at the top, on purpose
+// ---------------------------------------------------------------------------
+// One field under a header of its own, and the header is what it costs to buy
+// the thing that matters: this is the ONE setting in the file that is RETYPED
+// FROM ANOTHER SCRIPT rather than tuned. mar1Rotation.pine picks the length its
+// ranking arrived at, Pine cannot cross-write an input, so the number crosses
+// by hand - and a number carried by hand has no business at the bottom of a
+// six-section dialog.
+//
+// Directly under the two gate thresholds, which is as high as anything in this
+// file can sit: the dialog is ordered by DECLARATION and by nothing else, so
+// first in the file is first on screen.
+//
+// THE USUAL RULE HERE IS THE OPPOSITE - new inputs go to the BOTTOM, because
+// TradingView maps saved settings onto inputs BY POSITION and anything inserted
+// higher shifts every setting under it. This move pays that price deliberately
+// and once: the ten widgets of 'Success timestamp' below slide by one, so every
+// chart already carrying the script wants Defaults -> Reset settings once, and
+// the tuned values want writing down first. Accepted (user decision,
+// 2026-08-15) in exchange for never scrolling for the one number the rotation
+// keeps changing.
+//
+// Its own group rather than folded into 'Gate and window': the length has
+// nothing to do with the gate, and a wrong label on the field that gets touched
+// most often is the one label worth not getting wrong.
+//
+// mar1Scanner.pine carries the same field in the same place for the same
+// reason, so the two dialogs read alike.
+gMa = 'MA length (from the rotation)'
+
+// The moving average the whole idea is built around, and the only setting in
+// this file whose value comes from outside it. Left VISIBLE in the status line
+// - see the note on the three visible inputs further down.
+maLength = input.int(32, 'MA Length', minval = 2, group = gMa)
 
 // ---------------------------------------------------------------------------
 // Timestamp on a signal that came out right
@@ -263,11 +299,12 @@ gSig   = 'Signal'
 gFilt  = 'Filters'
 gStats = 'Statistics'
 
-// The moving average the whole idea is built around. Type and source are kept
-// adjustable because "the average price is here" means something different on a
-// 5-period SMA of closes than on an RMA of ohlc4, and which one the market
-// respects is an empirical question, not a design decision.
-maLength = input.int(5, 'MA Length', minval = 2, group = gSig)
+// Type and source are kept adjustable because "the average price is here" means
+// something different on a 5-period SMA of closes than on an RMA of ohlc4, and
+// which one the market respects is an empirical question, not a design
+// decision. The LENGTH the two of them apply to is declared at the top of the
+// file, in a group of its own - see MA length there, and the note beside it for
+// why it is not here.
 maType   = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig, display = display.none)
 src      = input.source(ohlc4, 'Source', group = gSig, display = display.none)
 
@@ -1276,7 +1313,33 @@ if barstate.isconfirmed and (buyTaken or sellTaken or buyWarn or sellWarn)
 
 // Faint green wash over the session window, so the hours filter is visible even
 // when it is switched off. Transparency 100 means fully invisible outside it.
-bgcolor(inHours ? color.new(color.green, 97) : color.new(color.red, 100), title = 'Trading Hours Background')
+//
+// AND THE TWO EDGES, painted solid, because the wash alone could not answer the
+// one question actually asked of it: where does the session END. A 97%
+// transparent green is readable as "somewhere around here it is on" and is
+// hopeless at "this candle is the last one" - the eye has no boundary to catch,
+// only a gradient of nothing.
+//
+// So the first bar INSIDE the window and the first bar OUTSIDE it each get a
+// solid stripe, one candle wide. That is a vertical line in everything but
+// name, and it costs nothing: bgcolor is one series, where line.new would spend
+// a drawing object per session and run into the 500-object ceiling on any chart
+// worth looking at.
+//
+// The closing stripe sits on the first bar OUTSIDE rather than the last one
+// inside, and that is the honest placement rather than an off-by-one: 'End
+// indicator's hours' is exclusive, so at 16 the 16:00 candle is already outside
+// - it IS the boundary. Marking the last bar inside would also need to know the
+// next bar's hour, which on the live edge does not exist yet.
+//
+// Both are drawn whether the hours filter is switched on or not, exactly like
+// the wash under them - the window is a fact about the clock, and seeing it
+// while the filter is off is how the filter gets judged before it is enabled.
+sessionOpens  = inHours and not inHours[1]
+sessionCloses = not inHours and inHours[1]
+bgcolor(sessionOpens ? color.new(#22C55E, 40) :
+     sessionCloses ? color.new(#DC2626, 40) :
+     inHours ? color.new(color.green, 97) : na, title = 'Trading Hours Background')
 
 // THE FLAT, shaded. Two shades rather than one, because the two states are
 // different claims and the difference is the thing worth checking by eye: the
@@ -1290,7 +1353,13 @@ bgcolor(inHours ? color.new(color.green, 97) : color.new(color.red, 100), title 
 bgcolor(not flatOn ? na : flatNow ? color.new(#6E7B8B, 86) : flatHold ? color.new(#6E7B8B, 94) : na,
      title = 'Flat')
 
-plot(maValue, 'MA', color = color.new(color.blue, 0), linewidth = 2)
+// Everything EXCEPT the status line, spelled out rather than as display.all
+// minus one term. The line is drawn, its label still sits on the price scale,
+// and the value is still in the Data Window - the only thing that goes is one
+// more number in the legend, where the price of the moving average is the one
+// reading already visible on the chart itself.
+plot(maValue, 'MA', color = color.new(color.blue, 0), linewidth = 2,
+  display = display.pane + display.price_scale + display.data_window)
 
 // 100.0 leads the expression deliberately: in Pine, int divided by int is
 // integer division, so part / total * 100 would collapse every percentage in
@@ -1775,10 +1844,23 @@ sellFailed = (sellTaken or sellWarn) and not isBearishBar
 // the close and look like it had changed its mind.
 failedColor = barstate.isconfirmed ? streakColor(consecutiveCombinedFalse, colorLimit) : streakColor(liveStreak, colorLimit)
 
+// display.pane ON EVERY MARKER IN THIS FILE, and it is about the status line
+// rather than about the chart.
+//
+// TradingView prints the VALUE of every plot, plotshape and plotchar after the
+// indicator's name in the legend. A plotshape's value is its own condition, so
+// twenty-two markers put twenty-two 0.00000 across the top of the chart, all
+// day, and the handful of numbers that mean something - the flags the browser
+// scripts read - sat somewhere inside that row.
+//
+// display.pane is the drawing without the readout: the diamond is still drawn,
+// still switchable in the Style tab, still exactly where it was. Only its column
+// in the legend and the Data Window is gone. Same treatment the inputs already
+// got with display.none.
 plotshape(buyFailed, 'Buy Signal Failed', shape.diamond, location.belowbar,
-  color = failedColor, size = size.tiny)
+  color = failedColor, size = size.tiny, display = display.pane)
 plotshape(sellFailed, 'Sell Signal Failed', shape.diamond, location.abovebar,
-  color = failedColor, size = size.tiny)
+  color = failedColor, size = size.tiny, display = display.pane)
 
 // ---------------------------------------------------------------------------
 // The white step - the moment the ladder reaches one short of the gate
@@ -1845,9 +1927,9 @@ whiteStepShort = whiteStepHit and not buyFound
 // so it should be legible without carrying the same weight as a marker that
 // reports something that actually happened.
 plotshape(whiteStepLong, 'White step (long side)', shape.diamond, location.belowbar,
-  color = color.new(color.white, 25), size = size.tiny)
+  color = color.new(color.white, 25), size = size.tiny, display = display.pane)
 plotshape(whiteStepShort, 'White step (short side)', shape.diamond, location.abovebar,
-  color = color.new(color.white, 25), size = size.tiny)
+  color = color.new(color.white, 25), size = size.tiny, display = display.pane)
 
 // The entry marker, and the only thing to act on. offset = -1 draws it one bar
 // to the left, onto the rejection candle - the candle after which you enter.
@@ -1863,14 +1945,14 @@ plotshape(whiteStepShort, 'White step (short side)', shape.diamond, location.abo
 entryColor = na(carriedAtSignal) ? streakColor(streakAtSignal, colorLimit) : carriedAtSignal
 
 plotshape(buyWarn, 'Warning Long', shape.diamond, location.belowbar,
-  color = entryColor, size = size.normal, offset = -1)
+  color = entryColor, size = size.normal, offset = -1, display = display.pane)
 plotshape(sellWarn, 'Warning Short', shape.diamond, location.abovebar,
-  color = entryColor, size = size.normal, offset = -1)
+  color = entryColor, size = size.normal, offset = -1, display = display.pane)
 
 plotshape(buyTaken, 'Entry Long', shape.diamond, location.belowbar,
-  color = entryColor, size = size.normal, offset = -1)
+  color = entryColor, size = size.normal, offset = -1, display = display.pane)
 plotshape(sellTaken, 'Entry Short', shape.diamond, location.abovebar,
-  color = entryColor, size = size.normal, offset = -1)
+  color = entryColor, size = size.normal, offset = -1, display = display.pane)
 
 // The previews. No offset, because they already sit on the candle they describe
 // - the settled marker reaches this same candle from the next bar with an offset
@@ -1880,14 +1962,14 @@ plotshape(sellTaken, 'Entry Short', shape.diamond, location.abovebar,
 liveFadedColor = color.new(liveEntryColor, liveFade)
 
 plotshape(liveBuyWarn, 'Warning Long (live)', shape.diamond, location.belowbar,
-  color = liveFadedColor, size = size.normal)
+  color = liveFadedColor, size = size.normal, display = display.pane)
 plotshape(liveSellWarn, 'Warning Short (live)', shape.diamond, location.abovebar,
-  color = liveFadedColor, size = size.normal)
+  color = liveFadedColor, size = size.normal, display = display.pane)
 
 plotshape(liveBuyTaken, 'Entry Long (live)', shape.diamond, location.belowbar,
-  color = liveFadedColor, size = size.normal)
+  color = liveFadedColor, size = size.normal, display = display.pane)
 plotshape(liveSellTaken, 'Entry Short (live)', shape.diamond, location.abovebar,
-  color = liveFadedColor, size = size.normal)
+  color = liveFadedColor, size = size.normal, display = display.pane)
 
 alertcondition(buyTaken, 'MAR1 Buy', 'MAR1 {{ticker}} {{interval}}: entry long')
 alertcondition(sellTaken, 'MAR1 Sell', 'MAR1 {{ticker}} {{interval}}: entry short')
@@ -2386,17 +2468,20 @@ dbgOk = debugMode and (buyTaken or sellTaken)
 cDbgDim  = color.new(color.gray, 20)
 cDbgWarn = color.new(color.orange, 20)
 
-plotchar(dbgT, 'dbg no trend',   'T', location.bottom, cDbgDim, size = size.tiny)
-plotchar(dbgD, 'dbg distance',   'D', location.bottom, cDbgDim, size = size.tiny)
-plotchar(dbgX, 'dbg wrong side', 'X', location.bottom, cDbgDim, size = size.tiny)
-plotchar(dbgB, 'dbg body too big', 'B', location.bottom, cDbgDim, size = size.tiny)
-plotchar(dbgW, 'dbg wick share', 'W', location.bottom, cDbgDim, size = size.tiny)
-plotchar(dbgP, 'dbg wick pips',  'P', location.bottom, cDbgDim, size = size.tiny)
+// display.pane for the same reason the diamonds have it: ten debug characters
+// are ten more columns in the legend, and they are there whether or not the
+// debug row is switched on - a plotchar publishes its value either way.
+plotchar(dbgT, 'dbg no trend',   'T', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
+plotchar(dbgD, 'dbg distance',   'D', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
+plotchar(dbgX, 'dbg wrong side', 'X', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
+plotchar(dbgB, 'dbg body too big', 'B', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
+plotchar(dbgW, 'dbg wick share', 'W', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
+plotchar(dbgP, 'dbg wick pips',  'P', location.bottom, cDbgDim, size = size.tiny, display = display.pane)
 
-plotchar(dbgH, 'dbg hours',    'H', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
-plotchar(dbgC, 'dbg cooldown', 'C', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
-plotchar(dbgG, 'dbg gate',     'G', location.bottom, cDbgWarn, offset = -1, size = size.tiny)
-plotchar(dbgOk, 'dbg taken',   '^', location.bottom, color.new(color.lime, 0), offset = -1, size = size.tiny)
+plotchar(dbgH, 'dbg hours',    'H', location.bottom, cDbgWarn, offset = -1, size = size.tiny, display = display.pane)
+plotchar(dbgC, 'dbg cooldown', 'C', location.bottom, cDbgWarn, offset = -1, size = size.tiny, display = display.pane)
+plotchar(dbgG, 'dbg gate',     'G', location.bottom, cDbgWarn, offset = -1, size = size.tiny, display = display.pane)
+plotchar(dbgOk, 'dbg taken',   '^', location.bottom, color.new(color.lime, 0), offset = -1, size = size.tiny, display = display.pane)
 
 // Compact legend, drawn only while the debug row is on. Split across two lines
 // by the same grey/orange split the characters themselves use: the first line is
@@ -2491,4 +2576,32 @@ cfgGrp = (cfgG1 % 9 + 1) * 100000 + (cfgG2 % 9 + 1) * 10000 + (cfgG3 % 9 + 1) * 
 plot(700000 + cfgSum, 'CFGSUM', color = color.new(color.gray, 0),
   display = display.status_line + display.data_window)
 plot(9000000 + cfgGrp, 'CFGGRP', color = color.new(color.gray, 0),
+  display = display.status_line + display.data_window)
+
+// ---------------------------------------------------------------------------
+// The MA length, published on its own - MALEN
+// ---------------------------------------------------------------------------
+// It is already inside CFGSUM, folded together with the type and the source,
+// and that is exactly why this exists: a fold answers "did anything drift" and
+// can never answer "drift by how much, and to what". The one number that has
+// to be answered that way is this one.
+//
+// mar1Rotation.pine CHOOSES the length to trade, from its own ranking, and
+// there is no route from Pine into an input - so the number it arrives at has
+// to be typed in here by hand, and until now nothing checked that it had been.
+// Both files publish it instead: 5000000 + the rotation's traded length there,
+// 4000000 + this file's MA Length here, and the browser extension compares
+// them. When they differ it refuses to name pairs and says which two lengths
+// it is looking at, because a pair armed on the rotation's length is not a
+// pair to enter while this chart is drawing another.
+//
+// Seven digits behind a fixed leading digit, the same addressing CFGSUM (6 and
+// 7) and CFGGRP (8 and 9) already use, so the reader can sweep a whole legend
+// for it without working out which row belongs to which indicator. It cannot
+// collide with the flags above either - those are all NEGATIVE.
+//
+// It does not replace CFGSUM and is not a second opinion on it. CFGSUM still
+// covers every duplicated setting including this one; this is the single field
+// worth naming out loud when it moves.
+plot(4000000 + maLength, 'MALEN', color = color.new(color.gray, 0),
   display = display.status_line + display.data_window)

@@ -124,14 +124,41 @@ indicator('MAR1 Scanner', overlay = true, max_bars_back = 200)
 // flag is per input and reaches no logic.
 gTune = 'Gate and window (must match MAR1)'
 
-basePercentage    = input.float(95.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
-minEntriesToStart = input.int(5, 'Min entries to start', minval = 1, group = gTune, display = display.none)
+basePercentage    = input.float(90.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+minEntriesToStart = input.int(8, 'Min entries to start', minval = 1, group = gTune, display = display.none)
 
 // Which successes close a window. 'Entries only' is the strict reading and the
 // default on both sides: a window is closed by a trade that was actually taken,
 // not by a signal the gate held back.
 successScope = input.string('Entries only', 'A window is closed by',
      options = ['Entries only', 'Entries and warnings', 'All found signals'], group = gTune, display = display.none)
+
+// ---------------------------------------------------------------------------
+// The MA length - a group of its own, at the top, on purpose
+// ---------------------------------------------------------------------------
+// One field under a header of its own, and it is here for the reason the same
+// field is here in maRejection.pine: this is the ONE setting RETYPED FROM
+// ANOTHER SCRIPT rather than tuned. mar1Rotation.pine picks the length its
+// ranking arrived at, Pine cannot cross-write an input, so the number crosses
+// by hand - and the two files have to hold the same one or this scanner's
+// tables describe a machine nobody is trading.
+//
+// Directly under the gate group, which is as high as anything here can sit: the
+// dialog is ordered by DECLARATION and by nothing else.
+//
+// THE USUAL RULE HERE IS THE OPPOSITE - new inputs go to the BOTTOM, because
+// TradingView maps saved settings onto inputs BY POSITION. This move pays that
+// price deliberately and once: everything in 'Finished series log' and below
+// slides by one, so every chart already carrying the script wants Defaults ->
+// Reset settings once, with the tuned values written down first. Accepted (user
+// decision, 2026-08-15) in exchange for never scrolling for the one number the
+// rotation keeps changing.
+//
+// Its own group rather than folded into the gate group above: the length has
+// nothing to do with the gate.
+gMa = 'MA length (from the rotation)'
+
+maLength = input.int(32, 'MA Length', minval = 2, group = gMa)
 
 // ---------------------------------------------------------------------------
 // The log of finished series
@@ -488,7 +515,9 @@ journalPerCol = input.int(20, 'Closed log: rows per column (0 = auto)', minval =
 gSig  = 'Signal (must match MAR1)'
 gFilt = 'Filters (must match MAR1)'
 
-maLength = input.int(5, 'MA Length', minval = 2, group = gSig)
+// The LENGTH these settings apply to is declared at the top of the file, in a
+// group of its own - see MA length there, and the note beside it for why it is
+// not in this group.
 maType   = input.string('EMA', 'MA Type', options = ['SMA', 'EMA', 'WMA', 'RMA'], group = gSig, display = display.none)
 
 // A string rather than input.source, and the difference is not cosmetic. An
@@ -2925,15 +2954,18 @@ alertcondition(preTotal > nz(preTotal[1]), 'MAR1 Scanner: a pair went pre-armed'
 // what every existing digit means, and the bridge would have to be updated on
 // both sides at once. A plot of its own costs one row in the legend and breaks
 // nothing that already reads the others.
+// DATA WINDOW ONLY, like OPENPAIRS below. Nothing reads either of them out of
+// the legend - the extension takes its pair states from the packed STATE1..3
+// digits, and these two are summaries of the same fact for a human. So they pay
+// no rent in the status line, which is now down to what the bridge needs and
+// nothing else; both are still one hover away in the Data Window.
 plot(preTotal, 'PREARMED', color = color.new(color.white, 0),
-  display = display.status_line + display.data_window)
+  display = display.data_window)
 
-// The count, published to the status line so the browser script - and the panel
-// coming after it - can read it without opening the settings. Positive here on
-// purpose: it is a count, not a sentinel, and it shares no row with the ones in
-// maRejection.pine.
+// The count. It was published to the status line for a browser panel that reads
+// the packed digits instead, so it sits in the Data Window with PREARMED.
 plot(openTotal, 'OPENPAIRS', color = color.new(color.orange, 0),
-  display = display.status_line + display.data_window)
+  display = display.data_window)
 
 // ---------------------------------------------------------------------------
 // The export

@@ -88,7 +88,14 @@ function makeTab(store, { title, legendRow }) {
     querySelectorAll: (sel) => {
       // The reader tries a class-based selector first and falls back to walking
       // every div and span. Both must find the row when there is one.
-      if (sel === 'div, span' || sel.includes('item')) return row ? [row] : [];
+      //
+      // The wrapper selector answers with the same row, because legendAllText
+      // reads it and the settings and MA-length checks read legendAllText. With
+      // it returning nothing those two ran against an empty string, which is
+      // not a legend anybody has - it is a legend nobody published to.
+      if (sel === 'div, span' || sel.includes('item') || sel.includes('sourcesWrapper')) {
+        return row ? [row] : [];
+      }
       return [];
     }
   };
@@ -181,7 +188,12 @@ const GATES =
   check('a line is drawn on a chart carrying no scanner', !!line, line);
   check('it is not the old complaint', !!line && !/No packed values/.test(line), line);
   check('the running pair is named', !!line && /EURUSD/.test(line));
-  check('and so is the pre-armed one', !!line && /pre-armed: GBPCAD/.test(line));
+  // The space after the label is NON-BREAKING - a heading is one unit so a
+  // wrap cannot strand it - so the pattern has to allow either. Written with an
+  // escape: a literal one here is indistinguishable from a space to anyone
+  // reading this file, which is the confusion that made this assertion fail
+  // against a line that was perfectly correct.
+  check('and so is the pre-armed one', !!line && /pre-armed:[ \u00a0]GBPCAD/.test(line));
   check('it says where the reading came from', !!line && /relayed from EURUSD/.test(line));
   check('and how old it is', !!line && /\d+s old/.test(line));
   check('the two tabs say the same thing about the pairs',
@@ -196,8 +208,8 @@ const GATES =
   const aloneLine = aloneTab.line();
   check('the complaint comes back when there is nothing to relay',
     !!aloneLine && /No packed values on this chart, and none relayed/.test(aloneLine), aloneLine);
-  check('it names both scanners, not just the first',
-    !!aloneLine && /MAR1 Scanner or MAR1 Gates - scanner/.test(aloneLine));
+  check('it names every publisher, not just the first',
+    !!aloneLine && /MAR1 Rotation, MAR1 Scanner or MAR1 Gates - scanner/.test(aloneLine));
 
   console.log('\n4. A reading past the ceiling is not shown\n');
 
@@ -222,6 +234,76 @@ const GATES =
     !!offLine && /publishing nothing/.test(offLine), offLine);
   check('and the message names the timeframe first',
     !!offLine && /not on 1m/.test(offLine));
+
+  console.log('\n6. The rotation outranks a scanner, on its own chart and across tabs\n');
+
+  // mar1Rotation.pine's three numbers as TradingView renders them: the 8
+  // prefix, then the checksum and the traded length. Slot 5 (AUDUSD) pre-armed,
+  // slot 21 (GBPCHF) armed, slots 26-30 absent - this file carries 25 pairs
+  // against the scanner's 30, and an absent slot is 1.
+  const ROT =
+    'MAR1 Rotation\nEMA Max of both false\n' +
+    '82,222,622,222.00000 82,222,222,222.00000 83,222,211,111.00000 ' +
+    listSum(PAIRS).toFixed(5) + ' 5,000,041.00000';
+
+  const ranked = makeStorage();
+  ranked.data.pairList = PAIRS;
+  const rotTab = makeTab(ranked, { title: 'EURUSD 1.16244 - TradingView', legendRow: ROT });
+  await settle();
+
+  const rotSnap = ranked.data.scanNow;
+  check('the rotation publishes like a scanner', rotSnap && rotSnap.source === 'rotation',
+    rotSnap && rotSnap.source);
+  check('its traded length travels with the digits', rotSnap && rotSnap.rotLen === 41,
+    rotSnap && String(rotSnap.rotLen));
+  check('the armed pair survives the trip', rotSnap && rotSnap.digits[20] === 3,
+    rotSnap && String(rotSnap.digits[20]));
+  check('the rotation tab draws its own line', !!rotTab.line(), rotTab.line());
+
+  // A scanner tab arriving afterwards must neither take the snapshot over nor
+  // draw its own reading: the rotation is the file that CHOOSES the length, so
+  // a scanner sitting on another one describes a machine nobody is trading.
+  const lateScanner = makeTab(ranked, { title: 'GBPUSD 1.2841 - TradingView', legendRow: GATES });
+  await settle();
+  check('a scanner does not overwrite the rotation snapshot',
+    ranked.data.scanNow.source === 'rotation', ranked.data.scanNow.source);
+  check('and the scanner tab draws the relayed rotation instead of its own reading',
+    /relayed from EURUSD/.test(lateScanner.line() || ''), lateScanner.line());
+  check('which is the rotation\'s armed pair, not the scanner\'s running one',
+    /GBPCHF/.test(lateScanner.line() || '') && !/OPEN & TRADEABLE:[  ]+GBPAUD/.test(lateScanner.line() || ''),
+    lateScanner.line());
+
+  console.log('\n7. MAR1 set to a different length than the rotation trades\n');
+
+  // maRejection.pine's legend: its own CFGSUM and CFGGRP, and MALEN last. No
+  // packed states - it is the chart being watched, not a scanner.
+  const MAR1 = (len) =>
+    'MAR1\n' + len + ' EMA 3 0.3 0.6\nO1.35421 H1.35480 L1.35399 C1.35442\n' +
+    '0.00000 0.00000 768,175.00000 9,386,243.00000 4,000,0' + String(len).padStart(2, '0') + '.00000';
+
+  const clash = makeStorage();
+  clash.data.pairList = PAIRS;
+  makeTab(clash, { title: 'EURUSD 1.16244 - TradingView', legendRow: ROT });
+  await settle();
+  const chartTab = makeTab(clash, { title: 'GBPUSD 1.2841 - TradingView', legendRow: MAR1(32) });
+  await settle();
+  const clashLine = chartTab.line();
+  check('the pairs are refused while the two lengths differ',
+    !!clashLine && !/OPEN & TRADEABLE/.test(clashLine), clashLine);
+  check('and the line says which length to set MAR1 to',
+    !!clashLine && /set MAR1's MA Length to 41/.test(clashLine), clashLine);
+  check('naming both sides rather than only the answer',
+    !!clashLine && /MA 32/.test(clashLine) && /MA 41/.test(clashLine));
+
+  const agreed = makeStorage();
+  agreed.data.pairList = PAIRS;
+  makeTab(agreed, { title: 'EURUSD 1.16244 - TradingView', legendRow: ROT });
+  await settle();
+  const okTab = makeTab(agreed, { title: 'GBPUSD 1.2841 - TradingView', legendRow: MAR1(41) });
+  await settle();
+  const okLine = okTab.line();
+  check('with the lengths equal the pairs come back', !!okLine && /GBPCHF/.test(okLine), okLine);
+  check('and it is still marked as relayed', !!okLine && /relayed from EURUSD/.test(okLine));
 
   console.log('');
   if (failures) { console.error(`${failures} checks failed`); process.exit(1); }
