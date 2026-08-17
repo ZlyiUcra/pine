@@ -19,7 +19,17 @@
 //                      signal. Pine keeps only the 50 most recent labels unless
 //                      told otherwise, which would leave the timestamps clinging
 //                      to the right-hand edge and the rest of the chart bare.
-indicator('MAR1', overlay = true, max_bars_back = 200, max_labels_count = 500)
+// calc_bars_count      compute on the LAST ten thousand bars only (user
+//                      decision, 2026-08-16; it was 1000 earlier the same
+//                      day). A plan upgrade made M1/M3 charts load enough
+//                      history to blow the runtime memory limit on the heavy
+//                      scripts of this family, and the fence is what holds it
+//                      off; the SAME number sits in mar1Scanner.pine,
+//                      mar1Rotation.pine and maSweepPairs.pine - scripts
+//                      describing one machine have to read the same history
+//                      or their counters disagree. Signals earlier than the
+//                      fence simply do not exist to this script.
+indicator('MAR1', overlay = true, max_bars_back = 200, max_labels_count = 500, calc_bars_count = 10000)
 
 // ---------------------------------------------------------------------------
 // Gate and window - the two thresholds the streak gate is built from
@@ -89,7 +99,7 @@ gMa = 'MA length (from the rotation)'
 // The moving average the whole idea is built around, and the only setting in
 // this file whose value comes from outside it. Left VISIBLE in the status line
 // - see the note on the three visible inputs further down.
-maLength = input.int(32, 'MA Length', minval = 2, group = gMa)
+maLength = input.int(41, 'MA Length', minval = 2, group = gMa)
 
 // ---------------------------------------------------------------------------
 // Timestamp on a signal that came out right

@@ -92,15 +92,24 @@
 // the same day, before the second machine was written.
 //
 // What the second machine costs: one more set of counters per length per
-// pair, and nothing else - no extra request.security values (its state
-// REPLACES the all-hours live value, which nothing read once the table
-// switched), no extra MA and no extra trend test, since the geometry is
-// shared. Expect the script somewhat slower; the levers under AND IT IS
-// SLOW ON PURPOSE apply unchanged.
+// pair, its live state REPLACING the all-hours live value (which nothing
+// read once the table switched), no extra MA and no extra trend test, since
+// the geometry is shared - plus, since 2026-08-16, NINE extra
+// request.security values per pair: three carrying its closure counters at
+// three digits per length, three its window ages the same way, and three the
+// age of the entry that pushed a window past the round threshold. Expect
+// the script somewhat slower; the levers under
+// AND IT IS SLOW ON PURPOSE apply unchanged.
 //
-// The round follows the same split: it ends on a deep window read from the
-// all-hours totals, but only when the close lands inside the trading window
-// - see rotWatch. An armed pair whose clock is outside the window reads
+// The round follows the machine too (2026-08-16, user decision): it ends on
+// a deep window of the TRADING machine - see rotWatch - so the day-closes
+// record, the ► on it, the LAST WIN line, the alert and the round all
+// describe the same closes mar1Scanner.pine's log holds. Only the RANKING
+// stays all-hours. (Since 2026-08-16 the two grids sit one step apart - the
+// sweeper reads 16..44, this file 15..43 - and the sweeper scans twenty-five
+// pair slots to this file's twenty-one, so the two first places need not
+// agree.)
+// An armed pair whose clock is outside the window reads
 // HELD, is counted, and is never proposed.
 //
 // WHAT STILL NEEDS A HUMAN, and it is one step: copying the traded length into
@@ -111,7 +120,7 @@
 //
 // The ranking underneath all of that can be HIDDEN - 'Hide the ranking table'
 // in the Rotation group - and hiding it keeps ONE row of it: the traded length,
-// under its own column headers, above the ROTATION row. The other nineteen,
+// under its own column headers, above the ROTATION row. The other fourteen,
 // the sweep header, the footer and the verdict line are what go. Everything
 // stays live either way: the ranking is computed whether it is drawn or not.
 //
@@ -147,12 +156,18 @@
 // alert() calls here reach nobody - which is fine on a plan without alerts:
 // the PAIRS table and its LAST WIN line put the same facts on the table.
 //
-// WHAT THIS FILE COSTS: the tuple is 40 wide - twenty packed totals and twenty
-// packed live states - so the main scope holds 25 x 40 = 1000 destructured
-// names plus the rest, under the 1200 ceiling. That is what halved the sweep:
-// forty lengths at one number each became twenty at two. The shared state
-// machine is fenced by SYNC markers inside sweepOne and checked byte-for-byte
-// against maSweepPairs.pine by checks/block-sync.js.
+// WHAT THIS FILE COSTS: the tuple is 39 wide - fifteen packed totals, fifteen
+// packed live states, three floats of trading-machine closure counters, three
+// of the window ages those closes carried and three of when each window
+// crossed the round threshold - so the main scope holds 21 x 39 = 819
+// destructured names plus the rest, comfortably under the 1200 ceiling.
+// The variable budget is what halved the sweep the first time (forty lengths
+// at one number each became twenty at two) and what took the four empty pair
+// slots back out; the later cut to eleven and the step back up to fifteen
+// (2026-08-16, user decisions) are the RUNTIME memory limit's - see the
+// note at SWEEP_N. The
+// shared state machine is fenced by SYNC markers inside sweepOne and checked
+// byte-for-byte against maSweepPairs.pine by checks/block-sync.js.
 //
 // MAR1 MA Sweep, across the watchlist - which MA Length to trade, on ALL pairs.
 //
@@ -163,7 +178,7 @@
 //
 // closed windows, entries spent, and the average of the two - summed across
 // every ticked pair, over the whole loaded history. The scanner answers that
-// question for the MA Length you happen to have set. This one asks it twenty
+// question for the MA Length you happen to have set. This one asks it fifteen
 // times at once and puts the answers side by side, which is the only way to see
 // whether the length you are trading is the one the watchlist actually likes.
 //
@@ -199,10 +214,11 @@
 // --------------------------------------------------------------------
 // TradingView allows a script 1200 local variables in its main scope, and this
 // file spends nearly all of them on one thing: every pair hands back TWO packed
-// values per length, so SLOTS x 2 x LENGTHS names come out of the
-// request.security calls and every one of them is counted.
+// values per length plus NINE floats of trading-machine state, so
+// SLOTS x (2 x LENGTHS + 9) names come out of the request.security calls and
+// every one is counted.
 //
-//     slots  x  2  x  lengths  +  about 45 others   <=   1200
+//     slots  x  (2 x lengths + 9)  +  about 45 others   <=   1200
 //
 // The product is the part that matters; the constant is everything else in the
 // main scope and it grows slowly as the table does - it measured 24 before the
@@ -215,16 +231,16 @@
 //     Script has too many local variables (1824) in "#main" ... limit is 1200
 //
 // 30 x 60 is 1800, so the twenty-four is the whole rest of the file put
-// together. The split in the sweeper is twenty-five slots by forty lengths at
-// one value each - 1000. THIS file spends the same 1000 on TWENTY-FIVE
-// slots by TWENTY lengths at two values each - which leaves 200 of headroom
-// and puts the hard maximum at TWENTY-EIGHT slots. The second value is what the
-// rotation is made of: the ranking needs the totals, the pairs table needs the
-// live state, and the length the table is drawn for is not known until both
-// have crossed. Other splits that fit, at two values per length:
-//
-//     lengths    22     20     18     15     12
-//     slots      26     29     32     38     48   (40 is the request ceiling)
+// together. The split in the sweeper is twenty-five slots by twenty lengths at
+// one value each - 500. THIS file spends 819 on TWENTY-ONE slots at
+// thirty-nine values each - two per length plus the nine state floats - which
+// leaves about three hundred of headroom and puts the hard maximum near
+// TWENTY-NINE slots. The second value is what the rotation is made of: the ranking needs
+// the totals, the pairs table needs the live state, and the length the table
+// is drawn for is not known until both have crossed. The nine floats are the
+// trading machine's closure counters, the ages of the windows they closed and
+// the ages of the entries that took those windows past the round threshold,
+// five lengths to a float each - see t2v, a2v and d2v in the tail of sweepOne.
 //
 // Raising one means lowering the other and then regenerating the blocks marked
 // GENERATED below. Nothing warns you at runtime: the compiler refuses the whole
@@ -232,26 +248,27 @@
 //
 // AND IT IS SLOW ON PURPOSE
 // -------------------------
-// Twenty-five pairs at twenty lengths is five hundred copies of MAR1's state
+// Twenty-one pairs at fifteen lengths is 315 copies of MAR1's state
 // machine, each walked over that pair's whole loaded history. That is the most
 // expensive thing in this project by a very wide margin, and the execution time
 // limit is a second ceiling underneath the variable one - fitting the compiler
-// does not mean finishing in time. It is HALF what the same file cost at forty
-// lengths, which is the one thing that cut gave back.
+// does not mean finishing in time. It is three quarters of what the same file
+// cost at twenty lengths - and three quarters of their memory bill too, which
+// is the number to watch on M1 and M3.
 //
-// FOUR OF THE TWENTY-FIVE ARE EMPTY (2026-08-16) and still cost their eighty
-// machines, because a request.security call cannot be made conditional. If
-// this file starts timing out, untick pairs first and take those four slots
-// back out second - they buy nothing until a pair is typed into them.
+// THE FOUR EMPTY SLOTS ARE GONE AGAIN (2026-08-16, user decision, the same
+// day they arrived): at fifty-two values per slot they no longer fit the
+// variable budget, and they were eighty idle machines of pure runtime the
+// whole time - a request.security call cannot be made conditional.
 //
 // If it refuses to run, the levers are these, in the order worth trying:
 //
 //   1. untick pairs. The big one for TIME, and the only half of the product the
 //      dialog can change. It does NOT help the variable budget - an unticked
-//      slot still declares its forty names - so it fixes a timeout and never a
+//      slot still declares its thirty-nine names - so it fixes a timeout and never a
 //      compile error.
 //   2. run it on a higher timeframe. Fewer bars, same logic, same answer shape.
-//   3. narrow First / Last. It does not save a thing - all twenty call sites run
+//   3. narrow First / Last. It does not save a thing - all fifteen call sites run
 //      whatever the range says - but it makes the point that the range and the
 //      cost are unrelated, so there is no reason to sweep wider than you read.
 //   4. 'Bars of history per pair'. Last, and it changes the ANSWER rather than
@@ -276,17 +293,17 @@
 // ta.ema demands a SIMPLE int, so a length has to be fixed before the first bar,
 // and independent state per length needs a separate CALL SITE - a `var` inside a
 // function belongs to the call site rather than to the function, so a loop would
-// run one machine twenty times and end with one answer. The twenty are written
+// run one machine fifteen times and end with one answer. The fifteen are written
 // out, and changing SWEEP_N means regenerating the blocks marked GENERATED below
 // rather than editing them by hand.
 //
 // IT IS ALSO WHY THE TRADED LENGTH CANNOT BE ONE MACHINE OF ITS OWN. The
 // obvious design - one extra call site running the chosen length - needs that
 // length before the first bar, and the choice is made from a ranking that
-// cannot exist until every pair has answered. So all twenty run, all twenty
+// cannot exist until every pair has answered. So all fifteen run, all fifteen
 // report their live state, and the choice is made afterwards on this side of
-// request.security. The cut from forty lengths to twenty is the price of that
-// sentence.
+// request.security. The cut from forty lengths to twenty was the price of
+// that sentence; the moves between eleven and fifteen are the memory limit's.
 //
 // Computed once, in the sense that matters
 // ----------------------------------------
@@ -298,17 +315,42 @@
 //
 // Keep the signal settings identical to maRejection.pine or the table describes
 // a strategy you are not trading. There is no CFGSUM here to catch a divergence.
-indicator('MAR1 Rotation', overlay = true, max_bars_back = 200)
-
-// Twenty lengths, and the number is not a preference - it is what the compiler
-// allows. See THE LOCAL VARIABLE BUDGET in the header: slots times VALUES PER
-// LENGTH times lengths is counted, the ceiling is 1200, and twenty-five by
-// two by twenty is 1000.
 //
-// It was forty while every length handed back one number. It is twenty because
-// every length now hands back two - its totals AND its live state - and the
-// second one is what lets the traded length be chosen by the ranking instead of
-// typed in beside it. Nothing else about the file wanted the cut.
+// calc_bars_count = 10000 (user decision, 2026-08-16; it was 1000 earlier the
+// same day): the script computes on the LAST ten thousand bars and nothing
+// before them. A plan upgrade made M1 and M3 charts load enough history that
+// 420 machines across 21 request.security contexts blew TradingView's runtime
+// memory limit - "Memory limits exceeded" - while M2, M4 and M5 still ran.
+// NOT the same lever as 'Bars of history per pair': that input only pauses
+// the counter bookkeeping and every machine still runs on every loaded bar,
+// so it cannot save memory at any value - this one stops the bars from being
+// computed at all, which makes it the SECOND lever against that error and
+// SWEEP_N the first. Ten thousand bars is the fence the user chose; every
+// counter, ranking total and table starts from it, so the totals are "over
+// the last ten thousand bars", not "over all loaded history". On M1 that is
+// about a week of a round-the-clock market, so the DAY CLOSES table reaches
+// back past the morning comfortably - lower it again if the memory error
+// comes back. The SAME number sits in maRejection.pine, mar1Scanner.pine and
+// maSweepPairs.pine, and it must: scripts describing one machine have to
+// read the same history or their counters disagree.
+indicator('MAR1 Rotation', overlay = true, max_bars_back = 200, calc_bars_count = 10000)
+
+// Fifteen lengths, and this time the number IS a preference - the compiler
+// allowed twenty. The story is TradingView's RUNTIME memory limit: a plan
+// upgrade let M1 and M3 charts load enough history that 21 x 20 = 420
+// machines across the request.security contexts blew "Memory limits
+// exceeded" while M2, M4 and M5 still ran, so the count was halved to
+// eleven and then raised back to fifteen (both 2026-08-16, user decisions)
+// - 21 x 15 = 315 machines, three quarters of the count that failed,
+// covering 15..43 at step 2. Whether fifteen still runs on M1/M3 is an
+// experiment; eleven is the fallback if it does not.
+//
+// The variable budget is still comfortable: twenty-one slots at
+// thirty-nine values is 819 names against the 1200 ceiling. History of the
+// number: forty while every length handed back one value, twenty once every
+// length handed back two - its totals AND its live state, the second being
+// what lets the traded length be chosen by the ranking instead of typed in -
+// then eleven, then fifteen, for memory.
 //
 // Sixty was tried, back when a length cost one number, and refused by
 // TradingView outright before a single bar ran:
@@ -317,7 +359,7 @@ indicator('MAR1 Rotation', overlay = true, max_bars_back = 200)
 //
 // Thirty slots times sixty lengths is 1800 of those 1824. That is the shape of
 // the arithmetic to redo before changing either number here.
-SWEEP_N = 20
+SWEEP_N = 15
 
 // ---------------------------------------------------------------------------
 // The range
@@ -329,8 +371,8 @@ SWEEP_N = 20
 // that is what display = display.none on the rest of this file buys.
 //
 // TradingView prints an indicator's ARGUMENTS after its name in the legend, in
-// declaration order. This file has a hundred and two inputs - twenty-five pair
-// slots with their tick boxes are fifty of them - and the line ran the width
+// declaration order. This file has ninety-four inputs - twenty-one pair
+// slots with their tick boxes are forty-two of them - and the line ran the width
 // of the chart as a wall of bare numbers with nothing saying which number was
 // which. A legend that has to be decoded is worse than no legend.
 //
@@ -346,7 +388,7 @@ SWEEP_N = 20
 //   MA Type        THE ONE THE OTHER FILES HIDE. Everywhere else the visible
 //                  setting is MA Length, because there is one length and it
 //                  defines the indicator. Here the LENGTHS ARE THE ROWS OF THE
-//                  TABLE - they say themselves, in ink, twenty at a time. What
+//                  TABLE - they say themselves, in ink, fifteen at a time. What
 //                  nothing on screen says is which KIND of average every one of
 //                  them is, and a sweep run on SMA describes a strategy that is
 //                  not being traded: maRejection.pine sits on EMA with this
@@ -375,49 +417,61 @@ gSwp = 'Sweep range'
 // where the sweep starts, Step says how far apart the lengths sit, Last says
 // where it stops.
 //
-//   5, step 2, to 43     5, 7, 9 ... 43 - the default, and exact
-//   5, step 1, to 24     every length from 5 to 24 - twenty rows, half the span
-//   10, step 1, to 20    10, 11, 12 ... 20 - eleven rows, the other slots idle
-//   10, step 1, to 200   10, 11, 12 ... 29 - the slots run out at 29
+//   15, step 2, to 43    15, 17, 19 ... 43 - the default, and exact
+//   15, step 1, to 30    every length from 15 to 29 - fifteen rows, half span
+//   25, step 1, to 30    25, 26, 27 ... 30 - six rows, the other slots idle
+//   10, step 1, to 200   10, 11, 12 ... 24 - the slots run out at 24
 //
 // The one thing the three of them cannot override is SWEEP_N. There are exactly
-// twenty call sites and there is no Pine in which there are twenty-one, so:
+// fifteen call sites and there is no Pine in which there are sixteen, so:
 //
-//   fewer than twenty lengths fit in the range  the extra slots are computed
-//                                               anyway, because a call site
-//                                               cannot be made conditional,
-//                                               and simply not drawn
-//   more than twenty fit                        the sweep stops at
-//                                               First + 19·Step, short of Last
+//   fewer than fifteen lengths fit in the range  the extra slots are computed
+//                                                anyway, because a call site
+//                                                cannot be made conditional,
+//                                                and simply not drawn
+//   more than fifteen fit                        the sweep stops at
+//                                                First + 14·Step, short of Last
 //
 // Neither case is left to be worked out from the last row. The header prints the
 // range that was actually swept and, when it is not the one that was typed, says
 // so in amber - and says which of the two reasons it was.
 //
-// Nothing here changes the cost. All twenty machines run whatever the range says,
+// Nothing here changes the cost. All fifteen machines run whatever the range says,
 // so a narrow range is not cheaper - it just draws fewer rows.
 //
 // Both minimums are 1 so that First + i·Step can never reach zero, which is what
 // lets the lengths be built from inputs at all: ta.ema needs a SIMPLE int, and
 // arithmetic on inputs stays simple.
 //
-// 5 to 43 AT STEP 2 (2026-08-15), and the step is what changed. The window is
-// the same one the sweeps have been run over since 2026-08-12 - it is the
-// RESOLUTION inside it that halved, because the slot count did: every length
-// now carries its live state as well as its totals, which is what lets the
-// traded length be CHOSEN from the table instead of typed in beside it. See
-// THE LOCAL VARIABLE BUDGET in the header for the arithmetic.
+// 15 TO 43 AT STEP 2 (2026-08-16, user decision - the fourth grid of one
+// day). The sweep was cut from twenty lengths (5..43) to eleven (20..40)
+// for the RUNTIME memory limit, then raised back to fifteen the same day:
+// 315 machines against the 420 that blew "Memory limits exceeded" on M1
+// and M3, so whether this count still runs there is an experiment, and
+// eleven is the fallback if it does not. See THE LOCAL VARIABLE BUDGET in
+// the header and the note at SWEEP_N.
 //
-// The even lengths are not gone, they are one setting away: type 1 into Step
-// and the sweep runs 5..24 at full resolution, at the cost of the top end.
-sweepFrom = input.int(5, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
-     tooltip = 'The shortest moving average in the sweep. Type 3 to get the old range back - it costs the top end, since twenty lengths is twenty lengths.', display = display.none)
+// LAST IS 43 AND NOT 44, which is the same fifteen lengths written so the
+// step lands on the last one exactly: fifteen from 15 at step 2 reach 43,
+// so a Last of 44 would sweep the identical set and make the header say in
+// amber, on every run, that the step does not land on it.
+//
+// The short lengths are not gone, they are one setting away: type 5 into
+// First and the same fifteen slots sweep 5..33 instead.
+//
+// NOTE FOR SAVED CHARTS: defaults do not overwrite saved settings. A chart
+// that carried an older version still holds its old First / Last - First 16
+// / Last 44 sweeps 16..44, First 20 / Last 40 sweeps 20..40 on eleven of the
+// fifteen slots. Set First to 15 and Last to 43 by hand there, or reset the
+// inputs once.
+sweepFrom = input.int(15, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
+     tooltip = 'The shortest moving average in the sweep. Lowering it reaches down at the cost of the top end, since fifteen lengths is fifteen lengths.', display = display.none)
 sweepStep = input.int(2, 'Step', minval = 1, maxval = 50, group = gSwp,
-     tooltip = 'The gap between one swept length and the next. Twenty lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between. At step 1 the same twenty slots cover 5..24 instead.', display = display.none)
+     tooltip = 'The gap between one swept length and the next. Fifteen lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between. At step 1 the same fifteen slots cover 15..29 instead.', display = display.none)
 sweepTo = input.int(43, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
-     tooltip = 'Where the sweep stops. Twenty slots exist, so if First, Step and this ask for more than twenty the sweep ends at First + 19 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 5 to 43 at step 2 is exactly twenty and fills the table.', display = display.none)
+     tooltip = 'Where the sweep stops. Fifteen slots exist, so if First, Step and this ask for more than fifteen the sweep ends at First + 14 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 15 to 43 at step 2 is exactly fifteen and fills the table.', display = display.none)
 
-// How many of the twenty call sites land inside the requested range. Guarded on
+// How many of the fifteen call sites land inside the requested range. Guarded on
 // both ends: a Last at or below First gives one row rather than a negative
 // count, and the cap keeps a wide range from claiming rows that do not exist.
 //
@@ -429,7 +483,7 @@ sweepFit  = int(sweepSpan / sweepStep) + 1
 usedN     = sweepFit > SWEEP_N ? SWEEP_N : sweepFit
 sweepLast = sweepFrom + (usedN - 1) * sweepStep
 
-// True when the range asked for is wider than twenty slots can carry. Kept apart
+// True when the range asked for is wider than fifteen slots can carry. Kept apart
 // from "the step did not land on Last exactly", because the two have different
 // fixes: this one is raise the Step, the other one is nothing worth doing.
 slotsShort = sweepFit > SWEEP_N
@@ -601,19 +655,17 @@ tailWeight = input.int(50, 'Tail weight in the Balanced score, %', minval = 0, m
 // a blank column between them, each block picking up where the last ran out.
 // Height is the direction a chart has least of, so the list grows sideways.
 //
-// Ten puts twenty lengths into two columns of ten, which is about as tall
-// as a table can be and still sit beside the price rather than over it. Ten
-// gives two shorter blocks; twenty gives one single column.
+// Fifteen rows fit one column at the default of twenty; eight puts them into
+// two short blocks side by side.
 rowsPerBlock = input.int(20, 'Rows per block (wraps sideways past this)', minval = 2, maxval = 40, group = gOut,
-     tooltip = 'Up to four blocks stand side by side, so 10 here holds all 40 lengths in four short columns and 20 holds them in two. Anything that does not fit in four blocks is not drawn, and the footer says so rather than letting rows go missing quietly.', display = display.none)
+     tooltip = 'Up to four blocks stand side by side, so 8 here holds all 15 lengths in two short columns and 20 holds them in one. Anything that does not fit in four blocks is not drawn, and the footer says so rather than letting rows go missing quietly.', display = display.none)
 
 tablePos    = input.string('Middle right', 'Table position',
      options = ['Middle right', 'Middle left', 'Middle center', 'Top right', 'Bottom right', 'Top center', 'Bottom center'], group = gOut, display = display.none)
 txtSizeName = input.string('Small', 'Text size', options = ['Tiny', 'Small', 'Normal'], group = gOut, display = display.none)
 
-// Four, kept from the forty-length days: twenty rows now fit as one column of
-// block is ten columns wide including its trailing gap, so four of them is
-// twenty or two of ten, and the two spare blocks cost nothing unwritten.
+// Four, kept from the forty-length days: fifteen rows fit as one column at
+// the default, and the spare blocks cost nothing unwritten.
 MAX_BLOCKS = 4
 
 // The palette, and every one of these is OPAQUE on purpose - a table has to be a
@@ -664,14 +716,14 @@ C_MID_T = #CFE3FF
 // ---------------------------------------------------------------------------
 // Every pair has to hand back five totals per length - closures, entries, the
 // worst single window, how many windows went RED, and how many times one deep
-// window followed another - and there are twenty lengths. As a plain tuple that
-// is a hundred values crossing request.security, twenty-five times over: two
-// and a half thousand names in the main scope against a ceiling of twelve
+// window followed another - and there are fifteen lengths. As a plain tuple that
+// is seventy-five values crossing request.security, twenty-one times over: well
+// over fifteen hundred names in the main scope against a ceiling of twelve
 // hundred. See THE LOCAL VARIABLE BUDGET in the header - unpacked, this file
 // could not be compiled at any useful size at all.
 //
-// So the five are packed into one number and unpacked on the other side. Twenty
-// values cross instead of a hundred, and that is what leaves room for the live half.
+// So the five are packed into one number and unpacked on the other side. Fifteen
+// values cross instead of seventy-five, and that is what leaves room for the live half.
 //
 //   value  =  entries · 1e12 + closures · 1e8 + red · 1e4 + links · 1e2 + worst
 //
@@ -815,8 +867,8 @@ DC_REF  = 'Close'
 //
 // The state machine lives inside pairState, in the shared block, because the
 // verdict belongs to the PAIR - it reads no moving average at all. That is what
-// makes it affordable here: ONE verdict per pair, shared by all twenty lengths,
-// rather than twenty verdicts about one stretch of price.
+// makes it affordable here: ONE verdict per pair, shared by all fifteen lengths,
+// rather than fifteen verdicts about one stretch of price.
 //
 // AND IT HAS TO BE ON WHILE SWEEPING if it is on while trading. This file
 // decides which MA lengths are best; measure them without the filter and the
@@ -904,7 +956,7 @@ gScan = 'Cost'
 // are identical in effect.
 //
 // SET IT BACK TO 0 when the question is "what does the chart actually do",
-// rather than "which of these twenty lengths is best". Those are different
+// rather than "which of these fifteen lengths is best". Those are different
 // questions and the gate threshold is what separates them.
 //
 // It remains the LAST lever to reach for when this script times out, behind
@@ -927,10 +979,11 @@ scanBars = input.int(0, 'Bars of history per pair (0 = all)', minval = 0, maxval
 // ---------------------------------------------------------------------------
 // The slots
 // ---------------------------------------------------------------------------
-// Twenty-five of the 40 request calls TradingView allows, and there are now
+// Twenty-one of the 40 request calls TradingView allows, and there are now
 // TWO ceilings to keep in mind rather than one. The variable budget is the old
-// one: twenty-five slots at forty values is 1000 names against a limit of
-// 1200, which also fixes the hard maximum at TWENTY-EIGHT slots and no more.
+// one: twenty-one slots at thirty-nine values is 819 names against a limit of
+// 1200, which puts the hard maximum near TWENTY-NINE slots - still above the
+// twenty-two the old fifty-two-wide tuple allowed.
 //
 // THE SECOND IS THE TOKEN BUDGET, and it is the one this file has actually
 // hit. TradingView caps the COMPILED code at 100256 tokens (CE10117), and at
@@ -943,38 +996,33 @@ scanBars = input.int(0, 'Bars of history per pair (0 = all)', minval = 0, maxval
 // 18% against the file that measured 102855, and the ratio is assumed to hold.
 //
 // WHAT ONE SLOT COSTS, so the next decision is arithmetic rather than a guess:
-// about 1.5% of the file - its request.security line of forty names, its
+// about 1.5% of the file - its request.security line of thirty-nine names, its
 // stashPair, its rotWatch, its rotOne and its pubDigit, each of the last three
-// carrying a twenty-argument pickN call, plus its two inputs and its ternary.
+// carrying a fifteen-argument pickN call, plus its two inputs and its ternary.
 //
 // IF IT OVERFLOWS AGAIN the levers are, cheapest first: cut slots (1.5% each),
 // or lower SWEEP_N, which is dearer per step and changes the answer. Comments
 // are NOT a lever: the compiler strips them before it counts, and a tooltip is
 // one string token however long it reads.
 //
-// THE FOUR NEW SLOTS ARE EMPTY AND UNTICKED, and that is deliberate - they are
-// room to grow, taken now while the machinery for adding them was fresh. They
-// cost NOTHING at compile time beyond the tokens above, and they do cost
-// RUNTIME: Pine cannot make a request.security conditional, so an unticked
-// slot is still pointed at the chart's own symbol and its twenty machines
-// still run. Four of them is roughly a fifth more work per bar for nothing, so
-// if this file ever starts timing out they are the first thing to take back
-// out.
+// THE FOUR EMPTY SLOTS CAME AND WENT IN ONE DAY (added and removed
+// 2026-08-16, user decision). At fifty-two values per slot they stopped
+// fitting the variable budget, and they were pure runtime the whole time: an
+// unticked slot still runs its fifteen machines on the chart's own symbol,
+// because a request.security call cannot be made conditional.
 //
-// WHAT THEY COST ONCE: EIGHT INPUTS ENTERED THE MIDDLE OF THE LIST, and
-// TradingView maps saved settings by POSITION - so on a chart that already
-// carried the previous version, every setting BELOW this block reads the value
-// of the one eight places EARLIER. That is the Links pair, the whole flat
-// filter, the whole Rotation group and the whole Trading hours group. Reset
-// settings once after pasting, or check those four groups by hand. New charts
-// are unaffected.
+// WHAT THE REMOVAL COSTS ONCE: EIGHT INPUTS LEFT THE MIDDLE OF THE LIST, and
+// TradingView maps saved settings by POSITION - so on a chart that carried
+// the twenty-five-slot version, every setting BELOW this block reads the
+// value of the one eight places LATER. Reset settings once after pasting -
+// the defaults in this file are the working setup.
 //
 // Blank or unticked means "skip this slot" - it still spends a call, because
 // Pine cannot make one conditional, but it is pointed at the chart's own
 // symbol, which is already loaded, and its numbers are thrown away.
 //
 // These tick boxes are the TIME lever and only that. An unticked slot still
-// declares its forty names, so it saves nothing at compile time - it only stops
+// declares its thirty-nine names, so it saves nothing at compile time - it only stops
 // that pair's history from being walked. It does leave the rotation too: an
 // unticked pair cannot close a win, so it cannot end a round either.
 //
@@ -985,10 +1033,10 @@ scanBars = input.int(0, 'Bars of history per pair (0 = all)', minval = 0, maxval
 // line. The footer of the table says how many pairs were actually scanned.
 gList1 = 'Pairs 1-10'
 gList2 = 'Pairs 11-20'
-gList3 = 'Pairs 21-25'
+gList3 = 'Pairs 21'
 
 use01 = input.bool(true,  'Pair 1',  inline = 'p01', group = gList1, display = display.none,
-     tooltip = 'The tick is the off switch, and on this file it is also the main performance lever: each ticked slot is twenty state machines over that pair\'s whole history.')
+     tooltip = 'The tick is the off switch, and on this file it is also the main performance lever: each ticked slot is fifteen state machines over that pair\'s whole history.')
 sym01 = input.symbol('FX:EURUSD', '', inline = 'p01', group = gList1, display = display.none)
 use02 = input.bool(true,  'Pair 2',  inline = 'p02', group = gList1, display = display.none)
 sym02 = input.symbol('FX:GBPUSD', '', inline = 'p02', group = gList1, display = display.none)
@@ -1032,14 +1080,6 @@ sym20 = input.symbol('FX:AUDCHF', '', inline = 'p20', group = gList2, display = 
 
 use21 = input.bool(true,  'Pair 21', inline = 'p21', group = gList3, display = display.none)
 sym21 = input.symbol('FX:AUDCAD', '', inline = 'p21', group = gList3, display = display.none)
-use22 = input.bool(false, 'Pair 22', inline = 'p22', group = gList3, display = display.none)
-sym22 = input.symbol('', '', inline = 'p22', group = gList3, display = display.none)
-use23 = input.bool(false, 'Pair 23', inline = 'p23', group = gList3, display = display.none)
-sym23 = input.symbol('', '', inline = 'p23', group = gList3, display = display.none)
-use24 = input.bool(false, 'Pair 24', inline = 'p24', group = gList3, display = display.none)
-sym24 = input.symbol('', '', inline = 'p24', group = gList3, display = display.none)
-use25 = input.bool(false, 'Pair 25', inline = 'p25', group = gList3, display = display.none)
-sym25 = input.symbol('', '', inline = 'p25', group = gList3, display = display.none)
 
 // ---------------------------------------------------------------------------
 // The Links column - and why these two sit here, at the very bottom
@@ -1049,8 +1089,8 @@ sym25 = input.symbol('', '', inline = 'p25', group = gList3, display = display.n
 // reason is not taste.
 //
 // TradingView maps SAVED settings BY POSITION. An input inserted into the middle
-// of the list shifts every input after it, and after it here are fifty pair
-// slots - twenty-five tick boxes and twenty-five symbols. Adding these next to
+// of the list shifts every input after it, and after it here are forty-two
+// pair inputs - twenty-one tick boxes and twenty-one symbols. Adding these next to
 // redAt, where they read best, would silently rotate the entire watchlist. So
 // new inputs go at the END of the file, always. What that costs is only the
 // order of two fields inside one dialog group, because the order of fields
@@ -1109,7 +1149,7 @@ chainWithin = input.int(180, 'A follower may open this many minutes after the cl
 // ---------------------------------------------------------------------------
 // Flat filter
 // ---------------------------------------------------------------------------
-// Declared here for the same reason chainWithin and deepAt are: fifty pair
+// Declared here for the same reason chainWithin and deepAt are: forty-two pair
 // slots sit between the top of the file and here, and TradingView maps a saved
 // setting onto an input by POSITION, so anything declared above them would
 // rotate the whole watchlist on every chart already carrying this script.
@@ -1160,7 +1200,7 @@ gRot = 'Rotation'
 // names it; when fewer rows than it asks for have enough wins there is no
 // pick at all, the row says so, and the pairs table stays empty rather than
 // trading a length nobody vouched for.
-pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 20, group = gRot,
+pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 15, group = gRot,
      tooltip = 'The row of the ranking that becomes the traded MA - 1 is the top row, 2 the second. It is re-read at every round boundary, so this is the only place the traded length is chosen. If fewer rows than this have enough wins, there is no pick, and the pairs table below stays empty until there is.')
 
 // The space switch. Ticked, the twenty-row ranking - header, columns, footer
@@ -1176,7 +1216,7 @@ pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 20, gro
 // end of the input list for the position rule every other foot-of-file input
 // already follows.
 hideSweep = input.bool(true, 'Hide the ranking table (cockpit only)', group = gRot,
-     tooltip = 'Draws only the pick row of the ranking, the ROTATION row, the PAIRS table and the LAST WIN line - the compact cockpit. The ranking is still computed, so the pick stays live; the other nineteen rows are just not drawn. Untick to get the full table back.', display = display.none)
+     tooltip = 'Draws only the pick row of the ranking, the ROTATION row, the PAIRS table and the LAST WIN line - the compact cockpit. The ranking is still computed, so the pick stays live; the other fourteen rows are just not drawn. Untick to get the full table back.', display = display.none)
 
 // WHEN A ROUND ENDS, and there is now exactly one way that it can.
 //
@@ -1324,34 +1364,40 @@ hideCloses = input.bool(true, 'Hide the day closes', group = gRot,
 // two. Two tables in the same position overlap, and nothing in Pine negotiates
 // that.
 //
-// MIDDLE LEFT by default since 2026-08-16 - the three defaults below were
-// lifted off a working chart rather than chosen here, which is why they are
-// not the round numbers they used to be.
-clsPos = input.string('Middle left', 'Day closes position',
+// BOTTOM CENTRE by default since 2026-08-16, and it was MIDDLE LEFT for a
+// few hours that same day. The three defaults below are lifted off a working
+// chart rather than chosen here, which is why they are not the round numbers
+// they used to be - and why they move whenever the chart they were lifted
+// from does.
+clsPos = input.string('Bottom center', 'Day closes position',
      options = ['Top left', 'Bottom left', 'Middle left', 'Top center', 'Bottom center'], group = gRot,
      tooltip = 'Two tables, two positions, independent of each other: the cockpit above and this one. Two tables in the same position overlap, and nothing in Pine negotiates that.', display = display.none)
 
 // How tall one column of the list is before it wraps into the next. Four
 // blocks stand side by side, so this times four is what fits on one page -
-// fifteen gives sixty, which is what a chart at the working text size holds
-// beside the price without the table running off the bottom. Twenty-five was
-// the first default and it is taller than a screen.
-clsPerBlock = input.int(15, 'Closes per block (wraps sideways past this)', minval = 5, maxval = 45, group = gRot,
+// twelve gives forty-eight, which is what a chart at the working text size
+// holds along the bottom without the table climbing into the price.
+// Twenty-five was the first default and it is taller than a screen; fifteen
+// was the second and it fits a table standing at the middle left rather than
+// at the foot.
+clsPerBlock = input.int(12, 'Closes per block (wraps sideways past this)', minval = 5, maxval = 45, group = gRot,
      tooltip = 'The list fills a block downwards, oldest at the top, then starts the next block to its right. Up to four blocks stand side by side, so this is a quarter of what one page holds. Raise it for a taller, narrower table; lower it for a shorter, wider one.', display = display.none)
 
 // What follows the four blocks. Page 1 is the oldest records of the day, and
 // the title says which page of how many is on screen, so the tail is never
 // invisible.
 //
-// TWO by DEFAULT, and that is a deliberate oddity rather than an off-by-one:
-// at fifteen per block a page holds sixty closes, so page 2 is the AFTERNOON
-// of a busy day - the half worth looking at while trading. The cost is that a
-// quiet day, or a chart just loaded, has no page 2, and the title then says
-// PAGE 2 IS PAST THE END in amber and draws the last page instead. That is
-// the table saying so out loud rather than ending quietly, which is what it
-// was built to do - but on a slow day it is the first thing you will see.
-clsPage = input.int(2, 'Day closes page', minval = 1, maxval = 20, group = gRot,
-     tooltip = 'Which slice of the day is drawn, when it closed more windows than four blocks can hold. Page 1 is the morning. A page past the end shows the last one instead and says so.', display = display.none)
+// THREE by DEFAULT, and that is a deliberate oddity rather than an
+// off-by-one: at twelve per block a page holds forty-eight closes, so page 3
+// is the LATE part of a busy day - the slice worth looking at while trading.
+// A quiet day, or a chart just loaded, has no page 3, and the table then
+// draws the last page it does have and notes the ask beside the page count -
+// 'page 1 of 1 (asked 3)'. It was an amber PAGE 3 IS PAST THE END for a few
+// hours on 2026-08-16 and stopped being one the same day (user request): a
+// permanent alarm about a value the file itself ships with is an alarm
+// nobody reads, and on an ordinary day it was the loudest thing on screen.
+clsPage = input.int(3, 'Day closes page', minval = 1, maxval = 20, group = gRot,
+     tooltip = 'Which slice of the day is drawn, when it closed more windows than four blocks can hold. Page 1 is the morning. A page past the end draws the last one instead and notes the ask beside the page count, so the two can never be confused.', display = display.none)
 
 // request.security refuses an empty symbol, so a blank slot is pointed at the
 // chart itself and filtered out later by the same blank test.
@@ -1381,10 +1427,6 @@ s18 = use18 and sym18 != '' ? sym18 : syminfo.tickerid
 s19 = use19 and sym19 != '' ? sym19 : syminfo.tickerid
 s20 = use20 and sym20 != '' ? sym20 : syminfo.tickerid
 s21 = use21 and sym21 != '' ? sym21 : syminfo.tickerid
-s22 = use22 and sym22 != '' ? sym22 : syminfo.tickerid
-s23 = use23 and sym23 != '' ? sym23 : syminfo.tickerid
-s24 = use24 and sym24 != '' ? sym24 : syminfo.tickerid
-s25 = use25 and sym25 != '' ? sym25 : syminfo.tickerid
 
 // Index at which the cumulative distribution of the streak histogram crosses
 // perc. Identical to calculateIndex in maRejection.pine, including the inclusive
@@ -1793,6 +1835,46 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
     var int   entriesT2   = 0
     var bool  windowT2    = false
 
+    // THE TRADING MACHINE'S OWN CLOSURE COUNTERS (2026-08-16, user decision:
+    // the day-closes record follows the machine being TRADED, not the
+    // all-hours statistics). Cumulative, like the shared block's totals, and
+    // for the same reason: request.security repeats its last value on a chart
+    // bar the pair had no bar for, and a counter that merely repeats reads as
+    // a delta of zero. Only their LOW DIGITS cross the wire - see t2v below.
+    var int totClsT2 = 0
+    var int totEntT2 = 0
+
+    // HOW OLD THE WINDOW WAS WHEN IT CLOSED (2026-08-16, user request: the
+    // day-closes record shows the end of a series and had no way to show its
+    // START). Minutes between the bar the window opened on and the bar it
+    // closed on, +1, with 0 meaning "no open window" - the same
+    // zero-means-nothing convention rotStamp uses, so the reader can tell an
+    // absent stamp from a window that opened and closed on one candle.
+    //
+    // NOT cumulative, unlike the two counters above, and it does not have to
+    // be: it is only ever READ on a bar where the closure counter actually
+    // moved, and it is written in the same block that moves it - so a
+    // repeated value from request.security is never mistaken for a fresh one.
+    // Clamped at 998, which is 16.6 hours: past that the record prints a dash
+    // rather than a wrong time, and a window open longer than that spans a
+    // night the DAY CLOSES table is not a record of anyway.
+    var int lastAgeT2 = 0
+
+    // AND WHEN THE WINDOW WENT PAST THE ROUND THRESHOLD (2026-08-16, user
+    // request). rotDeepAt says a window that cost MORE than N entries ends
+    // the round, so the entry that crosses it is the (N+1)th - and THAT is
+    // the critical event the cockpit rotates on. It happens INSIDE the
+    // window, minutes or hours before the close, and nothing on the wire
+    // carried it: the closure counter only moves when the window pays, so
+    // the chart could only ever see the boundary at the close.
+    //
+    // deepSinceT is the bar the crossing entry was taken on, held until the
+    // window ends; lastDeepT2 is its age at the close, in the same
+    // minutes-plus-one shape as lastAgeT2 above, so one reader serves both.
+    // 0 means this window never crossed - which is most of them.
+    var int deepSinceT = -1
+    var int lastDeepT2 = 0
+
     canFireLongT2  = bar_index - lastLongT2 >= cooldown
     canFireShortT2 = bar_index - lastShortT2 >= cooldown
 
@@ -1875,19 +1957,35 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
         if entryT2
             entriesT2 += 1
             lastSideT := buyTakenT2 ? 1 : -1
+            // The crossing entry, stamped once - == and not >=, so a window
+            // that runs on to six entries still reports the FOURTH, which is
+            // the one the round rule fired on.
+            if entriesT2 == rotDeepAt + 1
+                deepSinceT := time
             if not windowT2
                 windowT2   := true
                 openSinceT := time
 
         if winT2
+            // Counted BEFORE the reset wipes entriesT2 - the cost belongs to
+            // the window that just ended, exactly as in the shared block.
+            totClsT2 += 1
+            totEntT2 += entriesT2
+            // Read BEFORE the reset below wipes openSinceT, for the same
+            // reason entriesT2 is: the stamp belongs to the window that just
+            // ended.
+            lastAgeT2  := openSinceT >= 0 ? math.min(int((time - openSinceT) / 60000), 998) + 1 : 0
+            lastDeepT2 := deepSinceT >= 0 ? math.min(int((time - deepSinceT) / 60000), 998) + 1 : 0
             windowT2   := false
             entriesT2  := 0
             lastSideT  := 0
             openSinceT := -1
+            deepSinceT := -1
         else if greenT2
             windowT2   := true
             entriesT2  := 0
             openSinceT := time
+            deepSinceT := -1
 
         // Set on arrival at the white step and HELD - the second bar of the
         // same wait must not restamp it, or every pale row reads "just now".
@@ -1936,19 +2034,37 @@ sweepOne(simple int len, float srcVal, float sepVal, float bodyRef, float rangeS
          (gateT2 < 99 ? gateT2 : 99) * 1000 +
          (streakT2 < 99 ? streakT2 : 99) * 10 + rotDigit
 
-    [packed, live]
+    // THREE DIGITS FOR THE WIRE: entries mod 100 over closes mod 10. The
+    // rotation reads DELTAS bar to bar, so the counters do not need their
+    // full width - only enough range that one chart bar's movement cannot
+    // wrap. One bar's delta is bounded by the cooldown: more than 9 closes
+    // or 99 entries landing on a single chart bar would need the chart to
+    // have swallowed twenty-plus of the pair's minutes, which is a data
+    // outage and not a trading day. pairState packs five of these per float.
+    t2v = (totEntT2 % 100) * 10 + totClsT2 % 10
+
+    // THREE MORE FOR THE WIRE, in the same shape and read by the same
+    // unpacker: the age of the window that closed last, 0..999. pairState
+    // packs five of these per float too.
+    a2v = lastAgeT2
+
+    // AND THREE MORE, the same shape again: how long before the close the
+    // window crossed the round threshold. 0 on every window that never did.
+    d2v = lastDeepT2
+
+    [packed, live, t2v, a2v, d2v]
 
 // ---------------------------------------------------------------------------
-// One pair, all twenty lengths
+// One pair, all fifteen lengths
 // ---------------------------------------------------------------------------
 // The shared block first - everything a moving average does not enter into -
-// then twenty call sites of the machine above, one per swept length. A
+// then fifteen call sites of the machine above, one per swept length. A
 // separate call site is what buys each machine its own state - a `var` inside
 // a function belongs to the call site, so a loop
-// would give one machine run twenty times.
+// would give one machine run fifteen times.
 //
-// Called once per slot through request.security, so each of the twenty-five
-// calls gets its own copy of all twenty.
+// Called once per slot through request.security, so each of the twenty-one
+// calls gets its own copy of all fifteen.
 pairState() =>
     srcVal = srcName == 'close' ? close :
          srcName == 'open' ? open :
@@ -2006,7 +2122,7 @@ pairState() =>
     inTrade = localHour >= tradeStart and localHour < tradeEnd
     tradeOk = not tradeHoursOn or inTrade
 
-    // THE FLAT VERDICT FOR THIS PAIR - one per pair, shared by all twenty
+    // THE FLAT VERDICT FOR THIS PAIR - one per pair, shared by all fifteen
     // lengths. See MODULE: flat filter at the top of the file.
     //
     // na for the first flatLen bars, because math.sum propagates na - and na
@@ -2051,35 +2167,56 @@ pairState() =>
     // the counter bookkeeping sits behind it.
     active = scanBars <= 0 or bar_index > last_bar_index - scanBars
 
-    // GENERATED - twenty call sites and the forty-wide tuple they feed.
-    // Every length hands back BOTH of its numbers now: the packed totals
-    // the ranking is built from, and the packed live state the pairs table
-    // is drawn from. There is no forty-first machine any more - the traded
-    // length is one of these twenty, chosen by the ranking, so a machine of
+    // GENERATED - fifteen call sites and the thirty-nine-wide tuple they feed.
+    // Every length hands back FIVE numbers now: the packed totals the
+    // ranking is built from, the packed live state the pairs table is drawn
+    // from, its trading-machine counter digits, the age of the window those
+    // counters last closed, and the age of the entry that took that window
+    // past the round threshold - the last three five lengths to a float, see
+    // the h, g and f blocks below. There is no extra machine for the traded
+    // length - it is one of these fifteen, chosen by the ranking, so a machine of
     // its own would be a second copy of one of them.
     // Regenerate, never hand-edit.
-    [q1, r1] = sweepOne(sweepFrom + 0 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q2, r2] = sweepOne(sweepFrom + 1 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q3, r3] = sweepOne(sweepFrom + 2 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q4, r4] = sweepOne(sweepFrom + 3 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q5, r5] = sweepOne(sweepFrom + 4 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q6, r6] = sweepOne(sweepFrom + 5 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q7, r7] = sweepOne(sweepFrom + 6 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q8, r8] = sweepOne(sweepFrom + 7 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q9, r9] = sweepOne(sweepFrom + 8 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q10, r10] = sweepOne(sweepFrom + 9 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q11, r11] = sweepOne(sweepFrom + 10 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q12, r12] = sweepOne(sweepFrom + 11 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q13, r13] = sweepOne(sweepFrom + 12 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q14, r14] = sweepOne(sweepFrom + 13 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q15, r15] = sweepOne(sweepFrom + 14 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q16, r16] = sweepOne(sweepFrom + 15 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q17, r17] = sweepOne(sweepFrom + 16 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q18, r18] = sweepOne(sweepFrom + 17 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q19, r19] = sweepOne(sweepFrom + 18 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q20, r20] = sweepOne(sweepFrom + 19 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q1, r1, t1, a1, b1] = sweepOne(sweepFrom + 0 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q2, r2, t2, a2, b2] = sweepOne(sweepFrom + 1 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q3, r3, t3, a3, b3] = sweepOne(sweepFrom + 2 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q4, r4, t4, a4, b4] = sweepOne(sweepFrom + 3 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q5, r5, t5, a5, b5] = sweepOne(sweepFrom + 4 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q6, r6, t6, a6, b6] = sweepOne(sweepFrom + 5 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q7, r7, t7, a7, b7] = sweepOne(sweepFrom + 6 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q8, r8, t8, a8, b8] = sweepOne(sweepFrom + 7 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q9, r9, t9, a9, b9] = sweepOne(sweepFrom + 8 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q10, r10, t10, a10, b10] = sweepOne(sweepFrom + 9 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q11, r11, t11, a11, b11] = sweepOne(sweepFrom + 10 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q12, r12, t12, a12, b12] = sweepOne(sweepFrom + 11 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q13, r13, t13, a13, b13] = sweepOne(sweepFrom + 12 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q14, r14, t14, a14, b14] = sweepOne(sweepFrom + 13 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
+    [q15, r15, t15, a15, b15] = sweepOne(sweepFrom + 14 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
 
-    [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, q16, q17, q18, q19, q20, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, r16, r17, r18, r19, r20]
+    // THE TRADING MACHINE'S COUNTERS, five lengths to a float. Each t is
+    // three digits - entries mod 100 over closes mod 10, see t2v at the
+    // tail of sweepOne - so five of them are fifteen digits, exact in a
+    // double. Three floats instead of fifteen values is what keeps the
+    // tuple inside the variable budget: the rotation reads DELTAS bar to
+    // bar, so the low digits are all it ever needs.
+    h1 = 1.0 * t1 + 1.0 * t2 * 1000 + 1.0 * t3 * 1000000 + 1.0 * t4 * 1000000000 + 1.0 * t5 * 1000000000000
+    h2 = 1.0 * t6 + 1.0 * t7 * 1000 + 1.0 * t8 * 1000000 + 1.0 * t9 * 1000000000 + 1.0 * t10 * 1000000000000
+    h3 = 1.0 * t11 + 1.0 * t12 * 1000 + 1.0 * t13 * 1000000 + 1.0 * t14 * 1000000000 + 1.0 * t15 * 1000000000000
+
+    // THE WINDOW AGES, five lengths to a float, the identical layout the
+    // counters use above and read back by the identical t2At - three digits
+    // each, fifteen to a float, exact in a double.
+    g1 = 1.0 * a1 + 1.0 * a2 * 1000 + 1.0 * a3 * 1000000 + 1.0 * a4 * 1000000000 + 1.0 * a5 * 1000000000000
+    g2 = 1.0 * a6 + 1.0 * a7 * 1000 + 1.0 * a8 * 1000000 + 1.0 * a9 * 1000000000 + 1.0 * a10 * 1000000000000
+    g3 = 1.0 * a11 + 1.0 * a12 * 1000 + 1.0 * a13 * 1000000 + 1.0 * a14 * 1000000000 + 1.0 * a15 * 1000000000000
+
+    // THE CROSSING AGES, the third family and the last, packed exactly like
+    // the two above and read by the same t2At.
+    f1 = 1.0 * b1 + 1.0 * b2 * 1000 + 1.0 * b3 * 1000000 + 1.0 * b4 * 1000000000 + 1.0 * b5 * 1000000000000
+    f2 = 1.0 * b6 + 1.0 * b7 * 1000 + 1.0 * b8 * 1000000 + 1.0 * b9 * 1000000000 + 1.0 * b10 * 1000000000000
+    f3 = 1.0 * b11 + 1.0 * b12 * 1000 + 1.0 * b13 * 1000000 + 1.0 * b14 * 1000000000 + 1.0 * b15 * 1000000000000
+
+    [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, h1, h2, h3, g1, g2, g3, f1, f2, f3]
 
 // ---------------------------------------------------------------------------
 // The scan
@@ -2090,34 +2227,33 @@ pairState() =>
 // No lookahead argument: the default is barmerge.lookahead_off, which is the
 // only honest setting here.
 //
-// GENERATED - twenty-five destructurings of forty values each: twenty packed
-// totals in 1..20, then the twenty packed live states in 21..40, one per
-// swept length and in the same order.
-[v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39, v01_40] = request.security(s01, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39, v02_40] = request.security(s02, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39, v03_40] = request.security(s03, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39, v04_40] = request.security(s04, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39, v05_40] = request.security(s05, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39, v06_40] = request.security(s06, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39, v07_40] = request.security(s07, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39, v08_40] = request.security(s08, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39, v09_40] = request.security(s09, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39, v10_40] = request.security(s10, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39, v11_40] = request.security(s11, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39, v12_40] = request.security(s12, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39, v13_40] = request.security(s13, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39, v14_40] = request.security(s14, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39, v15_40] = request.security(s15, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39, v16_40] = request.security(s16, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39, v17_40] = request.security(s17, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39, v18_40] = request.security(s18, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39, v19_40] = request.security(s19, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39, v20_40] = request.security(s20, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39, v21_40] = request.security(s21, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v22_1, v22_2, v22_3, v22_4, v22_5, v22_6, v22_7, v22_8, v22_9, v22_10, v22_11, v22_12, v22_13, v22_14, v22_15, v22_16, v22_17, v22_18, v22_19, v22_20, v22_21, v22_22, v22_23, v22_24, v22_25, v22_26, v22_27, v22_28, v22_29, v22_30, v22_31, v22_32, v22_33, v22_34, v22_35, v22_36, v22_37, v22_38, v22_39, v22_40] = request.security(s22, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v23_1, v23_2, v23_3, v23_4, v23_5, v23_6, v23_7, v23_8, v23_9, v23_10, v23_11, v23_12, v23_13, v23_14, v23_15, v23_16, v23_17, v23_18, v23_19, v23_20, v23_21, v23_22, v23_23, v23_24, v23_25, v23_26, v23_27, v23_28, v23_29, v23_30, v23_31, v23_32, v23_33, v23_34, v23_35, v23_36, v23_37, v23_38, v23_39, v23_40] = request.security(s23, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v24_1, v24_2, v24_3, v24_4, v24_5, v24_6, v24_7, v24_8, v24_9, v24_10, v24_11, v24_12, v24_13, v24_14, v24_15, v24_16, v24_17, v24_18, v24_19, v24_20, v24_21, v24_22, v24_23, v24_24, v24_25, v24_26, v24_27, v24_28, v24_29, v24_30, v24_31, v24_32, v24_33, v24_34, v24_35, v24_36, v24_37, v24_38, v24_39, v24_40] = request.security(s24, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v25_1, v25_2, v25_3, v25_4, v25_5, v25_6, v25_7, v25_8, v25_9, v25_10, v25_11, v25_12, v25_13, v25_14, v25_15, v25_16, v25_17, v25_18, v25_19, v25_20, v25_21, v25_22, v25_23, v25_24, v25_25, v25_26, v25_27, v25_28, v25_29, v25_30, v25_31, v25_32, v25_33, v25_34, v25_35, v25_36, v25_37, v25_38, v25_39, v25_40] = request.security(s25, timeframe.period, pairState(), ignore_invalid_symbol = true)
+// GENERATED - twenty-one destructurings of thirty-nine values each: fifteen
+// packed totals in 1..15, the fifteen packed live states in 16..30, one per
+// swept length and in the same order, the three trading-machine counter floats
+// in 31..33, the three window-age floats in 34..36 and the three
+// threshold-crossing floats in 37..39 - five lengths to a float, in the same
+// order again.
+[v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39] = request.security(s01, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39] = request.security(s02, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39] = request.security(s03, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39] = request.security(s04, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39] = request.security(s05, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39] = request.security(s06, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39] = request.security(s07, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39] = request.security(s08, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39] = request.security(s09, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39] = request.security(s10, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39] = request.security(s11, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39] = request.security(s12, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39] = request.security(s13, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39] = request.security(s14, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39] = request.security(s15, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39] = request.security(s16, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39] = request.security(s17, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39] = request.security(s18, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39] = request.security(s19, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39] = request.security(s20, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39] = request.security(s21, timeframe.period, pairState(), ignore_invalid_symbol = true)
 // ---------------------------------------------------------------------------
 // The totals
 // ---------------------------------------------------------------------------
@@ -2175,8 +2311,8 @@ var int[]    agX   = array.new_int(SWEEP_N, 0)
 // re-deriving rather than assuming, because the Links ranking broke the old
 // justification. Four of the five keys are an average or a share - single
 // digits at worst. The fifth is links · 4 + nL · 2 + score, and links is a SUM
-// over the slots: twenty-five pairs, each clamped at 99, is 2475, so that key
-// tops out at 2475 · 4 + 2 + 1 = 9903. Band 1 starts at 1e6, which leaves a
+// over the slots: twenty-one pairs, each clamped at 99, is 2079, so that key
+// tops out at 2079 · 4 + 2 + 1 = 8319. Band 1 starts at 1e6, which leaves a
 // factor of about a hundred. Safe - but it is arithmetic now, not an obvious
 // truth, so widen the bands before widening PACK_D, the slot count, or either
 // multiplier in the Links key.
@@ -2283,9 +2419,9 @@ accum(int k, float v, string pair) =>
 // only shape the compiler accepts.
 //
 // A user function may reference at most 254 EXTERNAL elements - values from
-// the enclosing scope - and every one of the five hundred names the
+// the enclosing scope - and every one of the hundreds of names the
 // request.security calls destructure counts as one. computeRanking() reads
-// all of them through its twenty-five addPair calls, so with the totals as
+// all of them through its twenty-one addPair calls, so with the totals as
 // plain arguments it came to about eleven hundred and was refused outright:
 //
 //   The "computeRanking" function uses 1100 external elements. The limit is
@@ -2295,26 +2431,25 @@ accum(int k, float v, string pair) =>
 // An ARRAY is ONE external element however many numbers are inside it, so the
 // totals are stashed into a single flat array - slot * SWEEP_N + length - and
 // addPair reads them back out by slot. Same numbers, same order, one name
-// crossing the function boundary instead of five hundred.
+// crossing the function boundary instead of hundreds.
 //
 // THE LIVE HALF IS NOT IN HERE and does not need to be: it never enters the
 // ranking. It reaches rotWatch and rotOne through pickN, which takes
-// its twenty values as ordinary arguments at the CALL SITE, in the main scope
+// its fifteen values as ordinary arguments at the CALL SITE, in the main scope
 // where no such limit applies.
 //
 // Filled once per confirmed bar in a top-level block of its own, below - not
-// at the two places the ranking is computed, because a block of twenty-five
+// at the two places the ranking is computed, because a block of twenty-one
 // more generated lines inside either of those risks the other compiled-size
 // ceiling this file has already hit once (CE10205, "the if statement is too
 // long").
-var float[] packAll = array.new_float(SWEEP_N * 25, float(na))
+var float[] packAll = array.new_float(SWEEP_N * 21, float(na))
 
-// GENERATED - one slot's twenty totals into the flat array. Regenerate,
+// GENERATED - one slot's fifteen totals into the flat array. Regenerate,
 // never hand-edit.
 stashPair(int slot, float v1, float v2, float v3, float v4,
      float v5, float v6, float v7, float v8, float v9, float v10,
-     float v11, float v12, float v13, float v14, float v15, float v16,
-     float v17, float v18, float v19, float v20) =>
+     float v11, float v12, float v13, float v14, float v15) =>
     b = slot * SWEEP_N
     array.set(packAll, b + 0, v1)
     array.set(packAll, b + 1, v2)
@@ -2331,20 +2466,15 @@ stashPair(int slot, float v1, float v2, float v3, float v4,
     array.set(packAll, b + 12, v13)
     array.set(packAll, b + 13, v14)
     array.set(packAll, b + 14, v15)
-    array.set(packAll, b + 15, v16)
-    array.set(packAll, b + 16, v17)
-    array.set(packAll, b + 17, v18)
-    array.set(packAll, b + 18, v19)
-    array.set(packAll, b + 19, v20)
 
-// One pair, all twenty lengths. 'on' is the slot's tick box and 'raw' its
+// One pair, all fifteen lengths. 'on' is the slot's tick box and 'raw' its
 // symbol: both have to hold, because an unticked or blank slot was pointed at
 // the chart's own symbol and its answer is about a pair nobody asked for.
 //
 // na is tested through the first value alone: ignore_invalid_symbol makes the
-// whole tuple na at once, so one test settles all twenty.
+// whole tuple na at once, so one test settles all fifteen.
 //
-// GENERATED no longer - the twenty values arrive through packAll, so the
+// GENERATED no longer - the fifteen values arrive through packAll, so the
 // signature is three arguments and the body is a loop. accum keeps every
 // counter it touches in an array rather than in a `var`, which is what makes
 // a loop legal here where the machines themselves needed separate call sites.
@@ -2384,36 +2514,34 @@ rvMkt(float v)   => int((int(v) - int(v) % 100000000) / 100000000) % 10
 rvSide(float v)  => int((int(v) - int(v) % 1000000000) / 1000000000) % 10
 rvStamp(float v) => int((int(v) - int(v) % 10000000000) / 10000000000)
 
-// WHICH OF THE TWENTY, and the one function this whole redesign is built on.
+// WHICH OF THE FIFTEEN, and the one function this whole redesign is built on.
 //
 // The traded length is not an input any more, so nothing about it is known
 // until the ranking has been computed - which cannot happen until every pair
-// has answered, which is long after the call sites are fixed. So all twenty
-// answer, and exactly one of the twenty values is chosen HERE, on this side of
+// has answered, which is long after the call sites are fixed. So all fifteen
+// answer, and exactly one of the fifteen values is chosen HERE, on this side of
 // request.security, by an index that is an ordinary series int.
 //
 // A ternary chain rather than an array: an array would have to be built from
-// twenty pushes per pair per bar, and this is called on every confirmed bar.
+// fifteen pushes per pair per bar, and this is called on every confirmed bar.
 // Pine evaluates every branch of a ternary, which costs nothing when every
 // branch is a bare name.
 //
-// na for an index outside 0..19 - which is what "no pick yet" looks like, and
+// na for an index outside 0..14 - which is what "no pick yet" looks like, and
 // every caller already tests the value for na.
 pickN(int k, float a1, float a2, float a3, float a4, float a5,
      float a6, float a7, float a8, float a9, float a10,
-     float a11, float a12, float a13, float a14, float a15,
-     float a16, float a17, float a18, float a19, float a20) =>
+     float a11, float a12, float a13, float a14, float a15) =>
     k == 0 ? a1 : k == 1 ? a2 : k == 2 ? a3 : k == 3 ? a4 : k == 4 ? a5 :
      k == 5 ? a6 : k == 6 ? a7 : k == 7 ? a8 : k == 8 ? a9 : k == 9 ? a10 :
      k == 10 ? a11 : k == 11 ? a12 : k == 12 ? a13 : k == 13 ? a14 : k == 14 ? a15 :
-     k == 15 ? a16 : k == 16 ? a17 : k == 17 ? a18 : k == 18 ? a19 : k == 19 ? a20 :
      float(na)
 
 // ---------------------------------------------------------------------------
 // The rotation state - which length is being traded, and when that changes
 // ---------------------------------------------------------------------------
 // THE ONE THING THIS FILE DECIDES BY ITSELF. activeIdx is a slot of the swept
-// range, not a length: 0 is sweepFrom, 19 is sweepFrom + 19·Step. -1 means
+// range, not a length: 0 is sweepFrom, 14 is sweepFrom + 14·Step. -1 means
 // nothing is being traded, which is the honest state until some length has
 // closed enough windows for the ranking to trust it.
 //
@@ -2459,10 +2587,11 @@ var int activeSwitches = 0
 // ignores, which is every close the trading window let through.
 var int winsSinceRot = 0
 
-// Per-slot baselines for the two monotonic counters of the TRADED length, and
-// the reason they are per slot rather than one aggregate sum: the deep-window
-// test needs a pair's closures and its entries to be the same pair's. Summed
-// first, two pairs closing on one bar would look like one expensive window.
+// Per-slot baselines for the trading machine's counters of the TRADED length
+// - their low digits, exactly as they cross the wire - and the reason they
+// are per slot rather than one aggregate sum: the deep-window test needs a
+// pair's closures and its entries to be the same pair's. Summed first, two
+// pairs closing on one bar would look like one expensive window.
 //
 // -1 means "no baseline" - a slot that is unticked, blank, unresolved or
 // overflowed, and every slot for one bar after the traded length changes,
@@ -2474,8 +2603,8 @@ var int winsSinceRot = 0
 // names of its own (the T2 machine), and a global array shadowed by a local
 // inside the most-edited function in the file is a trap set for later rather
 // than a name saved now.
-var int[] baseCls = array.new_int(25, -1)
-var int[] baseEnt = array.new_int(25, -1)
+var int[] baseCls = array.new_int(21, -1)
+var int[] baseEnt = array.new_int(21, -1)
 
 // This bar's one event, in an array because a Pine function cannot assign to a
 // global: set when some pair closed a window costing more than rotDeepAt
@@ -2497,8 +2626,14 @@ var int jrnDayAt = -1
 // THE DAY CLOSES - every window the day closed, and not a summary of them
 // ---------------------------------------------------------------------------
 // One entry per closed window, in the order they closed, and since 2026-08-16
-// the only record of the day this file keeps.
+// the only record of the day this file keeps. Since the same day it records
+// the TRADING machine's closes - the same closes mar1Scanner.pine's log
+// holds - and not the all-hours statistics': see rotWatch.
 //
+//   clsSt    when the series STARTED - the opening minute of the candle its
+//            first entry was placed on, 0 when the pair sent no stamp
+//   clsDp    when the window CROSSED the round threshold - the minute of the
+//            entry that made a recompute due, 0 when it never crossed
 //   clsAt    the bar time the close was DETECTED on this chart
 //   clsWho   the pair
 //   clsEnt   what it cost in entries
@@ -2514,20 +2649,21 @@ var int jrnDayAt = -1
 // to open on, and the calendar day in UTC+1 is used instead.
 //
 // WHAT A RECORD CANNOT SHOW, and it is a property of the wire rather than of
-// this code: only CLOSED windows are visible. The entries counter inside a
-// pair's packed totals moves ONLY when a window closes, so a pair sitting on
-// three entries right now is in no record until it closes. Nothing else
-// crosses request.security, so there is no version of this that sees open
-// windows.
+// this code: only CLOSED windows are visible. The trading machine's entries
+// counter moves ONLY when a window closes, so a pair sitting on three
+// entries right now is in no record until it closes. Nothing else crosses
+// request.security, so there is no version of this that sees open windows.
 //
 // FIVE HUNDRED, and it is a memory cap rather than a display one: the drawing
 // pages through whatever is here. Past it the OLDEST record falls off and the
 // title says how many - a table frozen at the morning is worse than one that
 // says it lost the morning.
-// A day that closes five hundred windows on a twenty-five pair watchlist is not
+// A day that closes five hundred windows on a twenty-one pair watchlist is not
 // a day this file was built for, so the cap is a backstop and not a setting.
 CLS_MAX = 500
 var int[]    clsAt  = array.new_int(0)
+var int[]    clsSt  = array.new_int(0)
+var int[]    clsDp  = array.new_int(0)
 var string[] clsWho = array.new_string(0)
 var int[]    clsEnt = array.new_int(0)
 var int[]    clsCnt = array.new_int(0)
@@ -2541,6 +2677,8 @@ var int[]    clsLen = array.new_int(0)
 var int[] clsMeta = array.new_int(1, 0)
 
 clearCloses() =>
+    array.clear(clsSt)
+    array.clear(clsDp)
     array.clear(clsAt)
     array.clear(clsWho)
     array.clear(clsEnt)
@@ -2548,14 +2686,18 @@ clearCloses() =>
     array.clear(clsLen)
     array.set(clsMeta, 0, 0)
 
-pushClose(int at, string who, int ent, int cnt, int len) =>
+pushClose(int st, int dp, int at, string who, int ent, int cnt, int len) =>
     if array.size(clsAt) >= CLS_MAX
+        array.shift(clsSt)
+        array.shift(clsDp)
         array.shift(clsAt)
         array.shift(clsWho)
         array.shift(clsEnt)
         array.shift(clsCnt)
         array.shift(clsLen)
         array.set(clsMeta, 0, array.get(clsMeta, 0) + 1)
+    array.push(clsSt,  st)
+    array.push(clsDp,  dp)
     array.push(clsAt,  at)
     array.push(clsWho, who)
     array.push(clsEnt, ent)
@@ -2572,15 +2714,24 @@ pushClose(int at, string who, int ent, int cnt, int len) =>
 //   rotWinCls      how many windows that one record covers - 1 almost always,
 //                  2 or more only when the chart had no bar of its own for
 //                  each of the pair's and two closes arrived together
+//   rotWinStart    when the series STARTED - the opening time of the candle
+//                  its first entry was placed on, 0 when the pair sent no
+//                  stamp. On a two-in-one-bar record it is the LAST of the
+//                  two windows, which is the same tolerance the cost carries
+//   rotWinDeep     when the window CROSSED the round threshold - the time of
+//                  the entry after which a recompute was owed, 0 on every
+//                  window that stayed inside the band
 //   rotTally       0 armed, 1 held, 2 running, 3 excluded (na or -1 overflow)
 //
-// rotWinEnts and rotWinCls are the DAY CLOSES table's, and they are pushed in
-// lockstep with the names: three arrays read by index, so a record can never
-// name one pair and carry another one's cost.
+// rotWinEnts, rotWinCls, rotWinStart and rotWinDeep are the DAY CLOSES
+// table's, and they are pushed in lockstep with the names: five arrays read
+// by index, so a record can never name one pair and carry another one's cost.
 var string[] rotArmedNames = array.new_string(0)
 var string[] rotWinNames   = array.new_string(0)
 var int[]    rotWinEnts    = array.new_int(0)
 var int[]    rotWinCls     = array.new_int(0)
+var int[]    rotWinStart   = array.new_int(0)
+var int[]    rotWinDeep    = array.new_int(0)
 var int[]    rotTally      = array.new_int(4, 0)
 
 // The PAIRS table's raw material, one entry per pair that is not idle, in slot
@@ -2647,56 +2798,103 @@ dayOpens  = tradeHoursOn ? (tradeNow and not tradeNow[1]) : chartDay != nz(chart
 pickDay   = math.floor((jrnDayPick + 3600000) / 86400000)
 jrnDayNow = not jrnDayOn or chartDay == pickDay
 
-// One slot's TOTALS value for the traded length, read on every confirmed bar:
-// it counts this bar's wins, flags a deep one, names the pairs that closed,
-// and leaves the baseline ready for the next bar.
+// One three-digit group of the trading machine's counter float: entries mod
+// 100 over closes mod 10, the inverse of t2v at the tail of sweepOne. Same
+// integer discipline as the unp* family - int() first, subtract the modulo
+// before dividing - so every step is exact by construction.
+t2At(float hv, int g) =>
+    iv = int(hv)
+    d  = g == 0 ? 1 : g == 1 ? 1000 : g == 2 ? 1000000 : g == 3 ? 1000000000 : 1000000000000
+    int((iv - iv % d) / d) % 1000
+
+// One slot's TRADING-MACHINE counters for the traded length, read on every
+// confirmed bar: it counts this bar's wins, flags a deep one, names the pairs
+// that closed, and leaves the baseline ready for the next bar.
+//
+// SINCE 2026-08-16 THIS READS THE SECOND MACHINE, not the all-hours totals
+// (user decision: the day-closes record, the LAST WIN line, the alert and the
+// round itself follow the machine being TRADED - the same machine the PAIRS
+// table and mar1Scanner.pine's log describe. The RANKING alone stays
+// all-hours - and since 2026-08-16 the two grids sit one step apart, the
+// sweeper reading 16..44 to this file's 15..43, so the sweeper's first
+// place can differ). The three floats per family are the
+// pair's fifteen lengths at three digits each - see t2v in the tail - and the
+// traded length's group is picked in here rather than at the call site.
 //
 // The win trigger is the closures counter's delta and not a pulse, for the
-// reason written at the tail. The entries delta is what that window cost -
-// totEntries only ever moves on a close, by exactly the closed window's entry
-// count.
+// reason written at the tail. The counters arrive MODULAR - only their low
+// digits cross the wire - so a delta is read modulo its field width: a
+// repeated value on a chart bar the pair had no bar for still reads zero, and
+// a baseline of -1 still means "count nothing on this bar". No tradeNow gate
+// any more: this machine finds no signals outside the trading window BY
+// CONSTRUCTION, so every movement of its counters is a trading close, and
+// gating detection by the chart's clock would only drop a close that landed a
+// bar past the boundary.
 //
 // TWO WINS ON ONE BAR are possible when the chart has no bar of its own for
-// each of the pair's, and then the two costs arrive added together. The test
-// is therefore written as a SUFFICIENT condition rather than an exact one:
-// with dC closures sharing dE entries, no single window can have cost more
-// than dE - (dC - 1), so when even that lower bound clears the threshold at
-// least one window really did. It under-reports in that rare corner and never
-// over-reports, which is the right way round for a trigger that ends a round.
-rotWatch(int slot, bool on, string raw, float v) =>
-    if on and raw != '' and not na(v) and v >= 0
-        c = unpC(v)
-        e = unpE(v)
-        p = array.get(baseCls, slot)
-        // OUTSIDE THE TRADING WINDOW A CLOSE IS NOT AN EVENT. The machines run
-        // around the clock, so a series really did close at three in the
-        // morning - but nobody was in it, and a round that turned on it would
-        // recompute the traded length off a win that was never traded.
-        //
-        // It is DROPPED rather than deferred, and the baselines below are
-        // updated either way, so the same close cannot be counted again at
-        // opening. What that costs is bounded and small: the round ends on a
-        // DEEP window, and a deep window that closed overnight simply does not
-        // move the traded length. The next one inside the window does.
-        if p >= 0 and c > p and tradeNow
-            dC = c - p
-            dE = e - array.get(baseEnt, slot)
-            // Every close is reported - the LAST WIN line, the alert and the
-            // wins-since counter read the watchlist, not the round.
-            //
-            // The cost and the count ride along for the DAY CLOSES table. dE
-            // is what this pair spent on everything that closed here, so on the
-            // rare two-in-one-bar record it is the pair of windows together -
-            // which is why the count is carried beside it rather than left to
-            // be guessed from a number that would read as one very deep window.
-            array.push(rotWinNames, shortName(raw))
-            array.push(rotWinEnts, dE)
-            array.push(rotWinCls, dC)
-            // THE ONE BOUNDARY, and no membership test in front of it: the set
-            // a round used to be built on is gone, so any watched pair can end
-            // one.
-            if dE - (dC - 1) > rotDeepAt
-                array.set(rotEvt, 0, 1)
+// each of the pair's, and then the two costs arrive added together. The round
+// test is therefore written as a SUFFICIENT condition rather than an exact
+// one: with dC closures sharing dE entries, no single window can have cost
+// more than dE - (dC - 1), so when even that lower bound clears the threshold
+// at least one window really did. It under-reports in that rare corner and
+// never over-reports, which is the right way round for a trigger that ends a
+// round.
+rotWatch(int slot, bool on, string raw, float ha, float hb, float hc,
+     float ga, float gb, float gc, float fa, float fb, float fc) =>
+    k  = activeIdx
+    hv = k < 0 ? float(na) : k < 5 ? ha : k < 10 ? hb : hc
+    gv = k < 0 ? float(na) : k < 5 ? ga : k < 10 ? gb : gc
+    fv = k < 0 ? float(na) : k < 5 ? fa : k < 10 ? fb : fc
+    if on and raw != '' and not na(hv) and hv >= 0
+        t = t2At(hv, k % 5)
+        c = t % 10
+        e = int((t - t % 10) / 10)
+        a  = na(gv) or gv < 0 ? 0 : t2At(gv, k % 5)
+        b  = na(fv) or fv < 0 ? 0 : t2At(fv, k % 5)
+        pc = array.get(baseCls, slot)
+        pe = array.get(baseEnt, slot)
+        if pc >= 0
+            dC = (c - pc + 10) % 10
+            dE = (e - pe + 100) % 100
+            if dC > 0
+                // Every close is reported - the LAST WIN line, the alert and
+                // the wins-since counter read the watchlist, not the round.
+                //
+                // The cost and the count ride along for the DAY CLOSES
+                // table. dE is what this pair spent on everything that closed
+                // here, so on the rare two-in-one-bar record it is the pair
+                // of windows together - which is why the count is carried
+                // beside it rather than left to be guessed from a number that
+                // would read as one very deep window.
+                array.push(rotWinNames, shortName(raw))
+                array.push(rotWinEnts, dE)
+                array.push(rotWinCls, dC)
+                // WHEN THE SERIES STARTED, rebuilt from the age that rode
+                // over with it: the pair measured it from the bar its window
+                // opened on to the bar it closed on, and this bar is that
+                // close. So the chart's own bar OPENING time, minus those
+                // minutes, is the opening minute of the candle the first
+                // entry was placed on - which is what an entry time means.
+                //
+                // Not time_close, which the Time column uses: that column
+                // prints when a candle SETTLED and this one prints when a
+                // candle was ENTERED, and those are the two ends of the same
+                // trade. 0 stays 0 - no stamp, and the table prints a dash.
+                //
+                // The usual tolerance applies, the one 'Open since' already
+                // carries: a minute or two out when the pair's last bar is
+                // older than the chart's.
+                array.push(rotWinStart, a > 0 ? time - (a - 1) * 60000 : 0)
+                // AND WHEN IT CROSSED THE ROUND THRESHOLD - the same
+                // arithmetic on the same kind of stamp. 0 on every window
+                // that stayed inside the band, which is most of them, and
+                // the presence of this one is exactly what makes a record a
+                // round boundary.
+                array.push(rotWinDeep, b > 0 ? time - (b - 1) * 60000 : 0)
+                // THE ONE BOUNDARY, and no membership test in front of it:
+                // any watched pair can end a round.
+                if dE - (dC - 1) > rotDeepAt
+                    array.set(rotEvt, 0, 1)
         array.set(baseCls, slot, c)
         array.set(baseEnt, slot, e)
     else
@@ -2781,9 +2979,9 @@ rotOne(bool on, string raw, int slot, float v) =>
 // unchanged and their reasoning is where it always was - at sortKey, at
 // redHi, and at the 'Rank and sort by' input.
 //
-// WHAT IT COSTS, because it is no longer a once-per-chart luxury: twenty-five
-// pairs by twenty lengths of unpacking, two passes over twenty lengths, and a
-// sort of twenty. It runs on a round boundary - a few hundred times over a
+// WHAT IT COSTS, because it is no longer a once-per-chart luxury: twenty-one
+// pairs by fifteen lengths of unpacking, two passes over fifteen lengths, and a
+// sort of fifteen. It runs on a round boundary - a few hundred times over a
 // long history, against the twenty thousand bars the machines themselves are
 // walked over - and once more per redraw bar. That is small beside the
 // machines, and it is the only new arithmetic the rotation added.
@@ -2808,7 +3006,7 @@ computeRanking() =>
     array.set(tally, 0, 0)
     array.set(tally, 1, 0)
 
-    // GENERATED - twenty-five addPair calls, each naming a slot of packAll.
+    // GENERATED - twenty-one addPair calls, each naming a slot of packAll.
     addPair(use01, sym01, 0)
     addPair(use02, sym02, 1)
     addPair(use03, sym03, 2)
@@ -2830,10 +3028,6 @@ computeRanking() =>
     addPair(use19, sym19, 18)
     addPair(use20, sym20, 19)
     addPair(use21, sym21, 20)
-    addPair(use22, sym22, 21)
-    addPair(use23, sym23, 22)
-    addPair(use24, sym24, 23)
-    addPair(use25, sym25, 24)
 
     float bestKey    = na
     float best2Key   = na
@@ -3006,7 +3200,7 @@ if na(firstBarTime)
 // EIGHTY rows, and the arithmetic behind the number: rowsPerBlock reaches 40,
 // the ROTATION row sits at rowsPerBlock + 4, the worst-window line one under
 // it, the pairs header one under that, and the pairs table is now as tall as
-// the watchlist has non-idle pairs - twenty-five at the very most, where it
+// the watchlist has non-idle pairs - twenty-one at the very most, where it
 // used to be a fixed five. 40 + 7 + 26 is 73 for the LAST WIN line, and eighty
 // leaves the margin. It was sixty while the block was five rows tall; the
 // clear below moves with it.
@@ -3021,7 +3215,7 @@ if na(firstBarTime)
 var table swTable = table.new(posFor, MAX_BLOCKS * 11 - 1, 80, border_width = 1)
 
 // THE DAY CLOSES table, and its second position on the chart. Four blocks of
-// five columns with a blank between them - 4 x 6 - 1 is 23 - and forty-seven
+// six columns with a blank between them - 4 x 7 - 1 is 27 - and forty-seven
 // rows, which is the largest 'Closes per block' plus the title and the column
 // headers. The declared size has to exceed every index ever written, or a
 // write is an out-of-bounds error that kills the script rather than a cell
@@ -3033,7 +3227,7 @@ clsPosFor = clsPos == 'Bottom left' ? position.bottom_left :
      clsPos == 'Top center' ? position.top_center :
      position.top_left
 
-var table clsTable = table.new(clsPosFor, CLS_BLOCKS * 6 - 1, 47, border_width = 1)
+var table clsTable = table.new(clsPosFor, CLS_BLOCKS * 7 - 1, 47, border_width = 1)
 
 // The ladder's colours, the other half of ladderStep - copied from
 // mar1Scanner.pine for the same reason the two step functions were: the PAIRS
@@ -3071,7 +3265,7 @@ stepText(int step) =>
 // line that must write a GLOBAL, the LAST WIN line with its lastWinTxt,
 // stays in the redraw block: Pine forbids a function assigning a global.
 
-// The full ranking - sweep header, column headers, the twenty rows, the
+// The full ranking - sweep header, column headers, the fifteen rows, the
 // footer and the verdict line. Layout, break-even, the middle pair and the
 // pick index are derived here from the arguments and the inputs.
 drawRanking(int[] rank, int scanned, int unresolved, int trusted, int overflowed, int redFree, float span,
@@ -3102,8 +3296,8 @@ drawRanking(int[] rank, int scanned, int unresolved, int trusted, int overflowed
     // worse", which is a fact about the ranking; nearest-to-the-mean would be a
     // fact about the key's distribution and would be free to land anywhere.
     //
-    // An EVEN count has a genuine middle pair - at twenty rows it is positions 9
-    // and 20, which straddle the midpoint. An ODD count has a single median row,
+    // An EVEN count has a genuine middle pair - at ten qualifying rows it is
+    // positions 4 and 5, which straddle the midpoint. An ODD count has a single median row,
     // and the second mark then goes to the row directly after it: two marks were
     // asked for, and there is no symmetric second on an odd list.
     //
@@ -3468,24 +3662,51 @@ drawCloses() =>
     upto   = int(math.min(n, from + cap)) - 1
     shown  = upto - from + 1
     blocks = int(math.min(math.max(int((shown + per - 1) / per), 1), CLS_BLOCKS))
-    hdrSpan = blocks * 6 - 2
+    hdrSpan = blocks * 7 - 2
     dropped = array.get(clsMeta, 0)
     past    = clsPage > pages
 
+    // THREE LINES, NOT ONE (user request, 2026-08-16 - two the same day, then
+    // three), and for the reason the ROTATION row was broken up: this cell is
+    // merged across every column of the table, so its longest LINE is a FLOOR
+    // under the whole width. One line of a hundred and forty characters
+    // stretched the blocks to fit it and the slack landed on the last one,
+    // whose own columns need almost nothing.
+    //
+    // THREE rather than two because of the ONE-BLOCK day. A block of this
+    // table is about forty characters wide, so on a quiet day - one block, or
+    // two - a seventy-character line is still stretching it, and only the
+    // busy day where four blocks stand side by side was actually fixed. Three
+    // lines put the longest at about fifty, which is as near the block's own
+    // width as this much text gets without reading as a paragraph.
+    //
+    // The split is by kind: what day it is on top, what the day did in the
+    // middle, where the table is standing in it underneath.
+    //
+    // AND THE PAGE NOTE IS NO LONGER A SHOUT. It read 'PAGE 3 IS PAST THE END'
+    // in amber, which is a true sentence about a setting the file itself
+    // ships with - at twelve per block a page holds forty-eight closes, so the
+    // default page 3 exists only on a day that closed ninety-seven of them.
+    // A permanent alarm about a default is an alarm nobody reads, so it is now
+    // a quiet '(asked 3)' beside the page count, and the amber is kept for the
+    // two things that are genuinely wrong: records dropped off the front, and
+    // a chosen day with nothing in it.
+    pgTxt = pages > 1 or past ?
+         ' · page ' + str.tostring(pg) + ' of ' + str.tostring(pages) +
+         (past ? ' (asked ' + str.tostring(clsPage) + ')' : '') : ''
     ttl = ' DAY CLOSES' +
          (jrnDayOn ? ' · ' + str.format_time(jrnDayPick, 'yyyy-MM-dd', 'UTC+1') :
           jrnDayAt > 0 ? ' · from ' + str.format_time(jrnDayAt, 'MM-dd HH:mm', 'UTC+1') : '') +
          (n == 0 ? (jrnDayOn ? ' · NOTHING RECORDED - outside the loaded history? ' : ' · nothing has closed yet ') :
-          ' · ' + str.tostring(totWin) + ' closes · ' + str.tostring(totEnt) + ' entries · avg ' +
+          '\n ' + str.tostring(totWin) + ' closes · ' + str.tostring(totEnt) + ' entries · avg ' +
           str.tostring(1.0 * totEnt / totWin, '#.00') +
-          ' · deepest ' + str.tostring(deep) +
-          ' · ' + str.tostring(fired) + ' ended a round' +
+          ' · deepest ' + str.tostring(deep) + ' ' +
+          '\n ' + str.tostring(fired) + ' ended a round' +
           ' · showing ' + str.tostring(from + 1) + '-' + str.tostring(upto + 1) + ' of ' + str.tostring(n) +
-          (pages > 1 ? ' · page ' + str.tostring(pg) + ' of ' + str.tostring(pages) : '') +
-          (past ? ' · PAGE ' + str.tostring(clsPage) + ' IS PAST THE END' : '') +
+          pgTxt +
           (dropped > 0 ? ' · ' + str.tostring(dropped) + ' OLDEST DROPPED' : '') + ' ')
     table.cell(clsTable, 0, 0, ttl, bgcolor = C_FOOT,
-         text_color = past or dropped > 0 or n == 0 ? #FFC163 : C_TXT, text_size = txtSize)
+         text_color = dropped > 0 or n == 0 ? #FFC163 : C_TXT, text_size = txtSize)
     for kT = 1 to hdrSpan
         table.cell(clsTable, kT, 0, '', bgcolor = C_FOOT, text_size = txtSize)
     table.merge_cells(clsTable, 0, 0, hdrSpan, 0)
@@ -3498,31 +3719,36 @@ drawCloses() =>
         table.merge_cells(clsTable, 0, 2, hdrSpan, 2)
     else
         for b = 0 to blocks - 1
-            h = b * 6
-            table.cell(clsTable, h + 0, 1, ' Time ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-                 tooltip = 'When the close was DETECTED on this chart, UTC+1. On a pair bar the chart has no bar of its own for, that is one bar later than the pair\'s own close.')
-            table.cell(clsTable, h + 1, 1, ' Pair ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
-            table.cell(clsTable, h + 2, 1, ' Ent ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+            h = b * 7
+            // FIRST in the row (user request, 2026-08-16), so a record reads
+            // left to right as start -> end. It is the opening minute of the
+            // candle the series' FIRST entry was placed on - the other end of
+            // the trade the Time column closes.
+            table.cell(clsTable, h + 0, 1, ' Start ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+                 tooltip = 'When the series STARTED: the opening minute of the candle its first entry was placed on, UTC+1 - the same reading the scanner\'s Open since column gives a window that is still open. The Time column beside it is the other end, the closing minute of the winning candle.\n\nA dash means the pair sent no stamp: a window older than 16.6 hours, which is past what the wire carries, or a close with no window behind it at all. On the rare record where two windows closed on one chart bar it is the start of the LATER one.')
+            table.cell(clsTable, h + 1, 1, ' Time ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+                 tooltip = 'Closing time of the candle the close was detected on, UTC+1 - the same minute the scanner\'s Closed column prints. On a pair bar the chart has no bar of its own for, it is a bar later than the pair\'s own close.')
+            table.cell(clsTable, h + 2, 1, ' Pair ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize)
+            table.cell(clsTable, h + 3, 1, ' Ent ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
                  tooltip = 'What the window cost in entries. (2w) marks the rare record where two windows of one pair closed on the same chart bar - the number is then what the two cost together, because that is how it crosses request.security.')
-            table.cell(clsTable, h + 3, 1, ' MA ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+            table.cell(clsTable, h + 4, 1, ' MA ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
                  tooltip = 'The length this window closed on. An arrow means it differs from the record above - that is where the rotation actually moved.')
-            // THE NARROWEST COLUMN IN THE FILE, and both the header and the
-            // cells below it are written without their usual padding spaces
-            // for that one reason (user request, 2026-08-16). Every other cell
-            // in this project is ' text ' so the columns do not touch; this one
-            // holds a single glyph and a three-letter word, and a space each
-            // side of them is a third of the column.
-            //
-            // Three characters and not one: 'End' is the shortest honest
-            // heading, and an empty one would leave the ► standing under
-            // nothing.
-            table.cell(clsTable, h + 4, 1, 'End', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-                 tooltip = '► marks a window that cost more than ' + str.tostring(rotDeepAt) + ' entries, which is the one event that ends a round and re-reads the ranking. Every other close is counted and reported and moves nothing.')
+            // IT WAS 'End' AND A BARE ► until 2026-08-16, unpadded because a
+            // single glyph in a padded cell is mostly padding. The glyph said
+            // WHICH record ended the round and left the WHEN to be read off
+            // the Time column beside it - which was the same minute, since
+            // detection and close are one bar. The user asked for the hour of
+            // the critical event itself, and that is a different minute: the
+            // entry that pushed the window past the threshold, taken while
+            // the window was still open. It now prints that, and a non-empty
+            // cell is the marker the ► used to be.
+            table.cell(clsTable, h + 5, 1, ' Recalc ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
+                 tooltip = 'When this window went PAST ' + str.tostring(rotDeepAt) + ' entries - the minute the entry after which a recompute was owed was taken, UTC+1. That is the critical event the rotation fires on, and it happens while the window is still open: the ranking is only re-read later, on the close, because the cost of a window is not known until it pays.\n\nBlank on every window that stayed inside the band, so a filled cell is exactly a round boundary. A dash means the window crossed but the pair sent no stamp.')
 
         for i = from to upto
             j     = i - from
             blk   = int(j / per)
-            c     = blk * 6
+            c     = blk * 7
             r     = j - blk * per + 2
             e     = array.get(clsEnt, i)
             cnt   = array.get(clsCnt, i)
@@ -3530,20 +3756,31 @@ drawCloses() =>
             lenI  = array.get(clsLen, i)
             moved = i > 0 and lenI != array.get(clsLen, i - 1)
             hot   = one > rotDeepAt
+            stI   = array.get(clsSt, i)
+            dpI   = array.get(clsDp, i)
             // Striped on the ROW rather than on the record index, so the
             // stripes of two blocks standing side by side line up whatever
             // the block height is.
             bg = r % 2 == 0 ? C_ROW_A : C_ROW_B
-            table.cell(clsTable, c + 0, r, ' ' + str.format_time(array.get(clsAt, i), 'HH:mm', 'UTC+1') + ' ',
+            // Dimmer than the close beside it, and deliberately: the close is
+            // what the record is OF, the start is context for it.
+            table.cell(clsTable, c + 0, r, stI > 0 ? ' ' + str.format_time(stI, 'HH:mm', 'UTC+1') + ' ' : ' - ',
+                 bgcolor = bg, text_color = C_TXT_NO, text_size = txtSize)
+            table.cell(clsTable, c + 1, r, ' ' + str.format_time(array.get(clsAt, i), 'HH:mm', 'UTC+1') + ' ',
                  bgcolor = bg, text_color = C_TXT, text_size = txtSize)
-            table.cell(clsTable, c + 1, r, ' ' + array.get(clsWho, i) + ' ',
+            table.cell(clsTable, c + 2, r, ' ' + array.get(clsWho, i) + ' ',
                  bgcolor = bg, text_color = C_TXT, text_size = txtSize)
-            table.cell(clsTable, c + 2, r, ' ' + str.tostring(e) + (cnt > 1 ? ' (' + str.tostring(cnt) + 'w)' : '') + ' ',
+            table.cell(clsTable, c + 3, r, ' ' + str.tostring(e) + (cnt > 1 ? ' (' + str.tostring(cnt) + 'w)' : '') + ' ',
                  bgcolor = bg, text_color = hot ? #FFC163 : #6EF0A5, text_size = txtSize)
-            table.cell(clsTable, c + 3, r, (moved ? ' -> ' : ' ') + str.tostring(lenI) + ' ',
+            table.cell(clsTable, c + 4, r, (moved ? ' -> ' : ' ') + str.tostring(lenI) + ' ',
                  bgcolor = bg, text_color = moved ? #FFC163 : C_TXT_NO, text_size = txtSize)
-            // Unpadded, like its header - see the note there.
-            table.cell(clsTable, c + 4, r, hot ? '►' : '',
+            // Filled only on a window that crossed the threshold, which is
+            // what makes the column its own marker. 'hot' and the stamp agree
+            // on the ordinary record - both are "cost more than rotDeepAt" -
+            // and can disagree only on the rare two-in-one-bar one, where the
+            // cost is a lower bound and the stamp belongs to the later window.
+            // The dash names that case rather than hiding it.
+            table.cell(clsTable, c + 5, r, dpI > 0 ? ' ' + str.format_time(dpI, 'HH:mm', 'UTC+1') + ' ' : hot ? ' - ' : '',
                  bgcolor = bg, text_color = #FFC163, text_size = txtSize)
 
 // The cockpit's traded row - the one length kept on screen when the ranking
@@ -3765,7 +4002,7 @@ drawCockpit(int trusted, int nextLen) =>
     //
     // Every pair that is not idle is on it - pre-armed, armed, held, running -
     // and idle ones are left off, which is the scanner with 'Show idle pairs'
-    // unticked. Twenty-five rows at the very most, so nothing is ever
+    // unticked. Twenty-one rows at the very most, so nothing is ever
     // truncated and there is no "showing 10 of 17" to read past.
     //
     // WHERE IT DIFFERS FROM THE SCANNER, all of it stated rather than
@@ -3900,8 +4137,8 @@ drawCockpit(int trusted, int nextLen) =>
 // WHEN THE TABLE IS REBUILT - once per closed bar, not once per tick
 // ---------------------------------------------------------------------------
 // This was `barstate.islast`, which is true on EVERY realtime tick of the last
-// bar, so everything below - clearing eight aggregate arrays, twenty-five
-// addPair calls of forty accum each, two passes over the lengths, a sort, a
+// bar, so everything below - clearing eight aggregate arrays, twenty-one
+// addPair calls of twenty accum each, two passes over the lengths, a sort, a
 // table clear and some four hundred cell writes - ran several times a second.
 //
 // And produced the identical table every time. Every counter sweepOne keeps
@@ -3932,33 +4169,29 @@ redrawNow = barstate.islastconfirmedhistory or (barstate.islast and barstate.isc
 // rotation block below is guarded the same way, and both redraw states -
 // islastconfirmedhistory, and islast with isconfirmed - are confirmed bars.
 //
-// GENERATED - twenty-five stashPair calls. Regenerate, never hand-edit.
+// GENERATED - twenty-one stashPair calls. Regenerate, never hand-edit.
 if barstate.isconfirmed
-    stashPair(0, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20)
-    stashPair(1, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20)
-    stashPair(2, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20)
-    stashPair(3, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20)
-    stashPair(4, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20)
-    stashPair(5, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20)
-    stashPair(6, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20)
-    stashPair(7, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20)
-    stashPair(8, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20)
-    stashPair(9, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20)
-    stashPair(10, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20)
-    stashPair(11, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20)
-    stashPair(12, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20)
-    stashPair(13, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20)
-    stashPair(14, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20)
-    stashPair(15, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20)
-    stashPair(16, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20)
-    stashPair(17, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20)
-    stashPair(18, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20)
-    stashPair(19, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20)
-    stashPair(20, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20)
-    stashPair(21, v22_1, v22_2, v22_3, v22_4, v22_5, v22_6, v22_7, v22_8, v22_9, v22_10, v22_11, v22_12, v22_13, v22_14, v22_15, v22_16, v22_17, v22_18, v22_19, v22_20)
-    stashPair(22, v23_1, v23_2, v23_3, v23_4, v23_5, v23_6, v23_7, v23_8, v23_9, v23_10, v23_11, v23_12, v23_13, v23_14, v23_15, v23_16, v23_17, v23_18, v23_19, v23_20)
-    stashPair(23, v24_1, v24_2, v24_3, v24_4, v24_5, v24_6, v24_7, v24_8, v24_9, v24_10, v24_11, v24_12, v24_13, v24_14, v24_15, v24_16, v24_17, v24_18, v24_19, v24_20)
-    stashPair(24, v25_1, v25_2, v25_3, v25_4, v25_5, v25_6, v25_7, v25_8, v25_9, v25_10, v25_11, v25_12, v25_13, v25_14, v25_15, v25_16, v25_17, v25_18, v25_19, v25_20)
+    stashPair(0, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15)
+    stashPair(1, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15)
+    stashPair(2, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15)
+    stashPair(3, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15)
+    stashPair(4, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15)
+    stashPair(5, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15)
+    stashPair(6, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15)
+    stashPair(7, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15)
+    stashPair(8, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15)
+    stashPair(9, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15)
+    stashPair(10, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15)
+    stashPair(11, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15)
+    stashPair(12, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15)
+    stashPair(13, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15)
+    stashPair(14, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15)
+    stashPair(15, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15)
+    stashPair(16, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15)
+    stashPair(17, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15)
+    stashPair(18, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15)
+    stashPair(19, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15)
+    stashPair(20, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15)
 
 // ---------------------------------------------------------------------------
 // THE ROTATION - the only part of this file that runs on every bar
@@ -3971,9 +4204,9 @@ if barstate.isconfirmed
 // question the ranking table already answers, and not the one this file was
 // rebuilt to ask.
 //
-// What runs per bar is deliberately small: twenty-five pickN calls,
-// twenty-five unpacks of two fields each, and a comparison. The ranking pass
-// itself runs only on a boundary.
+// What runs per bar is deliberately small: twenty-one rotWatch calls, one
+// three-digit unpack each, and a comparison. The ranking pass itself runs
+// only on a boundary.
 //
 // THE COLD START. Before any length has closed 'Ignore lengths with fewer
 // wins than' windows there is no trusted row, so there is no pick, so nothing
@@ -3990,6 +4223,8 @@ if barstate.isconfirmed
     array.clear(rotWinNames)
     array.clear(rotWinEnts)
     array.clear(rotWinCls)
+    array.clear(rotWinStart)
+    array.clear(rotWinDeep)
 
     // THE DAY OPENS. The DAY CLOSES table is a record of ONE trading day, so
     // it starts over here, and jrnDayAt is stamped with the moment it did -
@@ -3999,33 +4234,32 @@ if barstate.isconfirmed
         clearCloses()
         jrnDayAt := time
 
-    // GENERATED - twenty-five rotWatch calls, each picking the traded length's
-    // TOTALS out of that pair's twenty. Regenerate, never hand-edit.
-    rotWatch(0, use01, sym01, pickN(activeIdx, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20))
-    rotWatch(1, use02, sym02, pickN(activeIdx, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20))
-    rotWatch(2, use03, sym03, pickN(activeIdx, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20))
-    rotWatch(3, use04, sym04, pickN(activeIdx, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20))
-    rotWatch(4, use05, sym05, pickN(activeIdx, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20))
-    rotWatch(5, use06, sym06, pickN(activeIdx, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20))
-    rotWatch(6, use07, sym07, pickN(activeIdx, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20))
-    rotWatch(7, use08, sym08, pickN(activeIdx, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20))
-    rotWatch(8, use09, sym09, pickN(activeIdx, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20))
-    rotWatch(9, use10, sym10, pickN(activeIdx, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20))
-    rotWatch(10, use11, sym11, pickN(activeIdx, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20))
-    rotWatch(11, use12, sym12, pickN(activeIdx, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20))
-    rotWatch(12, use13, sym13, pickN(activeIdx, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20))
-    rotWatch(13, use14, sym14, pickN(activeIdx, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20))
-    rotWatch(14, use15, sym15, pickN(activeIdx, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20))
-    rotWatch(15, use16, sym16, pickN(activeIdx, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20))
-    rotWatch(16, use17, sym17, pickN(activeIdx, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20))
-    rotWatch(17, use18, sym18, pickN(activeIdx, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20))
-    rotWatch(18, use19, sym19, pickN(activeIdx, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20))
-    rotWatch(19, use20, sym20, pickN(activeIdx, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20))
-    rotWatch(20, use21, sym21, pickN(activeIdx, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20))
-    rotWatch(21, use22, sym22, pickN(activeIdx, v22_1, v22_2, v22_3, v22_4, v22_5, v22_6, v22_7, v22_8, v22_9, v22_10, v22_11, v22_12, v22_13, v22_14, v22_15, v22_16, v22_17, v22_18, v22_19, v22_20))
-    rotWatch(22, use23, sym23, pickN(activeIdx, v23_1, v23_2, v23_3, v23_4, v23_5, v23_6, v23_7, v23_8, v23_9, v23_10, v23_11, v23_12, v23_13, v23_14, v23_15, v23_16, v23_17, v23_18, v23_19, v23_20))
-    rotWatch(23, use24, sym24, pickN(activeIdx, v24_1, v24_2, v24_3, v24_4, v24_5, v24_6, v24_7, v24_8, v24_9, v24_10, v24_11, v24_12, v24_13, v24_14, v24_15, v24_16, v24_17, v24_18, v24_19, v24_20))
-    rotWatch(24, use25, sym25, pickN(activeIdx, v25_1, v25_2, v25_3, v25_4, v25_5, v25_6, v25_7, v25_8, v25_9, v25_10, v25_11, v25_12, v25_13, v25_14, v25_15, v25_16, v25_17, v25_18, v25_19, v25_20))
+    // GENERATED - twenty-one rotWatch calls, each handing over the pair's
+    // nine packed trading-machine floats - three of closure counters, three of
+    // window ages and three of threshold-crossing ages - the traded length's
+    // three digits of each are picked INSIDE rotWatch. Regenerate, never
+    // hand-edit.
+    rotWatch(0, use01, sym01, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39)
+    rotWatch(1, use02, sym02, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39)
+    rotWatch(2, use03, sym03, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39)
+    rotWatch(3, use04, sym04, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39)
+    rotWatch(4, use05, sym05, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39)
+    rotWatch(5, use06, sym06, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39)
+    rotWatch(6, use07, sym07, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39)
+    rotWatch(7, use08, sym08, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39)
+    rotWatch(8, use09, sym09, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39)
+    rotWatch(9, use10, sym10, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39)
+    rotWatch(10, use11, sym11, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39)
+    rotWatch(11, use12, sym12, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39)
+    rotWatch(12, use13, sym13, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39)
+    rotWatch(13, use14, sym14, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39)
+    rotWatch(14, use15, sym15, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39)
+    rotWatch(15, use16, sym16, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39)
+    rotWatch(16, use17, sym17, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39)
+    rotWatch(17, use18, sym18, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39)
+    rotWatch(18, use19, sym19, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39)
+    rotWatch(19, use20, sym20, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39)
+    rotWatch(20, use21, sym21, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39)
 
     winsSinceRot += array.size(rotWinNames)
     if array.size(rotWinNames) > 0
@@ -4037,9 +4271,14 @@ if barstate.isconfirmed
         // and not the one the rotation moved to a line later - which is what
         // makes the MA column change on the line AFTER the ► rather than on
         // the ► itself.
+        // time_close, not time (user request, 2026-08-16): the scanner's
+        // Closed column prints the winning candle's CLOSING time, and this
+        // stamp has to be the same minute - the bar's opening time read one
+        // minute earlier on every record.
         if jrnDayNow
             for y = 0 to array.size(rotWinNames) - 1
-                pushClose(time, array.get(rotWinNames, y), array.get(rotWinEnts, y),
+                pushClose(array.get(rotWinStart, y), array.get(rotWinDeep, y), time_close,
+                     array.get(rotWinNames, y), array.get(rotWinEnts, y),
                      array.get(rotWinCls, y), activeLen)
 
     // The one boundary condition, set by rotWatch above on any watched pair -
@@ -4065,7 +4304,7 @@ if barstate.isconfirmed
             // traded. Dropped rather than translated: one bar of blindness
             // costs at most one win going uncounted, and carrying a counter
             // across two different machines would invent one.
-            for s = 0 to 24
+            for s = 0 to 20
                 array.set(baseCls, s, -1)
                 array.set(baseEnt, s, -1)
 
@@ -4099,33 +4338,29 @@ if redrawNow
     for k = 0 to 3
         array.set(rotTally, k, 0)
 
-    // GENERATED - twenty-five rotOne calls, each picking the traded length's
-    // LIVE state out of that pair's twenty. Regenerate, never hand-edit.
-    rotOne(use01, sym01, 0, pickN(activeIdx, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39, v01_40))
-    rotOne(use02, sym02, 1, pickN(activeIdx, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39, v02_40))
-    rotOne(use03, sym03, 2, pickN(activeIdx, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39, v03_40))
-    rotOne(use04, sym04, 3, pickN(activeIdx, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39, v04_40))
-    rotOne(use05, sym05, 4, pickN(activeIdx, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39, v05_40))
-    rotOne(use06, sym06, 5, pickN(activeIdx, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39, v06_40))
-    rotOne(use07, sym07, 6, pickN(activeIdx, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39, v07_40))
-    rotOne(use08, sym08, 7, pickN(activeIdx, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39, v08_40))
-    rotOne(use09, sym09, 8, pickN(activeIdx, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39, v09_40))
-    rotOne(use10, sym10, 9, pickN(activeIdx, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39, v10_40))
-    rotOne(use11, sym11, 10, pickN(activeIdx, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39, v11_40))
-    rotOne(use12, sym12, 11, pickN(activeIdx, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39, v12_40))
-    rotOne(use13, sym13, 12, pickN(activeIdx, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39, v13_40))
-    rotOne(use14, sym14, 13, pickN(activeIdx, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39, v14_40))
-    rotOne(use15, sym15, 14, pickN(activeIdx, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39, v15_40))
-    rotOne(use16, sym16, 15, pickN(activeIdx, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39, v16_40))
-    rotOne(use17, sym17, 16, pickN(activeIdx, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39, v17_40))
-    rotOne(use18, sym18, 17, pickN(activeIdx, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39, v18_40))
-    rotOne(use19, sym19, 18, pickN(activeIdx, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39, v19_40))
-    rotOne(use20, sym20, 19, pickN(activeIdx, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39, v20_40))
-    rotOne(use21, sym21, 20, pickN(activeIdx, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39, v21_40))
-    rotOne(use22, sym22, 21, pickN(activeIdx, v22_21, v22_22, v22_23, v22_24, v22_25, v22_26, v22_27, v22_28, v22_29, v22_30, v22_31, v22_32, v22_33, v22_34, v22_35, v22_36, v22_37, v22_38, v22_39, v22_40))
-    rotOne(use23, sym23, 22, pickN(activeIdx, v23_21, v23_22, v23_23, v23_24, v23_25, v23_26, v23_27, v23_28, v23_29, v23_30, v23_31, v23_32, v23_33, v23_34, v23_35, v23_36, v23_37, v23_38, v23_39, v23_40))
-    rotOne(use24, sym24, 23, pickN(activeIdx, v24_21, v24_22, v24_23, v24_24, v24_25, v24_26, v24_27, v24_28, v24_29, v24_30, v24_31, v24_32, v24_33, v24_34, v24_35, v24_36, v24_37, v24_38, v24_39, v24_40))
-    rotOne(use25, sym25, 24, pickN(activeIdx, v25_21, v25_22, v25_23, v25_24, v25_25, v25_26, v25_27, v25_28, v25_29, v25_30, v25_31, v25_32, v25_33, v25_34, v25_35, v25_36, v25_37, v25_38, v25_39, v25_40))
+    // GENERATED - twenty-one rotOne calls, each picking the traded length's
+    // LIVE state out of that pair's fifteen. Regenerate, never hand-edit.
+    rotOne(use01, sym01, 0, pickN(activeIdx, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30))
+    rotOne(use02, sym02, 1, pickN(activeIdx, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30))
+    rotOne(use03, sym03, 2, pickN(activeIdx, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30))
+    rotOne(use04, sym04, 3, pickN(activeIdx, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30))
+    rotOne(use05, sym05, 4, pickN(activeIdx, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30))
+    rotOne(use06, sym06, 5, pickN(activeIdx, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30))
+    rotOne(use07, sym07, 6, pickN(activeIdx, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30))
+    rotOne(use08, sym08, 7, pickN(activeIdx, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30))
+    rotOne(use09, sym09, 8, pickN(activeIdx, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30))
+    rotOne(use10, sym10, 9, pickN(activeIdx, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30))
+    rotOne(use11, sym11, 10, pickN(activeIdx, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30))
+    rotOne(use12, sym12, 11, pickN(activeIdx, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30))
+    rotOne(use13, sym13, 12, pickN(activeIdx, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30))
+    rotOne(use14, sym14, 13, pickN(activeIdx, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30))
+    rotOne(use15, sym15, 14, pickN(activeIdx, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30))
+    rotOne(use16, sym16, 15, pickN(activeIdx, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30))
+    rotOne(use17, sym17, 16, pickN(activeIdx, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30))
+    rotOne(use18, sym18, 17, pickN(activeIdx, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30))
+    rotOne(use19, sym19, 18, pickN(activeIdx, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30))
+    rotOne(use20, sym20, 19, pickN(activeIdx, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30))
+    rotOne(use21, sym21, 20, pickN(activeIdx, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30))
 
     scanned    = array.get(tally, 0)
     unresolved = array.get(tally, 1)
@@ -4143,7 +4378,7 @@ if redrawNow
     // Cleared whether or not it is drawn - a table left with yesterday's cells
     // in it while the switch is ticked would be the one thing on screen nobody
     // could explain.
-    table.clear(clsTable, 0, 0, CLS_BLOCKS * 6 - 2, 46)
+    table.clear(clsTable, 0, 0, CLS_BLOCKS * 7 - 2, 46)
     if not hideCloses
         drawCloses()
 
@@ -4248,8 +4483,8 @@ if redrawNow
 //
 // The alphabet is the scanner's, not this file's, because the reader's is:
 //
-//   1  not in the scan - unticked slot, blank symbol, or slot 26-30, which
-//      this file does not have (it carries 25 against the scanner's 30)
+//   1  not in the scan - unticked slot, blank symbol, or slot 22-30, which
+//      this file does not have (it carries 21 against the scanner's 30)
 //   2  idle
 //   3  armed - and HELD is published as armed too. The reader has no third
 //      answer, and the scanner has no HELD state at all: a pair whose gate is
@@ -4274,7 +4509,7 @@ LIST_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 // catches that copy going stale. Sensitive to composition AND order, since a
 // reordering the reader cannot see would rename every slot on the line.
 //
-// The scanner sums thirty slots and this file has twenty-five. The two land on
+// The scanner sums thirty slots and this file has twenty-one. The two land on
 // the same number for the same watchlist: an absent slot scores zero, exactly
 // like the blank slots the scanner carries past its twenty-fifth pair.
 symScore(bool on, string raw, int slotIndex) =>
@@ -4293,9 +4528,7 @@ if na(pubList)
          symScore(use10, sym10, 10) + symScore(use11, sym11, 11) + symScore(use12, sym12, 12) +
          symScore(use13, sym13, 13) + symScore(use14, sym14, 14) + symScore(use15, sym15, 15) +
          symScore(use16, sym16, 16) + symScore(use17, sym17, 17) + symScore(use18, sym18, 18) +
-         symScore(use19, sym19, 19) + symScore(use20, sym20, 20) + symScore(use21, sym21, 21) +
-         symScore(use22, sym22, 22) + symScore(use23, sym23, 23) + symScore(use24, sym24, 24) +
-         symScore(use25, sym25, 25)
+         symScore(use19, sym19, 19) + symScore(use20, sym20, 20) + symScore(use21, sym21, 21)
     // 99991 is the largest prime under 100000, so the sum always fits in five
     // digits and cannot be mistaken for a packed state.
     pubList := rawSum % 99991
@@ -4316,39 +4549,35 @@ pubPack(int d1, int d2, int d3, int d4, int d5, int d6, int d7, int d8, int d9, 
     d1 * 1000000000 + d2 * 100000000 + d3 * 10000000 + d4 * 1000000 + d5 * 100000 +
      d6 * 10000 + d7 * 1000 + d8 * 100 + d9 * 10 + d10
 
-// GENERATED - twenty-five digits, each picking the traded length's LIVE state
-// out of that pair's twenty. Regenerate, never hand-edit.
-pd01 = pubDigit(use01, sym01, pickN(activeIdx, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39, v01_40))
-pd02 = pubDigit(use02, sym02, pickN(activeIdx, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39, v02_40))
-pd03 = pubDigit(use03, sym03, pickN(activeIdx, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39, v03_40))
-pd04 = pubDigit(use04, sym04, pickN(activeIdx, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39, v04_40))
-pd05 = pubDigit(use05, sym05, pickN(activeIdx, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39, v05_40))
-pd06 = pubDigit(use06, sym06, pickN(activeIdx, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39, v06_40))
-pd07 = pubDigit(use07, sym07, pickN(activeIdx, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39, v07_40))
-pd08 = pubDigit(use08, sym08, pickN(activeIdx, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39, v08_40))
-pd09 = pubDigit(use09, sym09, pickN(activeIdx, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39, v09_40))
-pd10 = pubDigit(use10, sym10, pickN(activeIdx, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39, v10_40))
-pd11 = pubDigit(use11, sym11, pickN(activeIdx, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39, v11_40))
-pd12 = pubDigit(use12, sym12, pickN(activeIdx, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39, v12_40))
-pd13 = pubDigit(use13, sym13, pickN(activeIdx, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39, v13_40))
-pd14 = pubDigit(use14, sym14, pickN(activeIdx, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39, v14_40))
-pd15 = pubDigit(use15, sym15, pickN(activeIdx, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39, v15_40))
-pd16 = pubDigit(use16, sym16, pickN(activeIdx, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39, v16_40))
-pd17 = pubDigit(use17, sym17, pickN(activeIdx, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39, v17_40))
-pd18 = pubDigit(use18, sym18, pickN(activeIdx, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39, v18_40))
-pd19 = pubDigit(use19, sym19, pickN(activeIdx, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39, v19_40))
-pd20 = pubDigit(use20, sym20, pickN(activeIdx, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39, v20_40))
-pd21 = pubDigit(use21, sym21, pickN(activeIdx, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39, v21_40))
-pd22 = pubDigit(use22, sym22, pickN(activeIdx, v22_21, v22_22, v22_23, v22_24, v22_25, v22_26, v22_27, v22_28, v22_29, v22_30, v22_31, v22_32, v22_33, v22_34, v22_35, v22_36, v22_37, v22_38, v22_39, v22_40))
-pd23 = pubDigit(use23, sym23, pickN(activeIdx, v23_21, v23_22, v23_23, v23_24, v23_25, v23_26, v23_27, v23_28, v23_29, v23_30, v23_31, v23_32, v23_33, v23_34, v23_35, v23_36, v23_37, v23_38, v23_39, v23_40))
-pd24 = pubDigit(use24, sym24, pickN(activeIdx, v24_21, v24_22, v24_23, v24_24, v24_25, v24_26, v24_27, v24_28, v24_29, v24_30, v24_31, v24_32, v24_33, v24_34, v24_35, v24_36, v24_37, v24_38, v24_39, v24_40))
-pd25 = pubDigit(use25, sym25, pickN(activeIdx, v25_21, v25_22, v25_23, v25_24, v25_25, v25_26, v25_27, v25_28, v25_29, v25_30, v25_31, v25_32, v25_33, v25_34, v25_35, v25_36, v25_37, v25_38, v25_39, v25_40))
+// GENERATED - twenty-one digits, each picking the traded length's LIVE state
+// out of that pair's fifteen. Regenerate, never hand-edit.
+pd01 = pubDigit(use01, sym01, pickN(activeIdx, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30))
+pd02 = pubDigit(use02, sym02, pickN(activeIdx, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30))
+pd03 = pubDigit(use03, sym03, pickN(activeIdx, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30))
+pd04 = pubDigit(use04, sym04, pickN(activeIdx, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30))
+pd05 = pubDigit(use05, sym05, pickN(activeIdx, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30))
+pd06 = pubDigit(use06, sym06, pickN(activeIdx, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30))
+pd07 = pubDigit(use07, sym07, pickN(activeIdx, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30))
+pd08 = pubDigit(use08, sym08, pickN(activeIdx, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30))
+pd09 = pubDigit(use09, sym09, pickN(activeIdx, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30))
+pd10 = pubDigit(use10, sym10, pickN(activeIdx, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30))
+pd11 = pubDigit(use11, sym11, pickN(activeIdx, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30))
+pd12 = pubDigit(use12, sym12, pickN(activeIdx, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30))
+pd13 = pubDigit(use13, sym13, pickN(activeIdx, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30))
+pd14 = pubDigit(use14, sym14, pickN(activeIdx, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30))
+pd15 = pubDigit(use15, sym15, pickN(activeIdx, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30))
+pd16 = pubDigit(use16, sym16, pickN(activeIdx, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30))
+pd17 = pubDigit(use17, sym17, pickN(activeIdx, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30))
+pd18 = pubDigit(use18, sym18, pickN(activeIdx, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30))
+pd19 = pubDigit(use19, sym19, pickN(activeIdx, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30))
+pd20 = pubDigit(use20, sym20, pickN(activeIdx, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30))
+pd21 = pubDigit(use21, sym21, pickN(activeIdx, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30))
 
 // 80000000000 is the leading 8. Eleven digits against an exact-integer range
 // of 2^53, so the value crosses into the DOM without a rounding of any kind.
 pubState1 = 80000000000 + pubPack(pd01, pd02, pd03, pd04, pd05, pd06, pd07, pd08, pd09, pd10)
 pubState2 = 80000000000 + pubPack(pd11, pd12, pd13, pd14, pd15, pd16, pd17, pd18, pd19, pd20)
-pubState3 = 80000000000 + pubPack(pd21, pd22, pd23, pd24, pd25, 1, 1, 1, 1, 1)
+pubState3 = 80000000000 + pubPack(pd21, 1, 1, 1, 1, 1, 1, 1, 1, 1)
 
 plot(pubState1, 'STATE1', color = color.new(color.teal, 0),
   display = display.status_line + display.data_window)

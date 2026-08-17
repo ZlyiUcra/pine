@@ -62,7 +62,18 @@
 // And the data feed matters: OANDA:EURUSD and FX_IDC:EURUSD are different price
 // series and will occasionally grade a candle differently. Point the slots at the
 // same exchange your charts use.
-indicator('MAR1 Scanner', overlay = true, max_bars_back = 200)
+//
+// calc_bars_count = 10000 (user decision, 2026-08-16; it was 1000 earlier the
+// same day, and 1000 was itself removed and restored before that): compute on
+// the LAST ten thousand bars only. A plan upgrade made M1/M3 charts load
+// enough history to blow the runtime memory limit on the heavy scripts of
+// this family, and the fence is what holds it off. The SAME number sits in
+// maRejection.pine, mar1Rotation.pine and maSweepPairs.pine - scripts
+// describing one machine have to read the same history or the CLOSED log,
+// the chart signals and the DAY CLOSES table stop agreeing. On M1 ten
+// thousand bars is about a week, so the CLOSED log reaches back past the
+// morning comfortably; lower it again if the heavy scripts start failing.
+indicator('MAR1 Scanner', overlay = true, max_bars_back = 200, calc_bars_count = 10000)
 
 // ---------------------------------------------------------------------------
 // Gate and window - the three settings the log below answers to
@@ -158,7 +169,7 @@ successScope = input.string('Entries only', 'A window is closed by',
 // nothing to do with the gate.
 gMa = 'MA length (from the rotation)'
 
-maLength = input.int(32, 'MA Length', minval = 2, group = gMa)
+maLength = input.int(41, 'MA Length', minval = 2, group = gMa)
 
 // ---------------------------------------------------------------------------
 // The log of finished series
@@ -2491,9 +2502,27 @@ if barstate.islast and journalShow != 'Hidden' and (barstate.isconfirmed or not 
     // Rounded to whole percent, so the buckets can add to 99 or to 101. That is
     // the rounding and not a miscount: the counts beside them are exact and they
     // are what sum to the closure total on the left of the line.
+    // IT TAKES TWO LINES OF THE HEADER TO ITSELF rather than continuing the
+    // first (user request, 2026-08-16, the same change the rotation's DAY
+    // CLOSES title got that day). The header cell is merged across every
+    // column the list uses, so its longest LINE is a FLOOR under the whole
+    // table's width - and this is the long half: seven buckets, each a count
+    // and a percentage, is seventy characters against a block that is about
+    // fifty wide. One line for it was already most of the sentence, so it is
+    // broken again at the fourth bucket and the header comes out as three
+    // lines of roughly the block's own width: the totals, the cheap windows,
+    // the expensive ones.
+    //
+    // The break is at FOUR because that is where the buckets stop being the
+    // ordinary case - 1x to 3x is the band a ladder is built for, 4x and past
+    // it is the tail it dies on - so the two lines are the two halves of the
+    // question rather than an arbitrary cut at the middle.
+    //
+    // Empty when nothing closed, and then the header is one line exactly as
+    // it always was.
     costTxt = ''
     if rows > 0
-        costTxt := '  ·  by cost'
+        costTxt := '\n by cost'
         for cb = 0 to 6
             costN = array.get(costHist, cb)
             // Every bucket from one upwards is printed even when it is empty, so
@@ -2501,6 +2530,8 @@ if barstate.islast and journalShow != 'Hidden' and (barstate.isconfirmed or not 
             // rather than by reading the labels each time. Zero is the exception
             // and appears only when it has something in it.
             if cb > 0 or costN > 0
+                if cb == 4
+                    costTxt := costTxt + '\n'
                 costTxt := costTxt + '  ' + (cb == 6 ? '6+' : str.tostring(cb)) + '×' + str.tostring(costN) +
                      ' (' + str.tostring(100.0 * costN / rows, '#') + '%)'
 
@@ -2609,6 +2640,10 @@ if barstate.islast and journalShow != 'Hidden' and (barstate.isconfirmed or not 
     // that stops being read.
     dateIgnored = not datePinned and customFrom != CUSTOM_FROM_DEFAULT
 
+    // THREE LINES, and both breaks are inside costTxt - see the note where it
+    // is built. Everything after it rides on the LAST line with it: the
+    // truncation, the hand-set layout and the two warnings are all about the
+    // LIST, and the first line is then the closures alone.
     table.cell(jrnTable, 0, 0, ' CLOSED ' + periodName + '  ·  ' + str.tostring(rows) + ' closed' +
          // 1.0 leads the division to keep the average a float no matter what
          // the two operands are. It is belt and braces rather than a fix: Pine's
