@@ -28,21 +28,29 @@
   padding: 7px 14px !important;
   border-radius: 6px !important;
   box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45) !important;
-  max-width: 80vw !important;
 
-  /* UP TO THREE LINES, where this used to be one line and an ellipsis.
+  /* A CORNER BLOCK, NOT A BAR (user request, 2026-08-16). This box was always
+   * anchored to the bottom-left, but at 80vw an ordinary line fit in one row
+   * and stretched most of the way across the chart, so what the eye saw was a
+   * bottom bar, not a corner readout. At 40vw the same text folds into two or
+   * three short rows and the anchoring finally shows. */
+  max-width: 40vw !important;
+
+  /* UP TO SIX LINES, where this used to be one line and an ellipsis.
    *
    * A busy morning puts five buckets on this line - tradeable, off board,
-   * below payout, market shut, pre-armed - and at 80vw the tail of it was
+   * below payout, market shut, pre-armed - and originally the tail of it was
    * simply cut off. The pre-armed bucket is last on purpose, so the section
    * that lost the argument for space was always the same one, and it was lost
    * silently: an ellipsis says something is missing, not what.
    *
-   * Three is the ceiling rather than the target. A short line still draws as
-   * one; the box only grows when there is something in it, and it grows
+   * The ceiling was three when the box was 80vw wide; halving the width
+   * roughly doubles the rows the same text needs, so the ceiling moved to six
+   * with it - a ceiling, not a target. A short line still draws as one or
+   * two; the box only grows when there is something in it, and it grows
    * upwards, away from TradingView's own bottom bar.
    *
-   * -webkit-line-clamp is what puts the ellipsis on the THIRD line instead of
+   * -webkit-line-clamp is what puts the ellipsis on the LAST line instead of
    * the first, and it needs the -webkit-box display to work at all. line-clamp
    * without the prefix is the standard property and is honoured where it
    * exists; both are set so this does not depend on which one the browser has.
@@ -54,8 +62,8 @@
   overflow-wrap: break-word !important;
   display: -webkit-box !important;
   -webkit-box-orient: vertical !important;
-  -webkit-line-clamp: 3 !important;
-  line-clamp: 3 !important;
+  -webkit-line-clamp: 6 !important;
+  line-clamp: 6 !important;
   overflow: hidden !important;
   text-overflow: ellipsis !important;
 }
