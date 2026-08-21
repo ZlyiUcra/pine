@@ -76,6 +76,19 @@
 indicator('MAR1 Scanner', overlay = true, max_bars_back = 200, calc_bars_count = 10000)
 
 // ---------------------------------------------------------------------------
+// The timeframes - the very first input (user request, 2026-08-20)
+// ---------------------------------------------------------------------------
+// The two-column mechanism itself - the resolve lines and the essay that
+// explains it - lives down by the flat filter, above the mar1State definition
+// that reads it. Only the two inputs are declared here, so the dialog opens
+// on the switch that decides which column of values everything below is
+// running.
+gTF = 'Timeframes'
+tfA = input.timeframe('1', 'First / second values column', inline = 'tf', group = gTF,
+     tooltip = 'The timeframe each column of values was measured on. The chart timeframe picks the column: on the first of these two the (1st timeframe) values below run, on the second the (2nd timeframe) trio under them, and on anything else nothing is reported and the table header says so. Defaults are the 1m and 2m the two columns were measured on. Must match maRejection.pine.')
+tfB = input.timeframe('2', '', inline = 'tf', group = gTF)
+
+// ---------------------------------------------------------------------------
 // Gate and window - the three settings the log below answers to
 // ---------------------------------------------------------------------------
 // First in the dialog, and first for one reason: these are the settings that get
@@ -135,8 +148,8 @@ indicator('MAR1 Scanner', overlay = true, max_bars_back = 200, calc_bars_count =
 // flag is per input and reaches no logic.
 gTune = 'Gate and window (must match MAR1)'
 
-basePercentage    = input.float(90.0, 'Percentage', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
-minEntriesToStart = input.int(8, 'Min entries to start', minval = 1, group = gTune, display = display.none)
+basePercentage    = input.float(90.0, 'Percentage (1st timeframe)', minval = 1.0, maxval = 100.0, step = 0.05, group = gTune, display = display.none)
+minEntriesToStart = input.int(8, 'Min entries to start (1st timeframe)', minval = 1, group = gTune, display = display.none)
 
 // Which successes close a window. 'Entries only' is the strict reading and the
 // default on both sides: a window is closed by a trade that was actually taken,
@@ -169,7 +182,21 @@ successScope = input.string('Entries only', 'A window is closed by',
 // nothing to do with the gate.
 gMa = 'MA length (from the rotation)'
 
-maLength = input.int(41, 'MA Length', minval = 2, group = gMa)
+maLength = input.int(41, 'MA Length (1st timeframe)', minval = 2, group = gMa)
+
+// The second column - the same three values, measured on the SECOND
+// timeframe, declared right under their first-column siblings so the two
+// columns read side by side at the top of the dialog (moved here 2026-08-20,
+// user request, matching maRejection.pine). The timeframe inputs that pick
+// between the columns, and the resolve lines that consume these, sit down by
+// the flat filter, above the mar1State definition that reads them. The
+// length travels WITH its gate: the 2m sweep ranked MA 50 first at the
+// 80.0 / 7 gate, and trading that length under the first column's 90.0 / 8
+// would be quoting one experiment's answer to another experiment's question.
+gTf2 = 'MA and gate on the 2nd timeframe (must match MAR1)'
+maLength2 = input.int(50, 'MA Length (2nd timeframe)', minval = 2, group = gTf2, display = display.none)
+basePercentage2 = input.float(80.0, 'Percentage (2nd timeframe)', minval = 1.0, maxval = 100.0, step = 0.05, group = gTf2, display = display.none)
+minEntriesToStart2 = input.int(7, 'Min entries to start (2nd timeframe)', minval = 1, group = gTf2, display = display.none)
 
 // ---------------------------------------------------------------------------
 // The log of finished series
@@ -886,6 +913,52 @@ flatWait = input.int(0, 'Bars to keep standing aside after it ends', minval = 0,
      tooltip = 'The candle that breaks a range is exactly the wick-rejection candle this strategy likes, and it is also the one most often taken straight back. 0 resumes on the breakout candle itself.', display = display.none)
 
 // ---------------------------------------------------------------------------
+// Two timeframes, one file - the Gates mechanism, carried over
+// ---------------------------------------------------------------------------
+// The MA length and the gate at the top of the dialog were measured on ONE
+// timeframe, and a value measured on one timeframe is not evidence about
+// another. This is the same two-column mechanism mar1Gates.pine runs: two
+// timeframe inputs name the columns, the chart timeframe picks the column,
+// and on anything else the thirty machines still run - a length has to be
+// SOMETHING - but tfOk is false and nothing reaches the table, the closed
+// log, the alerts or the browser bridge. The table header says why.
+//
+// The comparison runs through timeframe.in_seconds rather than string
+// equality, so '60' and '1H' name the same column instead of accidentally
+// missing each other. Both inputs are SIMPLE strings, so the resolved length
+// stays a simple int - the only reason ta.ema inside mar1State accepts it.
+// The same timeframe in both inputs is not an error: the first column wins
+// the tie and the second one never runs.
+//
+// The RESOLVE LINES live here, beside the flat filter, because mar1State
+// reads the resolved values below as free globals - they have to exist
+// before its definition line. The inputs themselves have all moved to the
+// head of the dialog - the timeframe pair to the very first position, the
+// second-column trio beside its first-column siblings (both 2026-08-20,
+// user request); each move slid every input between the top and here, the
+// sixty pair slots included, so every chart already carrying the script
+// wants Defaults -> Reset settings once - the defaults ARE the working
+// setup, the watchlist included.
+//
+// TF_LIVE is what the table header calls the timeframes this file accepts:
+// one string, so a message cannot claim a timeframe is welcome while the
+// inputs say otherwise. maLenUse / pctUse / minEntUse are the RESOLVED
+// column - everything that used to read maLength / basePercentage /
+// minEntriesToStart reads these three instead, including the CFGSUM fold, so
+// the extension compares what is actually traded on this chart rather than
+// what column one happens to hold.
+TF_LIVE = tfA + ' OR ' + tfB
+
+secA  = timeframe.in_seconds(tfA)
+secB  = timeframe.in_seconds(tfB)
+tfIsB = timeframe.in_seconds(timeframe.period) == secB and secB != secA
+tfOk  = timeframe.in_seconds(timeframe.period) == secA or tfIsB
+
+maLenUse  = tfIsB ? maLength2 : maLength
+pctUse    = tfIsB ? basePercentage2 : basePercentage
+minEntUse = tfIsB ? minEntriesToStart2 : minEntriesToStart
+
+// ---------------------------------------------------------------------------
 // The state machine, one instance per requested symbol
 // ---------------------------------------------------------------------------
 // Every line below is maRejection.pine with the drawing, the statistics tables
@@ -1093,10 +1166,10 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
     // ta.* inside a conditional; that warning is about conditions that change
     // bar to bar, which this one cannot.
     maValue = switch maType
-        'WMA' => ta.wma(srcVal, maLength)
-        'EMA' => ta.ema(srcVal, maLength)
-        'RMA' => ta.rma(srcVal, maLength)
-        => ta.sma(srcVal, maLength)
+        'WMA' => ta.wma(srcVal, maLenUse)
+        'EMA' => ta.ema(srcVal, maLenUse)
+        'RMA' => ta.rma(srcVal, maLenUse)
+        => ta.sma(srcVal, maLenUse)
 
     isBull = open < close
     isBear = open > close
@@ -1246,9 +1319,9 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
     // resolved, so the cached value is the same number for a fraction of the
     // cost across thirty symbols.
     gateThreshold = gateMode == 'Off' ? 0 :
-         gateMode == 'Manual' ? minEntriesToStart :
-         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEntriesToStart) :
-         math.max(distCache, minEntriesToStart)
+         gateMode == 'Manual' ? minEntUse :
+         gateMode == 'Distribution' ? (distCache > 0 ? distCache : minEntUse) :
+         math.max(distCache, minEntUse)
 
     gateOk = streak >= gateThreshold
 
@@ -1395,7 +1468,7 @@ mar1State(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
             // on a miss already past the catch-all bucket, calcIndex would
             // return exactly what distCache already holds.
             if histChanged
-                distCache := calcIndex(failHist, basePercentage)
+                distCache := calcIndex(failHist, pctUse)
 
         // The markers, reading the streak the grading just updated. That single
         // fact is what a green diamond is: a failure that landed exactly on the
@@ -1678,7 +1751,11 @@ addRow(bool on, string raw, int slotIndex, int st, int en, int ot, int sk, int g
     // with 'Also list pairs with nothing open' switched on, which is the setting
     // that prints every idle pair on the list - so the one row worth seeing
     // would arrive buried in twenty that are not.
-    if live and not skipped and (nz(st, -1) > 0 or preOk or mktOk or showIdle or na(st))
+    // tfOk belongs to the COLLECTION, not only to the headers - the lesson
+    // mar1GatesScanner.pine paid for: with tfOk consulted by every header but
+    // not here, a 3-minute chart listed pre-armed pairs while the footer
+    // swore nothing was being reported.
+    if live and not skipped and tfOk and (nz(st, -1) > 0 or preOk or mktOk or showIdle or na(st))
         array.push(rowSym, nm)
         array.push(rowState, nz(st, -1))
         array.push(rowEntry, nz(en))
@@ -1786,15 +1863,16 @@ if barstate.islast
     // while naming what is waiting behind it.
     preTail = preCount > 0 ? '  ·  ' + str.tostring(preCount) + ' pre-armed ' : ''
 
-    headline = (runningCount == 0 and armedCount == 0 ? ' NOTHING OPEN ' :
+    headline = not tfOk ? '  ' + timeframe.period + ' IS NOT ' + TF_LIVE + '  ' :
+         (runningCount == 0 and armedCount == 0 ? ' NOTHING OPEN ' :
          '  ' + str.tostring(runningCount) + ' RUNNING   ' + str.tostring(armedCount) + ' ARMED  ') + preTail
 
     // No width argument. table.cell's width is a percentage of the chart, not a
     // column span, so pinning it here would squeeze the one row that has to stay
     // readable rather than stretching it across the six columns below.
     table.cell(scanTable, 0, 0, ' MAR1 SCANNER ' + headline,
-         bgcolor = runningCount > 0 ? color.new(color.orange, 15) : armedCount > 0 ? color.new(color.lime, 15) : color.black,
-         text_color = runningCount > 0 or armedCount > 0 ? color.black : color.silver,
+         bgcolor = not tfOk ? #553300 : runningCount > 0 ? color.new(color.orange, 15) : armedCount > 0 ? color.new(color.lime, 15) : color.black,
+         text_color = not tfOk ? #FFC163 : runningCount > 0 or armedCount > 0 ? color.black : color.silver,
          text_size = txtSize)
 
     // Drawn ONCE - labels and tooltips are constants, and the per-tick clear
@@ -2126,7 +2204,7 @@ logClose(bool fired, string raw, int en, int sd, int op, int ld) =>
     // The upper bound is what makes the custom window a window rather than a
     // cutoff: without it, naming 09:00 for one hour would show the morning and
     // everything after it.
-    if fired and time_close >= periodFrom and time_close < periodTo
+    if fired and tfOk and time_close >= periodFrom and time_close < periodTo
         // Stored in CLOSING order, which is the order closures arrive in, and
         // is now also the order the table draws - so the drawing block reads
         // this array straight through with no sort of its own.
@@ -2370,7 +2448,7 @@ logTxt = logTxtName == 'Tiny' ? size.tiny : logTxtName == 'Small' ? size.small :
 // footer clock is deliberately live.
 var bool jrnDrawn    = false
 var int  jrnDrawnDay = -1
-if barstate.islast and journalShow != 'Hidden' and (barstate.isconfirmed or not jrnDrawn or nowDayIdx != jrnDrawnDay)
+if barstate.islast and tfOk and journalShow != 'Hidden' and (barstate.isconfirmed or not jrnDrawn or nowDayIdx != jrnDrawnDay)
     jrnDrawn    := true
     jrnDrawnDay := nowDayIdx
     table.clear(jrnTable, 0, 0, JRN_MAX_BLOCKS * 6 - 2, JRN_DRAW_MAX + 1)
@@ -2897,10 +2975,10 @@ openTotal = open01 + open02 + open03 + open04 + open05 + open06 + open07 + open0
 // A rise rather than a level. The level is true for as long as any window is
 // open, which on a busy list is most of the day; the rise is the moment one more
 // pair joined the list, which is the only new information.
-alertcondition(openTotal > nz(openTotal[1]), 'MAR1 Scanner: a pair opened',
+alertcondition(tfOk and openTotal > nz(openTotal[1]), 'MAR1 Scanner: a pair opened',
      'MAR1 Scanner {{interval}}: one more pair now has an open window - check the table')
 
-alertcondition(openTotal == 0 and nz(openTotal[1]) > 0, 'MAR1 Scanner: all clear',
+alertcondition(tfOk and openTotal == 0 and nz(openTotal[1]) > 0, 'MAR1 Scanner: all clear',
      'MAR1 Scanner {{interval}}: every window on the list is now closed')
 
 // The pre-armed count, and why it needed a channel of its own.
@@ -2977,7 +3055,7 @@ preTotal = pre01 + pre02 + pre03 + pre04 + pre05 + pre06 + pre07 + pre08 + pre09
 // what it reports rather than a fault: a pair reaches the white step on the way
 // to every gate opening, and some of them turn back. It is a heads-up, not a
 // call - the message says so.
-alertcondition(preTotal > nz(preTotal[1]), 'MAR1 Scanner: a pair went pre-armed',
+alertcondition(tfOk and preTotal > nz(preTotal[1]), 'MAR1 Scanner: a pair went pre-armed',
      'MAR1 Scanner {{interval}}: one more pair is one step short of its gate - the next large diamond on it would be white')
 
 // Published beside OPENPAIRS rather than folded into it, because they are
@@ -2994,12 +3072,12 @@ alertcondition(preTotal > nz(preTotal[1]), 'MAR1 Scanner: a pair went pre-armed'
 // digits, and these two are summaries of the same fact for a human. So they pay
 // no rent in the status line, which is now down to what the bridge needs and
 // nothing else; both are still one hover away in the Data Window.
-plot(preTotal, 'PREARMED', color = color.new(color.white, 0),
+plot(tfOk ? preTotal : 0, 'PREARMED', color = color.new(color.white, 0),
   display = display.data_window)
 
 // The count. It was published to the status line for a browser panel that reads
 // the packed digits instead, so it sits in the Data Window with PREARMED.
-plot(openTotal, 'OPENPAIRS', color = color.new(color.orange, 0),
+plot(tfOk ? openTotal : 0, 'OPENPAIRS', color = color.new(color.orange, 0),
   display = display.data_window)
 
 // ---------------------------------------------------------------------------
@@ -3028,7 +3106,7 @@ plot(openTotal, 'OPENPAIRS', color = color.new(color.orange, 0),
 // display.data_window keeps all thirty off the chart and out of the status line.
 // They exist for the exporter and for the Data Window, nowhere else.
 signed(bool fired, int en, int sd) =>
-    fired and exportClosures ? (sd == -1 ? -nz(en) : nz(en)) : na
+    fired and exportClosures and tfOk ? (sd == -1 ? -nz(en) : nz(en)) : na
 
 plot(signed(fire01, ce01, cs01), 'CLOSED 01', display = display.data_window)
 plot(signed(fire02, ce02, cs02), 'CLOSED 02', display = display.data_window)
@@ -3110,7 +3188,10 @@ plot(signed(fire30, ce30, cs30), 'CLOSED 30', display = display.data_window)
 // simply fails, and the line says so out loud - 'parse'. It cannot quietly
 // report a pre-armed pair as something else.
 digitFor(bool on, string raw, int st, bool pre) =>
-    not (on and raw != '') ? 1 : na(st) ? 5 : st == 0 ? (pre ? 6 : 2) : st == 1 ? 3 : 4
+    // A foreign timeframe publishes 1 - the unticked-slot digit - for every
+    // pair: the columns have no values for it, so nothing is being scanned
+    // that the browser should act on. Same rule the gates bridge follows.
+    not (on and raw != '') or not tfOk ? 1 : na(st) ? 5 : st == 0 ? (pre ? 6 : 2) : st == 1 ? 3 : 4
 
 // Slot 1 is the most significant digit, so the row reads left to right in the
 // same order the settings dialog lists it.
@@ -3266,14 +3347,14 @@ cfgScope  = successScope == 'Entries only' ? 1 : successScope == 'Entries and wa
 //
 // Inside a group the members are weighted by different odd numbers so that a
 // change of +1 here and -1 there cannot cancel out.
-cfgG1 = maLength + cfgMaType * 7 + cfgSrc * 13
+cfgG1 = maLenUse + cfgMaType * 7 + cfgSrc * 13
 cfgG2 = trendBars + int(math.round(trendSep * 100)) * 3 + int(math.round(wickRatio * 100)) * 5 +
      int(math.round(touchTol * 100)) * 7 + atrLen * 11
 cfgG3 = (allowBodyInside ? 1 : 0) + (allowLongWick ? 1 : 0) * 3 + (allowCounterCandle ? 1 : 0) * 5 +
      refLen * 7
 cfgG4 = int(math.round(minPips * 10)) + cooldown * 3 + (perDirectionCooldown ? 1 : 0) * 5 + cfgGate * 7
 cfgG5 = startHour + endHour * 3 + (restrictToHours ? 1 : 0) * 5
-cfgG6 = int(math.round(basePercentage * 100)) + minEntriesToStart * 3 + cfgScope * 5
+cfgG6 = int(math.round(pctUse * 100)) + minEntUse * 3 + cfgScope * 5
 
 // Powers of 31, so the groups occupy separate ranges and a value moving between
 // two groups changes the total. The largest term is about 2.5e11 - well inside

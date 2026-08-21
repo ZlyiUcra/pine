@@ -190,8 +190,8 @@ indicator('MAR1 Gates - scanner', overlay = true, max_bars_back = 200)
 // two files describing different mornings under one name.
 gTF = 'Timeframes'
 tfA = input.timeframe('1', 'First / second lengths column', inline = 'tf', group = gTF,
-     tooltip = 'The timeframe each column of MA lengths was measured on. The chart timeframe picks the column: on the first of these two the first lengths run, on the second the second, and on anything else the tables draw nothing and say so. Defaults are the 1m and 3m the grid was always wired to.')
-tfB = input.timeframe('3', '', inline = 'tf', group = gTF)
+     tooltip = 'The timeframe each column of MA lengths was measured on. The chart timeframe picks the column: on the first of these two the first lengths run, on the second the second, and on anything else the tables draw nothing and say so. Defaults are the 1m and 2m the lengths below were measured on.')
+tfB = input.timeframe('2', '', inline = 'tf', group = gTF)
 
 gA = 'Gate A  ·  ▲ triangle + ⬆ arrow'
 gB = 'Gate B  ·  ● circle + ■ square'
@@ -843,6 +843,17 @@ cSide(float v) => int((v - int(v) % C_SIDE) / C_SIDE) % 10
 cEnt(float v)  => int((v - int(v) % C_ENT) / C_ENT) % 1000
 cCnt(float v)  => int((v - int(v) % C_CNT) / C_CNT) % 100
 cWAgo(float v) => int((v - int(v) % C_WAGO) / C_WAGO)
+
+// The continuation channel - see ccPk in pairGates. Low to high: the LIVE
+// restarted count and the owner slot (plus one, 0 for none), then the last
+// continuation CLOSURE - its restarted count, its slot (plus one), a wrapping
+// change counter the reader watches, and the takeover's age in whole minutes.
+ccLiveN(float v)  => int(v) % 100
+ccLiveS(float v)  => int((v - int(v) % 100) / 100) % 10 - 1
+ccClsN(float v)   => int((v - int(v) % 1000) / 1000) % 100
+ccClsS(float v)   => int((v - int(v) % 100000) / 100000) % 10 - 1
+ccClsC(float v)   => int((v - int(v) % 1000000) / 1000000) % 100
+ccClsAgo(float v) => int((v - int(v) % 100000000) / 100000000) % 10000
 
 // livePk8's own unpacking - eight base-10 digits, one per slot, each 0..6. See
 // LIVE PREVIEW near the foot of the file for what the digit means and why it
@@ -1521,7 +1532,102 @@ pairGates(simple bool flatOn, simple int flatLen, simple float flatLo, simple fl
     livePk8 = 1.0 * p1 + p2 * 10 + p3 * 100 + p4 * 1000 + p5 * 10000 + p6 * 100000 + p7 * 1000000 + p8 * 10000000 +
          (flatHold and flatOn ? 100000000 : 0)
 
-    [q1, q2, q3, q4, q5, q6, q7, q8, k1, k2, k3, k4, k5, k6, k7, k8, livePk8]
+    // ------------------------------------------------------------------
+    // THE TAPE LOCK AND THE SECOND WIND, per pair (user rule, 2026-08-20)
+    // ------------------------------------------------------------------
+    // mar1Gates.pine's rule, computed in the pair's own context from the
+    // same packed digits the grid reads: one slot OWNS the pair from its
+    // first entry to the close of its window, and when the tape frees and
+    // a window that was ALREADY OPEN takes it, the entries from the
+    // takeover on are counted again from one - the real cost of the
+    // CONTINUED trade. That restarted count is what the small cross on
+    // the gates chart carries, and what travels below as ccPk: live for
+    // the grid and the list, stamped at the closure for the log.
+    var int  wLockS = -1
+    var bool wContOn = false
+    var int  wContN = 0
+    var int  wPrevClose = 0
+    var int  wTakeT = 0
+    var int  wClsN = 0
+    var int  wClsS = -1
+    var int  wClsC = 0
+    var int  wClsAgo = 0
+
+    if wLockS >= 0
+        qOwn = wLockS == 0 ? q1 : wLockS == 1 ? q2 : wLockS == 2 ? q3 : wLockS == 3 ? q4 :
+             wLockS == 4 ? q5 : wLockS == 5 ? q6 : wLockS == 6 ? q7 : q8
+        if not (slotOn(wLockS) and (uOpen(qOwn) == 1 or uFire(qOwn) == 2))
+            // The owner's window closed, or its gate was unticked. A
+            // CONTINUATION closing is the event the log's cross exists
+            // for: stamp its restarted count, its slot and the takeover's
+            // age, and step the counter the reader watches.
+            if wContOn
+                wClsN := clamp(wContN, 99)
+                wClsS := wLockS
+                wClsAgo := clamp(int((time_close - wTakeT) / 60000), 9999)
+                wClsC := (wClsC + 1) % 100
+            wLockS := -1
+            wPrevClose := time
+            wContOn := false
+            wContN := 0
+        else if wContOn and uFire(qOwn) == 2
+            wContN += 1
+    if wLockS < 0
+        // The latch - the first entry takes the pair. Oldest window first
+        // on a shared candle, the higher slot on an exact tie: uAgo is
+        // minutes since the window opened, so oldest = largest, and >=
+        // keeps the later slot, exactly as the active-slot pre-pass does.
+        int fAge = -1
+        for wSl = 0 to 7
+            if slotOn(wSl)
+                wQv = wSl == 0 ? q1 : wSl == 1 ? q2 : wSl == 2 ? q3 : wSl == 3 ? q4 :
+                     wSl == 4 ? q5 : wSl == 5 ? q6 : wSl == 6 ? q7 : q8
+                if uFire(wQv) == 2 and uAgo(wQv) >= fAge
+                    fAge := uAgo(wQv)
+                    wLockS := wSl
+        if wLockS >= 0
+            // Already open before the tape last freed = a continuation.
+            // The opening minute is rebuilt the way every reader here
+            // rebuilds one - the bar's own stamp minus the age - and a
+            // window opened on the freeing bar itself carries that bar's
+            // time, not smaller, so it starts fresh.
+            wContOn := wPrevClose > 0 and time - fAge * 60000 < wPrevClose
+            wContN := wContOn ? 1 : 0
+            wTakeT := time
+
+            // ENTERED AND CLOSED ON THE SAME BAR - the one-entry win, the
+            // commonest continuation there is. A signal fires and grades on
+            // one candle, so by the time this bar is packed the window is
+            // already gone: uOpen reads 0 on the very bar uFire reads 2,
+            // and openAgo was reset with it - which is why the test above
+            // just called this ownership fresh. The CLOSED channel is
+            // stamping this exact closure though, and its cWAgo still
+            // carries the gate-opening age the dedup ranks by, so the
+            // continuation verdict is retaken from there - and the closure
+            // is stamped HERE: the release branch above runs on a LATER bar
+            // than the h-channel counter this closure steps on, and the
+            // log's reader only looks at this channel on that same bar.
+            qNew = wLockS == 0 ? q1 : wLockS == 1 ? q2 : wLockS == 2 ? q3 : wLockS == 3 ? q4 :
+                 wLockS == 4 ? q5 : wLockS == 5 ? q6 : wLockS == 6 ? q7 : q8
+            if uOpen(qNew) == 0
+                kNew = wLockS == 0 ? k1 : wLockS == 1 ? k2 : wLockS == 2 ? k3 : wLockS == 3 ? k4 :
+                     wLockS == 4 ? k5 : wLockS == 5 ? k6 : wLockS == 6 ? k7 : k8
+                wContOn := wPrevClose > 0 and time_close - cWAgo(kNew) * 60000 < wPrevClose
+                if wContOn
+                    // Entered once and closed - the restarted count IS one.
+                    wClsN := 1
+                    wClsS := wLockS
+                    wClsAgo := clamp(int((time_close - wTakeT) / 60000), 9999)
+                    wClsC := (wClsC + 1) % 100
+                wLockS := -1
+                wPrevClose := time
+                wContOn := false
+                wContN := 0
+
+    ccPk = 1.0 * clamp(wContOn ? wContN : 0, 99) + (wLockS + 1) * 100 +
+         wClsN * 1000 + (wClsS + 1) * 100000 + wClsC * 1000000 + wClsAgo * 100000000
+
+    [q1, q2, q3, q4, q5, q6, q7, q8, k1, k2, k3, k4, k5, k6, k7, k8, livePk8, ccPk]
 
 // ---------------------------------------------------------------------------
 // The pairs
@@ -1674,36 +1780,36 @@ flatWait = input.int(0, 'Bars to keep standing aside after it ends', minval = 0,
 // that slot comes back na and is counted as unresolved in the footer.
 //
 // GENERATED - thirty destructurings of eight live and eight closed values each.
-[g01_1, g01_2, g01_3, g01_4, g01_5, g01_6, g01_7, g01_8, h01_1, h01_2, h01_3, h01_4, h01_5, h01_6, h01_7, h01_8, lp01] = request.security(s01, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g02_1, g02_2, g02_3, g02_4, g02_5, g02_6, g02_7, g02_8, h02_1, h02_2, h02_3, h02_4, h02_5, h02_6, h02_7, h02_8, lp02] = request.security(s02, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g03_1, g03_2, g03_3, g03_4, g03_5, g03_6, g03_7, g03_8, h03_1, h03_2, h03_3, h03_4, h03_5, h03_6, h03_7, h03_8, lp03] = request.security(s03, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g04_1, g04_2, g04_3, g04_4, g04_5, g04_6, g04_7, g04_8, h04_1, h04_2, h04_3, h04_4, h04_5, h04_6, h04_7, h04_8, lp04] = request.security(s04, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g05_1, g05_2, g05_3, g05_4, g05_5, g05_6, g05_7, g05_8, h05_1, h05_2, h05_3, h05_4, h05_5, h05_6, h05_7, h05_8, lp05] = request.security(s05, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g06_1, g06_2, g06_3, g06_4, g06_5, g06_6, g06_7, g06_8, h06_1, h06_2, h06_3, h06_4, h06_5, h06_6, h06_7, h06_8, lp06] = request.security(s06, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g07_1, g07_2, g07_3, g07_4, g07_5, g07_6, g07_7, g07_8, h07_1, h07_2, h07_3, h07_4, h07_5, h07_6, h07_7, h07_8, lp07] = request.security(s07, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g08_1, g08_2, g08_3, g08_4, g08_5, g08_6, g08_7, g08_8, h08_1, h08_2, h08_3, h08_4, h08_5, h08_6, h08_7, h08_8, lp08] = request.security(s08, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g09_1, g09_2, g09_3, g09_4, g09_5, g09_6, g09_7, g09_8, h09_1, h09_2, h09_3, h09_4, h09_5, h09_6, h09_7, h09_8, lp09] = request.security(s09, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g10_1, g10_2, g10_3, g10_4, g10_5, g10_6, g10_7, g10_8, h10_1, h10_2, h10_3, h10_4, h10_5, h10_6, h10_7, h10_8, lp10] = request.security(s10, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g11_1, g11_2, g11_3, g11_4, g11_5, g11_6, g11_7, g11_8, h11_1, h11_2, h11_3, h11_4, h11_5, h11_6, h11_7, h11_8, lp11] = request.security(s11, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g12_1, g12_2, g12_3, g12_4, g12_5, g12_6, g12_7, g12_8, h12_1, h12_2, h12_3, h12_4, h12_5, h12_6, h12_7, h12_8, lp12] = request.security(s12, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g13_1, g13_2, g13_3, g13_4, g13_5, g13_6, g13_7, g13_8, h13_1, h13_2, h13_3, h13_4, h13_5, h13_6, h13_7, h13_8, lp13] = request.security(s13, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g14_1, g14_2, g14_3, g14_4, g14_5, g14_6, g14_7, g14_8, h14_1, h14_2, h14_3, h14_4, h14_5, h14_6, h14_7, h14_8, lp14] = request.security(s14, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g15_1, g15_2, g15_3, g15_4, g15_5, g15_6, g15_7, g15_8, h15_1, h15_2, h15_3, h15_4, h15_5, h15_6, h15_7, h15_8, lp15] = request.security(s15, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g16_1, g16_2, g16_3, g16_4, g16_5, g16_6, g16_7, g16_8, h16_1, h16_2, h16_3, h16_4, h16_5, h16_6, h16_7, h16_8, lp16] = request.security(s16, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g17_1, g17_2, g17_3, g17_4, g17_5, g17_6, g17_7, g17_8, h17_1, h17_2, h17_3, h17_4, h17_5, h17_6, h17_7, h17_8, lp17] = request.security(s17, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g18_1, g18_2, g18_3, g18_4, g18_5, g18_6, g18_7, g18_8, h18_1, h18_2, h18_3, h18_4, h18_5, h18_6, h18_7, h18_8, lp18] = request.security(s18, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g19_1, g19_2, g19_3, g19_4, g19_5, g19_6, g19_7, g19_8, h19_1, h19_2, h19_3, h19_4, h19_5, h19_6, h19_7, h19_8, lp19] = request.security(s19, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g20_1, g20_2, g20_3, g20_4, g20_5, g20_6, g20_7, g20_8, h20_1, h20_2, h20_3, h20_4, h20_5, h20_6, h20_7, h20_8, lp20] = request.security(s20, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g21_1, g21_2, g21_3, g21_4, g21_5, g21_6, g21_7, g21_8, h21_1, h21_2, h21_3, h21_4, h21_5, h21_6, h21_7, h21_8, lp21] = request.security(s21, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g22_1, g22_2, g22_3, g22_4, g22_5, g22_6, g22_7, g22_8, h22_1, h22_2, h22_3, h22_4, h22_5, h22_6, h22_7, h22_8, lp22] = request.security(s22, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g23_1, g23_2, g23_3, g23_4, g23_5, g23_6, g23_7, g23_8, h23_1, h23_2, h23_3, h23_4, h23_5, h23_6, h23_7, h23_8, lp23] = request.security(s23, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g24_1, g24_2, g24_3, g24_4, g24_5, g24_6, g24_7, g24_8, h24_1, h24_2, h24_3, h24_4, h24_5, h24_6, h24_7, h24_8, lp24] = request.security(s24, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g25_1, g25_2, g25_3, g25_4, g25_5, g25_6, g25_7, g25_8, h25_1, h25_2, h25_3, h25_4, h25_5, h25_6, h25_7, h25_8, lp25] = request.security(s25, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g26_1, g26_2, g26_3, g26_4, g26_5, g26_6, g26_7, g26_8, h26_1, h26_2, h26_3, h26_4, h26_5, h26_6, h26_7, h26_8, lp26] = request.security(s26, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g27_1, g27_2, g27_3, g27_4, g27_5, g27_6, g27_7, g27_8, h27_1, h27_2, h27_3, h27_4, h27_5, h27_6, h27_7, h27_8, lp27] = request.security(s27, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g28_1, g28_2, g28_3, g28_4, g28_5, g28_6, g28_7, g28_8, h28_1, h28_2, h28_3, h28_4, h28_5, h28_6, h28_7, h28_8, lp28] = request.security(s28, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g29_1, g29_2, g29_3, g29_4, g29_5, g29_6, g29_7, g29_8, h29_1, h29_2, h29_3, h29_4, h29_5, h29_6, h29_7, h29_8, lp29] = request.security(s29, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
-[g30_1, g30_2, g30_3, g30_4, g30_5, g30_6, g30_7, g30_8, h30_1, h30_2, h30_3, h30_4, h30_5, h30_6, h30_7, h30_8, lp30] = request.security(s30, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g01_1, g01_2, g01_3, g01_4, g01_5, g01_6, g01_7, g01_8, h01_1, h01_2, h01_3, h01_4, h01_5, h01_6, h01_7, h01_8, lp01, cc01] = request.security(s01, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g02_1, g02_2, g02_3, g02_4, g02_5, g02_6, g02_7, g02_8, h02_1, h02_2, h02_3, h02_4, h02_5, h02_6, h02_7, h02_8, lp02, cc02] = request.security(s02, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g03_1, g03_2, g03_3, g03_4, g03_5, g03_6, g03_7, g03_8, h03_1, h03_2, h03_3, h03_4, h03_5, h03_6, h03_7, h03_8, lp03, cc03] = request.security(s03, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g04_1, g04_2, g04_3, g04_4, g04_5, g04_6, g04_7, g04_8, h04_1, h04_2, h04_3, h04_4, h04_5, h04_6, h04_7, h04_8, lp04, cc04] = request.security(s04, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g05_1, g05_2, g05_3, g05_4, g05_5, g05_6, g05_7, g05_8, h05_1, h05_2, h05_3, h05_4, h05_5, h05_6, h05_7, h05_8, lp05, cc05] = request.security(s05, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g06_1, g06_2, g06_3, g06_4, g06_5, g06_6, g06_7, g06_8, h06_1, h06_2, h06_3, h06_4, h06_5, h06_6, h06_7, h06_8, lp06, cc06] = request.security(s06, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g07_1, g07_2, g07_3, g07_4, g07_5, g07_6, g07_7, g07_8, h07_1, h07_2, h07_3, h07_4, h07_5, h07_6, h07_7, h07_8, lp07, cc07] = request.security(s07, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g08_1, g08_2, g08_3, g08_4, g08_5, g08_6, g08_7, g08_8, h08_1, h08_2, h08_3, h08_4, h08_5, h08_6, h08_7, h08_8, lp08, cc08] = request.security(s08, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g09_1, g09_2, g09_3, g09_4, g09_5, g09_6, g09_7, g09_8, h09_1, h09_2, h09_3, h09_4, h09_5, h09_6, h09_7, h09_8, lp09, cc09] = request.security(s09, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g10_1, g10_2, g10_3, g10_4, g10_5, g10_6, g10_7, g10_8, h10_1, h10_2, h10_3, h10_4, h10_5, h10_6, h10_7, h10_8, lp10, cc10] = request.security(s10, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g11_1, g11_2, g11_3, g11_4, g11_5, g11_6, g11_7, g11_8, h11_1, h11_2, h11_3, h11_4, h11_5, h11_6, h11_7, h11_8, lp11, cc11] = request.security(s11, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g12_1, g12_2, g12_3, g12_4, g12_5, g12_6, g12_7, g12_8, h12_1, h12_2, h12_3, h12_4, h12_5, h12_6, h12_7, h12_8, lp12, cc12] = request.security(s12, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g13_1, g13_2, g13_3, g13_4, g13_5, g13_6, g13_7, g13_8, h13_1, h13_2, h13_3, h13_4, h13_5, h13_6, h13_7, h13_8, lp13, cc13] = request.security(s13, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g14_1, g14_2, g14_3, g14_4, g14_5, g14_6, g14_7, g14_8, h14_1, h14_2, h14_3, h14_4, h14_5, h14_6, h14_7, h14_8, lp14, cc14] = request.security(s14, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g15_1, g15_2, g15_3, g15_4, g15_5, g15_6, g15_7, g15_8, h15_1, h15_2, h15_3, h15_4, h15_5, h15_6, h15_7, h15_8, lp15, cc15] = request.security(s15, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g16_1, g16_2, g16_3, g16_4, g16_5, g16_6, g16_7, g16_8, h16_1, h16_2, h16_3, h16_4, h16_5, h16_6, h16_7, h16_8, lp16, cc16] = request.security(s16, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g17_1, g17_2, g17_3, g17_4, g17_5, g17_6, g17_7, g17_8, h17_1, h17_2, h17_3, h17_4, h17_5, h17_6, h17_7, h17_8, lp17, cc17] = request.security(s17, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g18_1, g18_2, g18_3, g18_4, g18_5, g18_6, g18_7, g18_8, h18_1, h18_2, h18_3, h18_4, h18_5, h18_6, h18_7, h18_8, lp18, cc18] = request.security(s18, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g19_1, g19_2, g19_3, g19_4, g19_5, g19_6, g19_7, g19_8, h19_1, h19_2, h19_3, h19_4, h19_5, h19_6, h19_7, h19_8, lp19, cc19] = request.security(s19, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g20_1, g20_2, g20_3, g20_4, g20_5, g20_6, g20_7, g20_8, h20_1, h20_2, h20_3, h20_4, h20_5, h20_6, h20_7, h20_8, lp20, cc20] = request.security(s20, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g21_1, g21_2, g21_3, g21_4, g21_5, g21_6, g21_7, g21_8, h21_1, h21_2, h21_3, h21_4, h21_5, h21_6, h21_7, h21_8, lp21, cc21] = request.security(s21, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g22_1, g22_2, g22_3, g22_4, g22_5, g22_6, g22_7, g22_8, h22_1, h22_2, h22_3, h22_4, h22_5, h22_6, h22_7, h22_8, lp22, cc22] = request.security(s22, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g23_1, g23_2, g23_3, g23_4, g23_5, g23_6, g23_7, g23_8, h23_1, h23_2, h23_3, h23_4, h23_5, h23_6, h23_7, h23_8, lp23, cc23] = request.security(s23, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g24_1, g24_2, g24_3, g24_4, g24_5, g24_6, g24_7, g24_8, h24_1, h24_2, h24_3, h24_4, h24_5, h24_6, h24_7, h24_8, lp24, cc24] = request.security(s24, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g25_1, g25_2, g25_3, g25_4, g25_5, g25_6, g25_7, g25_8, h25_1, h25_2, h25_3, h25_4, h25_5, h25_6, h25_7, h25_8, lp25, cc25] = request.security(s25, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g26_1, g26_2, g26_3, g26_4, g26_5, g26_6, g26_7, g26_8, h26_1, h26_2, h26_3, h26_4, h26_5, h26_6, h26_7, h26_8, lp26, cc26] = request.security(s26, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g27_1, g27_2, g27_3, g27_4, g27_5, g27_6, g27_7, g27_8, h27_1, h27_2, h27_3, h27_4, h27_5, h27_6, h27_7, h27_8, lp27, cc27] = request.security(s27, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g28_1, g28_2, g28_3, g28_4, g28_5, g28_6, g28_7, g28_8, h28_1, h28_2, h28_3, h28_4, h28_5, h28_6, h28_7, h28_8, lp28, cc28] = request.security(s28, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g29_1, g29_2, g29_3, g29_4, g29_5, g29_6, g29_7, g29_8, h29_1, h29_2, h29_3, h29_4, h29_5, h29_6, h29_7, h29_8, lp29, cc29] = request.security(s29, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
+[g30_1, g30_2, g30_3, g30_4, g30_5, g30_6, g30_7, g30_8, h30_1, h30_2, h30_3, h30_4, h30_5, h30_6, h30_7, h30_8, lp30, cc30] = request.security(s30, timeframe.period, pairGates(flatOn, flatLen, flatLo, flatHi, flatWait), ignore_invalid_symbol = true)
 
 // ---------------------------------------------------------------------------
 // The finished series
@@ -1723,6 +1829,12 @@ var array<int>    jTime = array.new_int(0)
 var array<int>    jEnt  = array.new_int(0)
 var array<int>    jSide = array.new_int(0)
 var array<int>    jStep = array.new_int(0)
+
+// 1 on a row that closed as a CONTINUATION - the window took the pair over
+// after the previous one closed, and the Entries cell already carries the
+// RESTARTED count (see ccPk in pairGates); this flag is what hangs the ✚
+// beside it.
+var array<int>    jCont = array.new_int(0)
 
 // The key the dedup RANKS by, which is not the key it DISPLAYS. jOpen is the
 // first entry, because that is what a closed series is dated from in every file
@@ -1776,13 +1888,17 @@ shortName(string raw) =>
 // comes up again, then flip it off.
 diagLog = false
 
-logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4, float k5, float k6, float k7, float k8) =>
+logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4, float k5, float k6, float k7, float k8, float ccV) =>
     if on and raw != ''
         // var, split ONCE per call site rather than on every confirmed bar:
         // raw is an input string, constant for the whole run, and a var in a
         // function belongs to the call site - thirty pairs, thirty splits,
         // ever, instead of thirty per bar.
         var string nm = shortName(raw)
+        // The continuation channel's own lastCnt: the closure counter inside
+        // ccV, watched so one stamped closure attaches to exactly one row.
+        // -1 keeps the first observation from counting, like lastCnt's -1.
+        var int seenCC = -1
         for s = 0 to 7
             kv = s == 0 ? k1 : s == 1 ? k2 : s == 2 ? k3 : s == 3 ? k4 :
                  s == 4 ? k5 : s == 5 ? k6 : s == 6 ? k7 : k8
@@ -1825,6 +1941,22 @@ logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4
                     // second age. This one is never printed - it only decides
                     // which machine keeps the row.
                     wOpened = time_close - cWAgo(kv) * 60000
+
+                    // A CONTINUATION CLOSING (see ccPk in pairGates): the
+                    // owner's window ended while its count stood restarted.
+                    // The trade this row stands for began at the TAKEOVER -
+                    // by the previous window's close - so it is dated and
+                    // RANKED from there, and its entries are the restarted
+                    // count: what was actually taken since that close, not
+                    // the full depth of the window. The rung keeps the real
+                    // depth, exactly as the chart keeps the mark's real
+                    // colour under the small cross. Ranked at the takeover
+                    // the row only TOUCHES the previous one, and touching is
+                    // not overlapping, so the dedup leaves both standing.
+                    isCont = ccClsS(ccV) == s and seenCC >= 0 and ccClsC(ccV) != seenCC
+                    if isCont
+                        opened := time_close - ccClsAgo(ccV) * 60000
+                        wOpened := opened
 
                     // ONE PAIR, ONE EPISODE, ONE ROW - and the window that OPENED
                     // FIRST is the one that stays.
@@ -1941,6 +2073,7 @@ logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4
                                 array.remove(jEnt, k)
                                 array.remove(jSide, k)
                                 array.remove(jStep, k)
+                                array.remove(jCont, k)
 
                     if newWins
                         array.unshift(jSym, nm)
@@ -1948,9 +2081,13 @@ logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4
                         array.unshift(jOpen, opened)
                         array.unshift(jRank, wOpened)
                         array.unshift(jTime, time_close)
-                        array.unshift(jEnt, cEnt(kv))
+                        // The restarted count IS the cost of a continued
+                        // trade - the full window depth stays readable in
+                        // the rung the row is painted with.
+                        array.unshift(jEnt, isCont ? ccClsN(ccV) : cEnt(kv))
                         array.unshift(jSide, cSide(kv))
                         array.unshift(jStep, cStep(kv))
+                        array.unshift(jCont, isCont ? 1 : 0)
                         if array.size(jSym) > jrnKeep
                             array.pop(jSym)
                             array.pop(jGate)
@@ -1960,7 +2097,14 @@ logPair(bool on, string raw, int pairIdx, float k1, float k2, float k3, float k4
                             array.pop(jEnt)
                             array.pop(jSide)
                             array.pop(jStep)
+                            array.pop(jCont)
                 array.set(lastCnt, idx, c)
+        // Advanced OUTSIDE the per-slot filter, exactly like lastCnt: the
+        // counter must move even when the row it stamped was filtered out
+        // or eaten by the dedup, or the stamp would attach to some later
+        // closure of the same slot.
+        if ccClsC(ccV) != seenCC
+            seenCC := ccClsC(ccV)
     array.size(jSym)
 
 // Confirmed bars only, and this is the one guard the log cannot do without. Pine
@@ -1982,38 +2126,39 @@ if barstate.isconfirmed
         array.pop(jEnt)
         array.pop(jSide)
         array.pop(jStep)
+        array.pop(jCont)
 
     // GENERATED - thirty log feeds.
-    logPair(use01, sym01, 0, h01_1, h01_2, h01_3, h01_4, h01_5, h01_6, h01_7, h01_8)
-    logPair(use02, sym02, 1, h02_1, h02_2, h02_3, h02_4, h02_5, h02_6, h02_7, h02_8)
-    logPair(use03, sym03, 2, h03_1, h03_2, h03_3, h03_4, h03_5, h03_6, h03_7, h03_8)
-    logPair(use04, sym04, 3, h04_1, h04_2, h04_3, h04_4, h04_5, h04_6, h04_7, h04_8)
-    logPair(use05, sym05, 4, h05_1, h05_2, h05_3, h05_4, h05_5, h05_6, h05_7, h05_8)
-    logPair(use06, sym06, 5, h06_1, h06_2, h06_3, h06_4, h06_5, h06_6, h06_7, h06_8)
-    logPair(use07, sym07, 6, h07_1, h07_2, h07_3, h07_4, h07_5, h07_6, h07_7, h07_8)
-    logPair(use08, sym08, 7, h08_1, h08_2, h08_3, h08_4, h08_5, h08_6, h08_7, h08_8)
-    logPair(use09, sym09, 8, h09_1, h09_2, h09_3, h09_4, h09_5, h09_6, h09_7, h09_8)
-    logPair(use10, sym10, 9, h10_1, h10_2, h10_3, h10_4, h10_5, h10_6, h10_7, h10_8)
-    logPair(use11, sym11, 10, h11_1, h11_2, h11_3, h11_4, h11_5, h11_6, h11_7, h11_8)
-    logPair(use12, sym12, 11, h12_1, h12_2, h12_3, h12_4, h12_5, h12_6, h12_7, h12_8)
-    logPair(use13, sym13, 12, h13_1, h13_2, h13_3, h13_4, h13_5, h13_6, h13_7, h13_8)
-    logPair(use14, sym14, 13, h14_1, h14_2, h14_3, h14_4, h14_5, h14_6, h14_7, h14_8)
-    logPair(use15, sym15, 14, h15_1, h15_2, h15_3, h15_4, h15_5, h15_6, h15_7, h15_8)
-    logPair(use16, sym16, 15, h16_1, h16_2, h16_3, h16_4, h16_5, h16_6, h16_7, h16_8)
-    logPair(use17, sym17, 16, h17_1, h17_2, h17_3, h17_4, h17_5, h17_6, h17_7, h17_8)
-    logPair(use18, sym18, 17, h18_1, h18_2, h18_3, h18_4, h18_5, h18_6, h18_7, h18_8)
-    logPair(use19, sym19, 18, h19_1, h19_2, h19_3, h19_4, h19_5, h19_6, h19_7, h19_8)
-    logPair(use20, sym20, 19, h20_1, h20_2, h20_3, h20_4, h20_5, h20_6, h20_7, h20_8)
-    logPair(use21, sym21, 20, h21_1, h21_2, h21_3, h21_4, h21_5, h21_6, h21_7, h21_8)
-    logPair(use22, sym22, 21, h22_1, h22_2, h22_3, h22_4, h22_5, h22_6, h22_7, h22_8)
-    logPair(use23, sym23, 22, h23_1, h23_2, h23_3, h23_4, h23_5, h23_6, h23_7, h23_8)
-    logPair(use24, sym24, 23, h24_1, h24_2, h24_3, h24_4, h24_5, h24_6, h24_7, h24_8)
-    logPair(use25, sym25, 24, h25_1, h25_2, h25_3, h25_4, h25_5, h25_6, h25_7, h25_8)
-    logPair(use26, sym26, 25, h26_1, h26_2, h26_3, h26_4, h26_5, h26_6, h26_7, h26_8)
-    logPair(use27, sym27, 26, h27_1, h27_2, h27_3, h27_4, h27_5, h27_6, h27_7, h27_8)
-    logPair(use28, sym28, 27, h28_1, h28_2, h28_3, h28_4, h28_5, h28_6, h28_7, h28_8)
-    logPair(use29, sym29, 28, h29_1, h29_2, h29_3, h29_4, h29_5, h29_6, h29_7, h29_8)
-    logPair(use30, sym30, 29, h30_1, h30_2, h30_3, h30_4, h30_5, h30_6, h30_7, h30_8)
+    logPair(use01, sym01, 0, h01_1, h01_2, h01_3, h01_4, h01_5, h01_6, h01_7, h01_8, cc01)
+    logPair(use02, sym02, 1, h02_1, h02_2, h02_3, h02_4, h02_5, h02_6, h02_7, h02_8, cc02)
+    logPair(use03, sym03, 2, h03_1, h03_2, h03_3, h03_4, h03_5, h03_6, h03_7, h03_8, cc03)
+    logPair(use04, sym04, 3, h04_1, h04_2, h04_3, h04_4, h04_5, h04_6, h04_7, h04_8, cc04)
+    logPair(use05, sym05, 4, h05_1, h05_2, h05_3, h05_4, h05_5, h05_6, h05_7, h05_8, cc05)
+    logPair(use06, sym06, 5, h06_1, h06_2, h06_3, h06_4, h06_5, h06_6, h06_7, h06_8, cc06)
+    logPair(use07, sym07, 6, h07_1, h07_2, h07_3, h07_4, h07_5, h07_6, h07_7, h07_8, cc07)
+    logPair(use08, sym08, 7, h08_1, h08_2, h08_3, h08_4, h08_5, h08_6, h08_7, h08_8, cc08)
+    logPair(use09, sym09, 8, h09_1, h09_2, h09_3, h09_4, h09_5, h09_6, h09_7, h09_8, cc09)
+    logPair(use10, sym10, 9, h10_1, h10_2, h10_3, h10_4, h10_5, h10_6, h10_7, h10_8, cc10)
+    logPair(use11, sym11, 10, h11_1, h11_2, h11_3, h11_4, h11_5, h11_6, h11_7, h11_8, cc11)
+    logPair(use12, sym12, 11, h12_1, h12_2, h12_3, h12_4, h12_5, h12_6, h12_7, h12_8, cc12)
+    logPair(use13, sym13, 12, h13_1, h13_2, h13_3, h13_4, h13_5, h13_6, h13_7, h13_8, cc13)
+    logPair(use14, sym14, 13, h14_1, h14_2, h14_3, h14_4, h14_5, h14_6, h14_7, h14_8, cc14)
+    logPair(use15, sym15, 14, h15_1, h15_2, h15_3, h15_4, h15_5, h15_6, h15_7, h15_8, cc15)
+    logPair(use16, sym16, 15, h16_1, h16_2, h16_3, h16_4, h16_5, h16_6, h16_7, h16_8, cc16)
+    logPair(use17, sym17, 16, h17_1, h17_2, h17_3, h17_4, h17_5, h17_6, h17_7, h17_8, cc17)
+    logPair(use18, sym18, 17, h18_1, h18_2, h18_3, h18_4, h18_5, h18_6, h18_7, h18_8, cc18)
+    logPair(use19, sym19, 18, h19_1, h19_2, h19_3, h19_4, h19_5, h19_6, h19_7, h19_8, cc19)
+    logPair(use20, sym20, 19, h20_1, h20_2, h20_3, h20_4, h20_5, h20_6, h20_7, h20_8, cc20)
+    logPair(use21, sym21, 20, h21_1, h21_2, h21_3, h21_4, h21_5, h21_6, h21_7, h21_8, cc21)
+    logPair(use22, sym22, 21, h22_1, h22_2, h22_3, h22_4, h22_5, h22_6, h22_7, h22_8, cc22)
+    logPair(use23, sym23, 22, h23_1, h23_2, h23_3, h23_4, h23_5, h23_6, h23_7, h23_8, cc23)
+    logPair(use24, sym24, 23, h24_1, h24_2, h24_3, h24_4, h24_5, h24_6, h24_7, h24_8, cc24)
+    logPair(use25, sym25, 24, h25_1, h25_2, h25_3, h25_4, h25_5, h25_6, h25_7, h25_8, cc25)
+    logPair(use26, sym26, 25, h26_1, h26_2, h26_3, h26_4, h26_5, h26_6, h26_7, h26_8, cc26)
+    logPair(use27, sym27, 26, h27_1, h27_2, h27_3, h27_4, h27_5, h27_6, h27_7, h27_8, cc27)
+    logPair(use28, sym28, 27, h28_1, h28_2, h28_3, h28_4, h28_5, h28_6, h28_7, h28_8, cc28)
+    logPair(use29, sym29, 28, h29_1, h29_2, h29_3, h29_4, h29_5, h29_6, h29_7, h29_8, cc29)
+    logPair(use30, sym30, 29, h30_1, h30_2, h30_3, h30_4, h30_5, h30_6, h30_7, h30_8, cc30)
 
 // ---------------------------------------------------------------------------
 // The tables
@@ -2158,6 +2303,15 @@ var int[]   rLive = array.new_int(0)
 // pair carries the same answer, since the verdict is measured off price alone.
 var bool[]  rFlat = array.new_bool(0)
 
+// Whether this row's slot is the PAIR'S ACTIVE one - the slot whose window
+// opened FIRST and is still open, pre-armed only when nothing is open, an
+// exact tie to the higher slot. The same answer mar1Gates.pine's RUNNING arrow
+// and its solid chart mark give (user rule, 2026-08-20).
+var bool[]  rAct = array.new_bool(0)
+// The restarted entry count for the row's slot - non-zero only on the row of
+// a pair's owner while its trade is a continuation. See ccPk in pairGates.
+var int[]   rCont = array.new_int(0)
+
 // The sort key, packed the same way everything else here is: state first so the
 // three groups never interleave, then entries, then how long it has been open.
 //
@@ -2210,7 +2364,8 @@ var table lTable = table.new(posOf(logPos), LOG_BLOCKS * 7 - 1, LOG_TALL + 2, bo
 // idle on a machine that is simply not being asked.
 //
 // col is 1..8 and the slot is one less, because column 0 is the pair name.
-gCell(int col, int r, string glyph, float v, color rowBg) =>
+// act marks the pair's ACTIVE slot - see the pre-pass in scanPair.
+gCell(int col, int r, string glyph, float v, color rowBg, bool act, int cont) =>
     if slotOn(col - 1)
         ent   = uEnt(v)
         step  = uStep(v)
@@ -2229,7 +2384,7 @@ gCell(int col, int r, string glyph, float v, color rowBg) =>
         // the last one before the window starts costing money.
         show = ent > 0 or fired > 0 or step == 1 or wopen == 1
         arrow = dir == 2 ? '▲' : dir == 1 ? '▼' : ''
-        txt = not show ? ' · ' : ' ' + glyph + arrow + (ent > 0 ? str.tostring(ent) : wopen == 1 ? '°' : '') + ' '
+        txt = not show ? ' · ' : ' ' + glyph + arrow + (ent > 0 ? str.tostring(ent) : wopen == 1 ? '°' : '') + (cont > 0 ? ' ✚' + str.tostring(cont) : '') + (act ? ' ◀' : '') + ' '
         bg = fired == 2 ? C_ENTRY : fired == 1 ? C_WARN : rowBg
 
         table.cell(gTable, col, r, txt, bgcolor = bg,
@@ -2243,7 +2398,7 @@ gCell(int col, int r, string glyph, float v, color rowBg) =>
 // whole tuple na at once, so one test settles all eight.
 //
 // GENERATED signature and body.
-scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float v9) =>
+scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, float v6, float v7, float v8, float v9, float vC) =>
     live = on and raw != ''
     if live
         array.set(tally, 1, array.get(tally, 1) + 1)
@@ -2276,6 +2431,47 @@ scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, 
             // them. This is a count of the watchlist, not of the table.
             if livePkFlat(v9)
                 array.set(tally, 4, array.get(tally, 4) + 1)
+
+            // THE PAIR'S ACTIVE SLOT - the gate that got there first: the open
+            // window with the most time on it, pre-armed only when nothing is
+            // open, an exact tie to the highest slot. The same key
+            // mar1Gates.pine's arrow, its solid mark and both closed logs rank
+            // by (user rule, 2026-08-20).
+            //
+            // uAgo is minutes since the window opened, so the OLDEST window is
+            // the LARGEST number. The packed live value carries no timestamp and
+            // needs none: the question is who was here first, and an age answers
+            // that as well as a clock does.
+            //
+            // Ascending s with >= on the age keeps the highest slot when two
+            // windows are the same number of minutes old - which on the
+            // timeframes this file runs on is the same candle, the tie-break the
+            // other files use.
+            //
+            // Pre-armed slots all carry age 0 - openAgo is only stamped for an
+            // open window - so tier 1 falls back to the slot alone. The chart
+            // ranks those by whiteSince, which nothing here transports; the
+            // difference can only show between two pre-armed gates on a pair
+            // with nothing open.
+            int actS    = -1
+            int actTier = 0
+            int actAgo  = -1
+            for s = 0 to 7
+                if slotOn(s)
+                    va = s == 0 ? v1 : s == 1 ? v2 : s == 2 ? v3 : s == 3 ? v4 :
+                         s == 4 ? v5 : s == 5 ? v6 : s == 6 ? v7 : v8
+                    tr = uEnt(va) > 0 or uOpen(va) == 1 ? 2 : uStep(va) == 1 ? 1 : 0
+                    ag = uAgo(va)
+                    if tr > 0 and (actS < 0 or tr > actTier or (tr == actTier and ag >= actAgo))
+                        actTier := tr
+                        actAgo  := ag
+                        actS    := s
+
+            // The pair's continuation, unpacked once per pair: the owner
+            // slot and the restarted entry count, 0 when the running trade
+            // is not a continuation. See ccPk in pairGates.
+            contLiveN = ccLiveN(vC)
+            contLiveS = ccLiveS(vC)
 
             // Quiet means every one of the eight is sitting still. Worked out
             // before the row is placed, because a hidden row must not consume a
@@ -2334,6 +2530,8 @@ scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, 
                         array.push(rKey, 1.0 * stt * 10000000000 + e * 1000000 + uAgo(vv))
                         array.push(rLive, lv)
                         array.push(rFlat, livePkFlat(v9))
+                        array.push(rAct, s == actS)
+                        array.push(rCont, s == contLiveS ? contLiveN : 0)
 
             if quiet and not showQuiet
                 array.set(tally, 3, array.get(tally, 3) + 1)
@@ -2344,14 +2542,14 @@ scanPair(bool on, string raw, float v1, float v2, float v3, float v4, float v5, 
                 rowBg = drawn % 2 == 0 ? C_ROWA : C_ROWB
                 table.cell(gTable, 0, r, ' ' + nm + ' ', bgcolor = rowBg,
                      text_color = C_TXT, text_size = txtSize)
-                gCell(1, r, GLYPH_A1, v1, rowBg)
-                gCell(2, r, GLYPH_A2, v2, rowBg)
-                gCell(3, r, GLYPH_B1, v3, rowBg)
-                gCell(4, r, GLYPH_B2, v4, rowBg)
-                gCell(5, r, GLYPH_C1, v5, rowBg)
-                gCell(6, r, GLYPH_C2, v6, rowBg)
-                gCell(7, r, GLYPH_D1, v7, rowBg)
-                gCell(8, r, GLYPH_D2, v8, rowBg)
+                gCell(1, r, GLYPH_A1, v1, rowBg, actS == 0, contLiveS == 0 ? contLiveN : 0)
+                gCell(2, r, GLYPH_A2, v2, rowBg, actS == 1, contLiveS == 1 ? contLiveN : 0)
+                gCell(3, r, GLYPH_B1, v3, rowBg, actS == 2, contLiveS == 2 ? contLiveN : 0)
+                gCell(4, r, GLYPH_B2, v4, rowBg, actS == 3, contLiveS == 3 ? contLiveN : 0)
+                gCell(5, r, GLYPH_C1, v5, rowBg, actS == 4, contLiveS == 4 ? contLiveN : 0)
+                gCell(6, r, GLYPH_C2, v6, rowBg, actS == 5, contLiveS == 5 ? contLiveN : 0)
+                gCell(7, r, GLYPH_D1, v7, rowBg, actS == 6, contLiveS == 6 ? contLiveN : 0)
+                gCell(8, r, GLYPH_D2, v8, rowBg, actS == 7, contLiveS == 7 ? contLiveN : 0)
     array.get(tally, 0)
 
 if barstate.islast
@@ -2390,6 +2588,8 @@ if barstate.islast
     array.clear(rKey)
     array.clear(rLive)
     array.clear(rFlat)
+    array.clear(rAct)
+    array.clear(rCont)
 
     // The header, and the one thing it has to be able to say is that the chart
     // is on a timeframe the grid has no lengths for - in which case every number
@@ -2436,37 +2636,37 @@ if barstate.islast
                      tooltip = 'Gate ' + (s < 2 ? 'A' : s < 4 ? 'B' : s < 6 ? 'C' : 'D') + ', ' + gateTxt(s) + ', ' +
                           (s % 2 == 0 ? 'best length on this timeframe.' : 'second length.'))
 
-    // GENERATED - thirty scanPair calls of nine arguments.
-    scanPair(use01, sym01, g01_1, g01_2, g01_3, g01_4, g01_5, g01_6, g01_7, g01_8, lp01)
-    scanPair(use02, sym02, g02_1, g02_2, g02_3, g02_4, g02_5, g02_6, g02_7, g02_8, lp02)
-    scanPair(use03, sym03, g03_1, g03_2, g03_3, g03_4, g03_5, g03_6, g03_7, g03_8, lp03)
-    scanPair(use04, sym04, g04_1, g04_2, g04_3, g04_4, g04_5, g04_6, g04_7, g04_8, lp04)
-    scanPair(use05, sym05, g05_1, g05_2, g05_3, g05_4, g05_5, g05_6, g05_7, g05_8, lp05)
-    scanPair(use06, sym06, g06_1, g06_2, g06_3, g06_4, g06_5, g06_6, g06_7, g06_8, lp06)
-    scanPair(use07, sym07, g07_1, g07_2, g07_3, g07_4, g07_5, g07_6, g07_7, g07_8, lp07)
-    scanPair(use08, sym08, g08_1, g08_2, g08_3, g08_4, g08_5, g08_6, g08_7, g08_8, lp08)
-    scanPair(use09, sym09, g09_1, g09_2, g09_3, g09_4, g09_5, g09_6, g09_7, g09_8, lp09)
-    scanPair(use10, sym10, g10_1, g10_2, g10_3, g10_4, g10_5, g10_6, g10_7, g10_8, lp10)
-    scanPair(use11, sym11, g11_1, g11_2, g11_3, g11_4, g11_5, g11_6, g11_7, g11_8, lp11)
-    scanPair(use12, sym12, g12_1, g12_2, g12_3, g12_4, g12_5, g12_6, g12_7, g12_8, lp12)
-    scanPair(use13, sym13, g13_1, g13_2, g13_3, g13_4, g13_5, g13_6, g13_7, g13_8, lp13)
-    scanPair(use14, sym14, g14_1, g14_2, g14_3, g14_4, g14_5, g14_6, g14_7, g14_8, lp14)
-    scanPair(use15, sym15, g15_1, g15_2, g15_3, g15_4, g15_5, g15_6, g15_7, g15_8, lp15)
-    scanPair(use16, sym16, g16_1, g16_2, g16_3, g16_4, g16_5, g16_6, g16_7, g16_8, lp16)
-    scanPair(use17, sym17, g17_1, g17_2, g17_3, g17_4, g17_5, g17_6, g17_7, g17_8, lp17)
-    scanPair(use18, sym18, g18_1, g18_2, g18_3, g18_4, g18_5, g18_6, g18_7, g18_8, lp18)
-    scanPair(use19, sym19, g19_1, g19_2, g19_3, g19_4, g19_5, g19_6, g19_7, g19_8, lp19)
-    scanPair(use20, sym20, g20_1, g20_2, g20_3, g20_4, g20_5, g20_6, g20_7, g20_8, lp20)
-    scanPair(use21, sym21, g21_1, g21_2, g21_3, g21_4, g21_5, g21_6, g21_7, g21_8, lp21)
-    scanPair(use22, sym22, g22_1, g22_2, g22_3, g22_4, g22_5, g22_6, g22_7, g22_8, lp22)
-    scanPair(use23, sym23, g23_1, g23_2, g23_3, g23_4, g23_5, g23_6, g23_7, g23_8, lp23)
-    scanPair(use24, sym24, g24_1, g24_2, g24_3, g24_4, g24_5, g24_6, g24_7, g24_8, lp24)
-    scanPair(use25, sym25, g25_1, g25_2, g25_3, g25_4, g25_5, g25_6, g25_7, g25_8, lp25)
-    scanPair(use26, sym26, g26_1, g26_2, g26_3, g26_4, g26_5, g26_6, g26_7, g26_8, lp26)
-    scanPair(use27, sym27, g27_1, g27_2, g27_3, g27_4, g27_5, g27_6, g27_7, g27_8, lp27)
-    scanPair(use28, sym28, g28_1, g28_2, g28_3, g28_4, g28_5, g28_6, g28_7, g28_8, lp28)
-    scanPair(use29, sym29, g29_1, g29_2, g29_3, g29_4, g29_5, g29_6, g29_7, g29_8, lp29)
-    scanPair(use30, sym30, g30_1, g30_2, g30_3, g30_4, g30_5, g30_6, g30_7, g30_8, lp30)
+    // GENERATED - thirty scanPair calls, ten packed floats each.
+    scanPair(use01, sym01, g01_1, g01_2, g01_3, g01_4, g01_5, g01_6, g01_7, g01_8, lp01, cc01)
+    scanPair(use02, sym02, g02_1, g02_2, g02_3, g02_4, g02_5, g02_6, g02_7, g02_8, lp02, cc02)
+    scanPair(use03, sym03, g03_1, g03_2, g03_3, g03_4, g03_5, g03_6, g03_7, g03_8, lp03, cc03)
+    scanPair(use04, sym04, g04_1, g04_2, g04_3, g04_4, g04_5, g04_6, g04_7, g04_8, lp04, cc04)
+    scanPair(use05, sym05, g05_1, g05_2, g05_3, g05_4, g05_5, g05_6, g05_7, g05_8, lp05, cc05)
+    scanPair(use06, sym06, g06_1, g06_2, g06_3, g06_4, g06_5, g06_6, g06_7, g06_8, lp06, cc06)
+    scanPair(use07, sym07, g07_1, g07_2, g07_3, g07_4, g07_5, g07_6, g07_7, g07_8, lp07, cc07)
+    scanPair(use08, sym08, g08_1, g08_2, g08_3, g08_4, g08_5, g08_6, g08_7, g08_8, lp08, cc08)
+    scanPair(use09, sym09, g09_1, g09_2, g09_3, g09_4, g09_5, g09_6, g09_7, g09_8, lp09, cc09)
+    scanPair(use10, sym10, g10_1, g10_2, g10_3, g10_4, g10_5, g10_6, g10_7, g10_8, lp10, cc10)
+    scanPair(use11, sym11, g11_1, g11_2, g11_3, g11_4, g11_5, g11_6, g11_7, g11_8, lp11, cc11)
+    scanPair(use12, sym12, g12_1, g12_2, g12_3, g12_4, g12_5, g12_6, g12_7, g12_8, lp12, cc12)
+    scanPair(use13, sym13, g13_1, g13_2, g13_3, g13_4, g13_5, g13_6, g13_7, g13_8, lp13, cc13)
+    scanPair(use14, sym14, g14_1, g14_2, g14_3, g14_4, g14_5, g14_6, g14_7, g14_8, lp14, cc14)
+    scanPair(use15, sym15, g15_1, g15_2, g15_3, g15_4, g15_5, g15_6, g15_7, g15_8, lp15, cc15)
+    scanPair(use16, sym16, g16_1, g16_2, g16_3, g16_4, g16_5, g16_6, g16_7, g16_8, lp16, cc16)
+    scanPair(use17, sym17, g17_1, g17_2, g17_3, g17_4, g17_5, g17_6, g17_7, g17_8, lp17, cc17)
+    scanPair(use18, sym18, g18_1, g18_2, g18_3, g18_4, g18_5, g18_6, g18_7, g18_8, lp18, cc18)
+    scanPair(use19, sym19, g19_1, g19_2, g19_3, g19_4, g19_5, g19_6, g19_7, g19_8, lp19, cc19)
+    scanPair(use20, sym20, g20_1, g20_2, g20_3, g20_4, g20_5, g20_6, g20_7, g20_8, lp20, cc20)
+    scanPair(use21, sym21, g21_1, g21_2, g21_3, g21_4, g21_5, g21_6, g21_7, g21_8, lp21, cc21)
+    scanPair(use22, sym22, g22_1, g22_2, g22_3, g22_4, g22_5, g22_6, g22_7, g22_8, lp22, cc22)
+    scanPair(use23, sym23, g23_1, g23_2, g23_3, g23_4, g23_5, g23_6, g23_7, g23_8, lp23, cc23)
+    scanPair(use24, sym24, g24_1, g24_2, g24_3, g24_4, g24_5, g24_6, g24_7, g24_8, lp24, cc24)
+    scanPair(use25, sym25, g25_1, g25_2, g25_3, g25_4, g25_5, g25_6, g25_7, g25_8, lp25, cc25)
+    scanPair(use26, sym26, g26_1, g26_2, g26_3, g26_4, g26_5, g26_6, g26_7, g26_8, lp26, cc26)
+    scanPair(use27, sym27, g27_1, g27_2, g27_3, g27_4, g27_5, g27_6, g27_7, g27_8, lp27, cc27)
+    scanPair(use28, sym28, g28_1, g28_2, g28_3, g28_4, g28_5, g28_6, g28_7, g28_8, lp28, cc28)
+    scanPair(use29, sym29, g29_1, g29_2, g29_3, g29_4, g29_5, g29_6, g29_7, g29_8, lp29, cc29)
+    scanPair(use30, sym30, g30_1, g30_2, g30_3, g30_4, g30_5, g30_6, g30_7, g30_8, lp30, cc30)
 
     drawn      = array.get(tally, 0)
     scanned    = array.get(tally, 1)
@@ -2718,7 +2918,7 @@ if barstate.islast and showRun
             // is the one cell that says WHICH machine, eight of them are live on
             // every symbol, and at the same size as its neighbours it was the
             // easiest thing on the row to miss.
-            table.cell(rTable, c + 1, r, slotGlyph(array.get(rSlot, j)) + str.tostring(slotLen(array.get(rSlot, j))),
+            table.cell(rTable, c + 1, r, slotGlyph(array.get(rSlot, j)) + str.tostring(slotLen(array.get(rSlot, j))) + (array.get(rCont, j) > 0 ? ' ✚' + str.tostring(array.get(rCont, j)) : '') + (array.get(rAct, j) ? ' ◀' : ''),
                  bgcolor = rowBg, text_color = rowFg, text_size = txtSizeBig)
             table.cell(rTable, c + 2, r, word, bgcolor = rowBg, text_color = rowFg, text_size = txtSize)
             // BIG AND BRIGHT, no blink, whenever a position is live on the
@@ -3076,7 +3276,7 @@ if barstate.islast and showLog != 'Hidden'
             table.cell(lTable, h + 3, 1, ' Closed ',  bgcolor = color.gray, text_color = color.white, text_size = logTxt,
                  tooltip = 'Closing time of the winning candle, UTC+1.')
             table.cell(lTable, h + 4, 1, ' Entries ', bgcolor = color.gray, text_color = color.white, text_size = logTxt,
-                 tooltip = 'How many entries that window cost, the winning one included. Coloured by the rung it closed on - the same ladder the diamonds wear.')
+                 tooltip = 'How many entries that window cost, the winning one included. Coloured by the rung it closed on - the same ladder the diamonds wear. A ✚ marks a continued trade: the previous window on the pair had closed, this one took the pair over, and the number is the entries taken from that takeover on - not the full depth of the window, which the row colour still shows.')
             table.cell(lTable, h + 5, 1, ' Side ',    bgcolor = color.gray, text_color = color.white, text_size = logTxt)
 
     // i is both the drawn position and the stored one: the array is descending by
@@ -3093,6 +3293,7 @@ if barstate.islast and showLog != 'Hidden'
         for i = 0 to shown - 1
             g    = array.get(jGate, i)
             en   = array.get(jEnt, i)
+            enCont = array.get(jCont, i)
             sd   = array.get(jSide, i)
             rung = array.get(jStep, i)
             blk  = int(math.floor(i / math.max(colRows, 1)))
@@ -3125,7 +3326,7 @@ if barstate.islast and showLog != 'Hidden'
                  text_color = rowFg, text_size = logTxtBig)
             table.cell(lTable, c + 2, rr, ' ' + str.format_time(array.get(jOpen, i), 'MM-dd HH:mm', 'UTC+1') + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
             table.cell(lTable, c + 3, rr, ' ' + str.format_time(array.get(jTime, i), 'MM-dd HH:mm', 'UTC+1') + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
-            table.cell(lTable, c + 4, rr, ' ' + str.tostring(en) + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
+            table.cell(lTable, c + 4, rr, ' ' + str.tostring(en) + (enCont > 0 ? ' ✚' : '') + ' ', bgcolor = rowBg, text_color = rowFg, text_size = logTxt)
             table.cell(lTable, c + 5, rr, sd == 2 ? ' ▲ ' : sd == 1 ? ' ▼ ' : ' ', bgcolor = rowBg,
                  text_color = sideFg, text_size = logTxt)
     else if full

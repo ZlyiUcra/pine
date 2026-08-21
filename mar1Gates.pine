@@ -73,59 +73,59 @@
 // Under each one, in the smallest text the chart has, the gate it belongs to -
 // read live from the inputs, so it cannot claim a setting that has been edited.
 //
-// AND THE LEADING SERIES IS THE ONLY ONE THAT DRAWS AT ALL. DISTANCE and
-// STRENGTH used to be two more rows in the table above - the leader stood
-// nearest the candle at full colour, the other seven further off and washed to
-// 90, findable rather than readable. Both are gone: the other seven no longer
-// draw AT ALL, so there is nothing left at a distance and nothing left to wash.
+// WHICH MARK IS SOLID IS DECIDED PER CANDLE (user rule, 2026-08-20). Every
+// machine draws on the candles it actually signals on; when several mark the
+// same candle, three keys settle which one is solid:
 //
-// WHOEVER WAS THERE FIRST IS THE ONLY ONE THAT SHOWS, and every mark that lands
-// after it - a new shape, a new gate, a warning, anything - draws NOTHING until
-// that one finishes. Ranked in two tiers:
+//   1  AN OPEN CLAIM outranks a waiting one - an entry or a failure, which
+//      belong to a window, over a warning or the white step, which do not
+//   2  inside that, THE ONE THAT OPENED FIRST wins, and goes on winning for
+//      as long as its window is open. Whoever was there first has the candle
+//   3  and only on an exact tie - both opened on the very same candle, which
+//      is what happens when a closed episode lets several gates start
+//      together - does the FURTHEST LETTER take it, D2 down to A1
 //
-//   an OPEN WINDOW outranks a pre-armed gate, whatever the clock says. A run
-//   that is costing money is not to be hidden on behalf of a gate that is
-//   merely worth watching.
+// The rest wash to 90, findable rather than loud, and a gate that speaks
+// alone is always solid - while nobody is in the market. From the entry that
+// takes a trade to the close of that window the tape is LOCKED (user rule,
+// 2026-08-20): the trading slot draws alone and every other machine stays off
+// the candles entirely, green and white alike, coming back when the window
+// closes. See THE TAPE LOCK beside the leader chain.
 //
-//   inside a tier the EARLIEST wins - the window that opened first, or the gate
-//   that reached the white step first.
+// The rule took three shapes in one day and this is the third: whoever opened
+// first, then the furthest letter outright, then first-opened with the letter
+// demoted to the tie-break it should always have been. The middle shape broke
+// on the case that matters - a gate carrying an episode for half an hour was
+// washed out the moment a stricter gate spoke for the first time.
 //
-// It cannot be overtaken: a window opening is stamped once and never moves, so
-// anything that starts later stands behind it for as long as both are live,
-// whichever of the two goes deeper. A run is followed from its beginning to its
-// end or it is not a run.
+// THE ARROW SAYS THE SAME THING NOW. The RUNNING table marks with ◀ the
+// machine to WORK BY between signals - the open window that opened first,
+// pre-armed only when nothing is open - and mar1GatesScanner.pine's ◀ is that
+// same answer per pair. One key, three places, plus the log below. While the
+// tape is locked the arrow sits on the OWNER - the slot whose entry took the
+// trade - because that is the series being worked, whatever the clock says.
 //
-// BEST OR SECOND MAKES NO DIFFERENCE to this. Whichever slot started first is
-// the one that draws, second length or not.
+// THE PRICE-DISTANCE MACHINERY - lane(), and the per-slot gap in markY and
+// smY - is what keeps a busy bar readable: plot order is fixed when the file
+// compiles while priority changes bar by bar, so z-order could never be made
+// to follow importance. The solid mark takes the front row nearest the
+// candle, and every other mark drawing on that bar queues behind it in that
+// same order, only as far out as the bar actually needs.
 //
-// THE PRICE-DISTANCE MACHINERY IS STILL IN THE FILE - lane(), and the per-slot
-// gap in markY and smY - because it used to be the answer to a real problem:
-// plot order is fixed when the file compiles while the leading series changes
-// every few minutes, so z-order could never be made to follow importance, and a
-// white warning on gate D used to sit over a lime entry on gate A purely because
-// D is written lower down. With only the leader ever drawing, that machinery now
-// only ever has one shape to place on any given bar and always parks it at the
-// same distance nearest the candle - kept rather than stripped out, on the
-// chance a future change lets more than one machine draw again.
-//
-// THE OTHER SEVEN ARE HIDDEN NOW, not faded, and that is a deliberate reversal
-// of what this file drew before: a signal on a gate that is not carrying the
-// episode used to leave a pale mark, and now it leaves none. Nothing about the
-// account changes - the gate still grades its own streak, still reaches its own
-// row in the RUNNING and CLOSED tables the moment it becomes the leader, and
-// still opens its own window if its turn comes. What is gone is chart-only
-// evidence of a signal that fired on a gate the chart was not, at that moment,
-// ABOUT - which is exactly the clutter this was asked to remove. The RUNNING
-// table names the leader with ◀.
+// The CLOSED log answers a different question - "what did the episode cost" -
+// but it ranks by the same key, and always did: the episode belongs to the
+// window that opened FIRST, a same-candle tie to the higher slot. The bright
+// mark, the arrow and the row therefore name one gate, which is the gate the
+// statistics are collected against. See the note above logClose.
 //
 // THE LIVE PREVIEW
 // ----------------
 // maRejection.pine's live intrabar preview - the faded marker on the candle
 // still forming - IS reproduced now, and it was deliberately left out for a
 // stretch of this file's life on the grounds that eight previews would be
-// eight markers moving on every tick. That objection stopped applying the
-// moment only the leader ever drew: there is at most one settled marker per
-// bar now, and the preview is the same one, one candle earlier and faded. See
+// eight markers moving on every tick. That objection stopped applying once
+// one mark per bar is the solid one: the preview follows the same per-candle
+// rule and only the would-be solid slot previews, faded. See
 // LIVE PREVIEW at the foot of the file for the mechanism and why it lives
 // there rather than beside the signal it projects.
 //
@@ -233,8 +233,8 @@ indicator('MAR1 Gates', overlay = true, max_bars_back = 200, max_labels_count = 
 // hold.
 gTF = 'Timeframes'
 tfA = input.timeframe('1', 'First / second lengths column', inline = 'tf', group = gTF,
-     tooltip = 'The timeframe each column of MA lengths was measured on. The chart timeframe picks the column: on the first of these two the first lengths run, on the second the second, and on anything else nothing is drawn and the tables say so. Defaults are the 1m and 3m the grid was always wired to.')
-tfB = input.timeframe('3', '', inline = 'tf', group = gTF)
+     tooltip = 'The timeframe each column of MA lengths was measured on. The chart timeframe picks the column: on the first of these two the first lengths run, on the second the second, and on anything else nothing is drawn and the tables say so. Defaults are the 1m and 2m the lengths below were measured on.')
+tfB = input.timeframe('2', '', inline = 'tf', group = gTF)
 
 gA = 'Gate A  ·  ▲ triangle + ⬆ arrow'
 gB = 'Gate B  ·  ● circle + ■ square'
@@ -998,11 +998,13 @@ joinTimes(int[] arr) =>
 //   Touching is not overlapping. A window that opens on the candle another
 //   closed on is a second trade, because the first one had already paid.
 //
-// AND IT IS THE CHART'S RULE, exactly. mar1Gates.pine's leader claims the
-// episode from the moment it opens and holds it until it finishes, and nothing
-// that starts inside that episode reaches the candles at all. Drawn on the
-// chart, row in the log; never drawn for its whole run, no row. The two are now
-// the same sentence rather than two rules that happen to agree most of the time.
+// AND THE CHART IS BACK ON THIS RULE TOO (2026-08-20). This dedup is the one
+// place that never stopped ranking by the opening; the solid mark and the
+// RUNNING arrow were briefly ranked by the furthest letter instead, and are
+// now keyed the same way it is. They still answer different questions - the
+// log says what a finished episode cost, the arrow says what to work by now,
+// and a mark can be solid on a bar the episode's owner is silent on - but they
+// can no longer name different gates for one overlapping episode.
 //
 // The scan walks BACK from the newest row while its close is still after this
 // window opened, which is the whole of the overlap test and terminates by
@@ -1613,23 +1615,37 @@ liveC = onC and tfOk
 liveD = onD and tfOk
 
 // ---------------------------------------------------------------------------
-// THE LEADING SERIES - which of the eight has been carrying money longest
+// THE LEADING SERIES - which of the eight to work by right now
 // ---------------------------------------------------------------------------
-// Eight machines run on one symbol and several of them can be in a series at the
-// same moment. The scanner's closed log keeps ONE row for them - the series that
-// ran longest - and this is the same choice made a bar at a time, so the chart
-// and that row are about the same machine rather than two accounts of one
-// morning that have to be reconciled by eye.
+// Eight machines run on one symbol and several of them can be in a series at
+// the same moment. While they are, the one to work by is the one that GOT
+// THERE FIRST - the window that opened earliest and has not closed yet -
+// because that is the series you were already in when the others joined it,
+// and a second gate opening on the same symbol is the same money seen by
+// another machine. An exact tie, both opened on the same candle, goes to the
+// furthest letter: D2 down to A1.
 //
-// ONLY THE LEADER'S MARKER DRAWS. This used to wash the other seven to 90
-// instead of hiding them, on the grounds that a signal that happened is a fact
-// and a chart that suppresses facts is worse than a busy one. That trade was
-// reversed on request: eight machines drawing on one symbol, most of them
-// pale, was still eight shapes and eight captions computed and placed on every
-// bar, and the point of running one gate at a time on a chart is to see the one
-// gate that is actually carrying the episode - not to be shown, faintly, that
-// seven others also had an opinion. The tables still carry the full account for
-// every gate whether it is leading or not; only the CANDLES now show one.
+// (User decision, 2026-08-20, and the third that day: first-opened, then the
+// furthest letter outright, then first-opened with the letter as the
+// tie-break. The middle one was wrong in the one case that matters - a gate
+// three entries into an episode losing the arrow to a stricter gate that had
+// only just spoken.)
+//
+// THE CLOSED LOG RANKS BY THE SAME KEY - earliest opening, same-candle tie to
+// the higher slot - and so does the solid mark on the candles. The three
+// answer different questions: the log says what the finished episode cost,
+// the arrow says what to work by now, the mark says which gate owns this
+// candle. Their answers agreeing is what makes the statistics describe the
+// gate that was actually traded.
+//
+// WHAT THIS CHAIN DECIDES IS THE ARROW, not the wash. Every machine still
+// draws on the candles it signals on, and which of them is solid is settled
+// per candle among the ones actually drawing - see rankOf below - so a gate
+// that speaks on a bar the leader is silent on is still solid there. This
+// chain is the standing answer the RUNNING table's ◀ needs: which of the eight
+// to work by between signals, when nothing is being drawn at all. THE TAPE
+// LOCK just past this chain's eight calls overrides both halves while a
+// trade is on: the owner draws alone and the arrow follows it.
 //
 // MEASURED FROM THE WINDOW OPENING - the GREEN DIAMOND - and not from the first
 // entry. This was the other way round and it was wrong, in a way that showed on
@@ -1640,7 +1656,7 @@ liveD = onD and tfOk
 //   recovery window - entriesInWindow goes back to zero and firstEntTime with
 //   it. So for as long as a gate stood open on its diamond and had not entered
 //   again, it had no entries and no first entry, was no candidate to lead, and
-//   NOTHING led. leadS stayed -1, dimOff was false for all eight, and a sun
+//   NOTHING led. leadS stayed -1, nothing stepped back, and a sun
 //   and a flag firing two candles later came out at FULL STRENGTH beside a green
 //   diamond that had opened before either of them.
 //
@@ -1650,56 +1666,51 @@ liveD = onD and tfOk
 //
 // AND A PRE-ARMED GATE COUNTS TOO, which is the second half of the same fault.
 // A gate standing one short of its anchor has no window open, so under the rule
-// above it could not lead - and while NOTHING led, dimOff was false for all
-// eight and every mark came out at full strength. That is how a white flag on
+// above it could not lead - and while NOTHING led, every mark came out at
+// full strength. That is how a white flag on
 // gate B landed at full colour beside a green diamond on gate A that had marked
 // the same episode two candles earlier.
 //
-// So there are TWO TIERS, and the tier is read before the clock:
+// So there are TWO TIERS, and the tier is read first:
 //
-//   2  a window is OPEN        ranked by when it opened
-//   1  standing PRE-ARMED      ranked by when it arrived on the white step
+//   2  a window is OPEN        the money tier
+//   1  standing PRE-ARMED      merely worth watching
 //   0  nothing                 no claim at all
 //
 // The tier comes first on purpose. A gate that has been pre-armed since the
-// morning must not take the lead from a window that opened ten minutes ago and
-// is four entries deep - a run that is costing money outranks a gate that is
-// merely worth watching, whatever the clock says. Within a tier the earliest
-// wins, and that is the rule as stated: whoever was there first.
+// morning must not take the lead from a window that is four entries deep - a
+// run that is costing money outranks a gate that is merely worth watching.
+// WITHIN a tier the EARLIEST wins: the window that opened first, or the white
+// step reached first, and it holds the lead until that claim ends. An exact
+// tie - the same timestamp to the millisecond, which means the same candle -
+// goes to the highest slot.
 //
 // A slot is a candidate only if its gate is TICKED. An unticked gate draws
 // nothing, so letting one lead would hide the whole chart on behalf of a
 // machine with no marks on it.
 //
-// Ties keep the HIGHEST slot - D before C before B before A, and inside a gate
-// the second length before the best. Two claims that began on the same candle
-// have no honest ranking by the clock alone, so the tie is broken by how tight
-// the gate is: D is the tightest of the four, so a claim that survived D's
+// ON THAT TIE, D is the tightest of the four, so a claim that survived D's
 // stricter percentage is trusted over one that only had to clear A's, and the
 // second length inside a gate is the CONTROL - see the header - so it stands
-// behind its own best length everywhere except this one tie-break, where the
-// two are equally valid claims and the higher slot number is the one kept.
-// This is deliberately the OPPOSITE of "first in the dialog wins": the dialog
-// lists A before D because that is the order the settings were swept in, not
-// because A's claim is worth more when two windows close identically on the
-// same candle.
+// behind its own best length everywhere except here, where the two started
+// together and the higher slot number is the one kept. This is deliberately
+// the OPPOSITE of "first in the dialog wins": the dialog lists A before D
+// because that is the order the settings were swept in, not because A's claim
+// is worth more while both are in the market.
 //
-// t <= bestT, not t < bestT, is the entire mechanism. The eight calls below
-// run slot 0 to slot 7 in order, so on a genuine tie every later slot's
-// timestamp is EQUAL to the one already held, not smaller - a strict `<` would
-// never fire again once slot 0 claimed it, and the lowest slot would win every
-// tie by default. `<=` lets each later slot in the chain overwrite an exact
-// tie, so the LAST slot standing - the highest one that was tied - is what
-// survives to the end of the chain. A genuinely EARLIER timestamp still wins
-// outright, because `<=` still fires for it; only an EQUAL one falls through
-// to this rule.
+// The mechanism: the eight calls below run slot 0 to slot 7 in order, each
+// comparing itself against the best so far - a better tier, or the same tier
+// and an earlier timestamp, or the same tier and the SAME timestamp and a
+// higher slot. Ascending order is what makes that last clause work with a
+// plain `>`: among slots that started on one candle, the highest is the one
+// left standing at the end of the chain.
 better(int bestT, int bestS, int bestTier, bool on, bool opn, bool pre, int tOpen, int tWhite, int slot) =>
     int  rt   = bestT
     int  rs   = bestS
     int  rr   = bestTier
     tier = opn ? 2 : pre ? 1 : 0
     t    = opn ? tOpen : tWhite
-    if on and tier > 0 and t > 0 and (bestS < 0 or tier > bestTier or (tier == bestTier and t <= bestT))
+    if on and tier > 0 and t > 0 and (bestS < 0 or tier > bestTier or (tier == bestTier and (t < bestT or (t == bestT and slot > bestS))))
         rt := t
         rs := slot
         rr := tier
@@ -1728,8 +1739,8 @@ preD2 = d2Lim > 0 and d2Streak == d2Lim - 1
 // gates fire their FIRST entry or warning at once - one strong rejection
 // candle satisfies more than one MA length - and NONE of them was already
 // leading, every one of them looks like tier 0 to better() for that entire
-// tick, because none has been stamped yet. leadS stays -1, dimOff refuses no
-// one, and every one of those gates draws. It self-corrects the instant the
+// tick, because none has been stamped yet. leadS stays -1 and every one of
+// those gates draws. It self-corrects the instant the
 // bar confirms and gateOne's own state catches up - which is why this only
 // ever shows up on the live, still-forming bar and never on settled history -
 // but for as long as the bar is open, the pile-up is real.
@@ -1738,11 +1749,10 @@ preD2 = d2Lim > 0 and d2Streak == d2Lim - 1
 // the moment its entry FIRES, not only once windowOpen has been written, and
 // the same for tier 1 against a warning. The provisional timestamp is `time` -
 // this bar's open - which is exactly what winOpenTime/whiteSince WILL be
-// stamped as once the bar confirms, so a tie between several gates firing on
-// the same tick resolves by the same "lower slot wins" rule it would have
-// resolved by anyway, just one tick sooner. An already-open window keeps its
-// OWN earlier anchor rather than being reset to `time` by a later entry in the
-// same series.
+// stamped as once the bar confirms, so the tier AND the time it is ranked by
+// are both read honestly one tick sooner. An already-open window keeps its OWN
+// earlier anchor rather than being reset to `time` by a later entry in the same
+// series, which is the whole of what "whoever was there first" means.
 //
 // A SECOND GAP OF THE SAME SHAPE sits on the OTHER end of a window's life, and
 // it is the one that made a WINNING entry disappear rather than a losing one.
@@ -1751,9 +1761,11 @@ preD2 = d2Lim > 0 and d2Streak == d2Lim - 1
 // report to the RUNNING table. But that reset happens BEFORE this bar's
 // leadership is judged, so a1OpenT was already 0 by the time it got here: a
 // gate that had been leading for an hour and won on this exact bar fell back to
-// `time` - as if its window had only just opened - and lost the tie to any gate
-// that had genuinely opened more recently. The mark that should have been the
-// easiest of all to justify, the one that just paid, was the one dimOff hid.
+// `time` - as if its window had only just opened - and lost the lead to a gate
+// that had opened more recently; the mark that should have been the easiest to
+// justify, the one that just paid, was the one the wash hid. Time ranks again,
+// so this is load-bearing rather than merely tidy - and the caption's
+// since-time reads the same value, so a mark and its own text cannot disagree.
 //
 // winOpenAtSignal (aXSigT below) is gateOne's fix for this half: captured
 // straight after the entry block and before the win-reset, so it carries the
@@ -1811,67 +1823,249 @@ d2EffPreT = preD2 ? d2WhT : time
 [lt7, ls7, lr7] = better(lt6, ls6, lr6, liveD, d1EffOpn, d1EffPre, d1EffOpnT, d1EffPreT, 6)
 [leadT, leadS, leadR] = better(lt7, ls7, lr7, liveD, d2EffOpn, d2EffPre, d2EffOpnT, d2EffPreT, 7)
 
-// Nothing running means nothing to lead, and then NOTHING is hidden. A chart
-// where every marker is suppressed because no series is open would be saying
-// "none of these matters", which is the opposite of true.
-dimOff(int slot) => leadS >= 0 and leadS != slot
+// ---------------------------------------------------------------------------
+// THE TAPE LOCK (user rule, 2026-08-20)
+// ---------------------------------------------------------------------------
+// The moment one of the eight ENTERS THE MARKET, the chart goes single-voice:
+// that slot owns the tape, and every other machine - green and white alike,
+// entries, warnings, outcomes and previews - stays off the candles until the
+// owner's window closes. Not washed: absent. A recovery run in progress is
+// the one thing being traded, and anything else lighting up beside it is
+// exactly the distraction this rule exists to remove. When the window closes,
+// whoever is still open comes back under the ordinary wash rule below, and
+// the next entry among them takes the tape in its turn.
+//
+// OWNERSHIP IS TAKEN BY ENTRY, NOT BY RANK. The wash answers "who is
+// brightest while everybody is still waiting"; the lock answers "who is being
+// traded". A senior window can wear the solid colour for an hour and still
+// lose the tape to a junior gate whose entry simply fires first - whoever
+// goes into the market is the one worked, and holds the tape until its own
+// window closes, exactly as an earlier-opened window holds the wash. The two
+// rules do not fight: rank settles the queue, the entry settles the trade.
+//
+// THE SHUTTER FALLS ONE BAR LATE, on purpose. drawLock below is captured
+// BEFORE this bar's entries are latched, so several entries sharing the latch
+// candle all draw on it - the shared candle stays complete - and the lock
+// bites from the next bar on. The release is read the other way round, before
+// the capture: the bar the owner closes on already shows whoever is still
+// standing. A same-candle race between entries goes by the key used
+// everywhere else: the earliest-opened window, the higher slot on an exact
+// tie.
+//
+// THE MACHINES DO NOT STOP. Every gate keeps running underneath, the RUNNING
+// table keeps a row per running series, the closed log keeps every episode
+// and the alerts still fire - the lock lives in the drawing layer alone,
+// which is what keeps the collected statistics whole while the tape shows
+// one voice.
+lockPick(int bestT, int bestS, bool fire, int t, int slot) =>
+    int rt = bestT
+    int rs = bestS
+    if fire and (bestS < 0 or t < bestT or (t == bestT and slot > bestS))
+        rt := t
+        rs := slot
+    [rt, rs]
 
-// A non-leader's mark washes to 90% instead of being suppressed outright
-// (user rule, 2026-08-10 - reverts "only the leader draws" back to the
-// washed version this file used before that change, on the same grounds
-// the original wash existed for: a signal that happened is a fact, and a
-// chart that hides it entirely reads as though it never happened at all).
-washCol(color col, int slot) => dimOff(slot) ? color.new(col, 90) : col
+// The owner: -1 while nobody is in the market, otherwise the slot whose entry
+// latched it. Released the bar its window is no longer open - or its gate is
+// unticked, which takes its marks off the chart anyway and must not leave the
+// tape locked on behalf of a machine that draws nothing.
+//
+// THE SECOND WIND (user rule, 2026-08-20). When the tape frees and the next
+// owner is a window that was ALREADY OPEN before that close, the trade on
+// this pair is CONTINUING, and its entries are counted a second time from
+// one: contN restarts at the takeover and steps with each entry the owner
+// takes, while the marks keep their real ladder colour. The small cross the
+// entry marks wear below reads that count. prevCloseT is the bar the tape
+// last freed on - what "already open before that close" is measured against;
+// a fresh ownership keeps contOn false and wears no cross, its own first
+// colours already telling the story.
+var int  lockS = -1
+var bool contOn = false
+var int  contN = 0
+var int  prevCloseT = 0
+if lockS >= 0
+    ownOn = lockS == 0 ? liveA and a1EffOpn : lockS == 1 ? liveA and a2EffOpn :
+         lockS == 2 ? liveB and b1EffOpn : lockS == 3 ? liveB and b2EffOpn :
+         lockS == 4 ? liveC and c1EffOpn : lockS == 5 ? liveC and c2EffOpn :
+         lockS == 6 ? liveD and d1EffOpn : liveD and d2EffOpn
+    if not ownOn
+        lockS := -1
+        prevCloseT := time
+        contOn := false
+        contN := 0
+    else
+        // The owner's next entry while the trade continues - the restarted
+        // count steps here, once per entry, never on the latch bar: the
+        // latch below sets 1 itself and this branch only runs while locked.
+        ownFire = lockS == 0 ? liveA and (a1Buy or a1Sell) : lockS == 1 ? liveA and (a2Buy or a2Sell) :
+             lockS == 2 ? liveB and (b1Buy or b1Sell) : lockS == 3 ? liveB and (b2Buy or b2Sell) :
+             lockS == 4 ? liveC and (c1Buy or c1Sell) : lockS == 5 ? liveC and (c2Buy or c2Sell) :
+             lockS == 6 ? liveD and (d1Buy or d1Sell) : liveD and (d2Buy or d2Sell)
+        if contOn and ownFire
+            contN += 1
 
-// WHERE A MACHINE STANDS, counted outwards from the candle. The leader is pulled
-// to the front row and everything else queues behind it in slot order, so no two
+// What the marks obey on THIS bar - after the release, before the latch. The
+// ordering IS the mechanism: release-first shows the survivors on the close
+// bar, latch-last keeps the shared entry candle complete. lockS rather than
+// drawLock only where the arrow needs the live answer - see lockLead.
+drawLock = lockS
+
+[lk1t, lk1s] = lockPick(0,    -1,   liveA and (a1Buy or a1Sell), a1EffOpnT, 0)
+[lk2t, lk2s] = lockPick(lk1t, lk1s, liveA and (a2Buy or a2Sell), a2EffOpnT, 1)
+[lk3t, lk3s] = lockPick(lk2t, lk2s, liveB and (b1Buy or b1Sell), b1EffOpnT, 2)
+[lk4t, lk4s] = lockPick(lk3t, lk3s, liveB and (b2Buy or b2Sell), b2EffOpnT, 3)
+[lk5t, lk5s] = lockPick(lk4t, lk4s, liveC and (c1Buy or c1Sell), c1EffOpnT, 4)
+[lk6t, lk6s] = lockPick(lk5t, lk5s, liveC and (c2Buy or c2Sell), c2EffOpnT, 5)
+[lk7t, lk7s] = lockPick(lk6t, lk6s, liveD and (d1Buy or d1Sell), d1EffOpnT, 6)
+[lk8t, lk8s] = lockPick(lk7t, lk7s, liveD and (d2Buy or d2Sell), d2EffOpnT, 7)
+if lockS < 0 and lk8s >= 0
+    lockS := lk8s
+    // Continuation or fresh start, settled at the latch: a continuation only
+    // when this window was already open before the tape last freed. lk8t is
+    // the winner's own opening stamp, and a window opened on the very bar
+    // the previous one closed carries this bar's time - not smaller, so it
+    // starts fresh.
+    contOn := prevCloseT > 0 and lk8t < prevCloseT
+    contN := contOn ? 1 : 0
+
+// One test, worn by all forty flag definitions below: a free tape lets
+// everything through, a locked one lets the owner through alone.
+lockOk(int slot) => drawLock < 0 or drawLock == slot
+
+// The arrow follows the trade. While the tape is locked the RUNNING table's
+// arrow sits on the owner - the series actually being worked - and only a
+// free tape falls back to the leader chain's earliest-open answer above.
+// lockS, not drawLock: the table repaints live, and the bar an entry latches
+// on should already point at what latched.
+lockLead = lockS >= 0 ? lockS : leadS
+
+// WHICH MARK ON A CANDLE IS SOLID is decided per candle, not per episode
+// (user rule, 2026-08-20), and by three keys read in this order:
+//
+//   TIER   a mark belonging to an OPEN window - an entry, a failure, a
+//          previewed entry - outranks one that is only waiting - a warning,
+//          the white step, a previewed warning. An open gate is the one
+//          carrying money; a warning has nothing at risk on it yet.
+//   TIME   inside a tier, the claim that STARTED FIRST wins, and keeps
+//          winning until its window closes. Whoever was there first owns the
+//          candle.
+//   SLOT   and only when two claims started on the very same candle does the
+//          furthest letter break it - D2 down to A1.
+//
+// The middle key is the one that took three attempts. With the letter ranking
+// outright, a gate three entries into an episode was washed out the instant a
+// stricter gate spoke for the first time, and the chart then disagreed with
+// both tables and with the closed log about which machine was carrying the
+// pair - a disagreement in the collected statistics rather than a matter of
+// taste. All four rank by the same key now.
+//
+// Everything that loses washes to 90 - on a FREE tape. The 2026-08-10 rule
+// that a signal that happened is a fact still governs the tables and the
+// closed log, which keep every machine's whole account; on the candles it
+// now yields to THE TAPE LOCK above whenever a trade is on (user rule,
+// 2026-08-20): a running trade does not share the tape, so the losers there
+// are absent rather than washed.
+//
+// rankOf packs the three keys into ONE comparable number, so topOf and lane
+// below stay plain integer comparisons:
+//
+//   -1                          draws nothing, and loses to every drawn mark
+//   tier * 1e14 - t * 8 + slot  otherwise, and the higher number wins
+//
+// The tier term is larger than anything the other two can reach with a
+// millisecond timestamp of this century, so it is read first by construction;
+// SUBTRACTING the timestamp is what makes an earlier claim the larger number;
+// and the slot rides in the bottom three units, which the factor 8 on the
+// timestamp keeps clear of it. Two drawn marks can never share a rank - the
+// same tier and the same millisecond still differ by slot - which is what lets
+// lane count strictly-greater ranks without ever counting its own.
+//
+// t is when the claim STARTED - the window's opening, or the arrival on the
+// white step - never when this mark was drawn, and it is the same
+// aXEffOpnT / aXEffPreT pair the leader chain above ranks by, so the mark, the
+// arrow and the caption cannot disagree about a gate's since-when. Each FAMILY
+// of marks - the entry marks, the outcome marks and the live preview - builds
+// its own eight ranks, because the three fire on different bars and each draws
+// the open-claim line with its own flags.
+rankOf(bool fire, bool act, int t, int slot) =>
+    // A claim carrying no stamp of its own started NOW: a gate opening on this
+    // very candle has nothing earlier to show, and reading its 0 as a
+    // timestamp would hand it the front row for the rest of history.
+    tt = nz(t) > 0 ? t : time
+    fire ? (act ? 2 : 1) * 100000000000000 - tt * 8 + slot : -1
+
+// topOf answers "which slot is solid" for one family: the slot carrying the
+// highest rank on this bar, -1 when the family draws nothing at all.
+topOf(int r0, int r1, int r2, int r3, int r4, int r5, int r6, int r7) =>
+    int topR = r0
+    int topS = r0 >= 0 ? 0 : -1
+    if r1 > topR
+        topR := r1
+        topS := 1
+    if r2 > topR
+        topR := r2
+        topS := 2
+    if r3 > topR
+        topR := r3
+        topS := 3
+    if r4 > topR
+        topR := r4
+        topS := 4
+    if r5 > topR
+        topR := r5
+        topS := 5
+    if r6 > topR
+        topR := r6
+        topS := 6
+    if r7 > topR
+        topR := r7
+        topS := 7
+    topS
+
+washCol(color col, int slot, int top) => slot != top ? color.new(col, 90) : col
+
+// WHERE A MACHINE STANDS, counted outwards from the candle. The solid mark -
+// the highest RANK drawing on this bar - takes the front row, and every
+// other drawing slot queues behind it in descending rank order, so no two
 // marks can land on the same price and reading outwards from the candle is
-// reading in importance order.
+// reading in priority order: the open claims first, the oldest of them
+// nearest the candle, and the waiting ones behind them.
 //
-// THE LANE IS DENSE, and that is the whole of this function. It counts only the
-// machines that are ACTUALLY DRAWING on this bar, not the slot number.
+// THE LANE IS DENSE: it counts only the machines that are ACTUALLY DRAWING on
+// this bar - a rank of -1 draws nothing and takes no lane - so a bar with two
+// marks uses lanes 0 and 1 and a bar with one uses lane 0, whichever slots
+// they happen to be.
 //
-// It was `leadS == slot ? 0 : slot + 1` - one reserved lane per slot, always
-// eight of them - and that is why a lone gate-D mark floated eight ATR above the
-// candle with seven empty lanes underneath it. Nothing was in those lanes; they
-// were reserved for machines that had said nothing. A mark that far from its own
-// candle stops pointing at the candle, which is the one thing it exists to do.
+// A slot's lane is simply how many drawing slots RANK ABOVE it - the top rank
+// counts none and lands in front, so the front row still holds the mark that
+// is solid, by construction, exactly as it did when the rank was the slot
+// alone.
 //
-// Now a bar with two marks uses lanes 0 and 1 and a bar with one uses lane 0,
-// whichever slots they happen to be. The separation is still exact - two marks
-// only ever share a lane if one of them is not drawn - and the height is the
-// height the bar actually needs.
-//
-// The eight flags come in as arguments rather than being read from the global
-// scope, because the two marker families fire on DIFFERENT bars: an entry is on
+// The eight ranks come in as arguments rather than being read from the global
+// scope, because the marker families fire on DIFFERENT bars: an entry is on
 // the rejection candle and its outcome is on the candle that graded it. One
 // shared lane table would put an outcome in a lane sized for the entries.
 //
-// `if slot > 0` is not defensive. Pine's `for t = 0 to -1` counts DOWN and runs
-// twice, so on slot 0 the loop would read index -1 and kill the script.
-lane(int slot, bool f0, bool f1, bool f2, bool f3, bool f4, bool f5, bool f6, bool f7) =>
-    // AND THE LEADER'S FRONT ROW IS DENSE TOO, which it was not. `n := 1` held
-    // lane 0 for the leading slot on EVERY bar - including the overwhelming
-    // majority of bars where the leader says nothing at all. A leader is a slot
-    // that opened a window ten candles ago and is still running; it draws a mark
-    // on the candles it actually signals on, and on all the others its lane sat
-    // empty with the whole stack standing behind it.
-    //
-    // leadS == -1 was the same fault at its worst: nothing leading meant nothing
-    // dimmed, and every one of the eight still started at lane 1, so a bar with
-    // ONE mark on it put that mark a full lane out for the benefit of nobody.
-    leadDraws = leadS < 0 ? false :
-         leadS == 0 ? f0 : leadS == 1 ? f1 : leadS == 2 ? f2 : leadS == 3 ? f3 :
-         leadS == 4 ? f4 : leadS == 5 ? f5 : leadS == 6 ? f6 : f7
+// No self-count guard is needed: drawn ranks are distinct by construction,
+// so strictly-greater can never count the slot's own rank.
+lane(int rk, int r0, int r1, int r2, int r3, int r4, int r5, int r6, int r7) =>
     int n = 0
-    if leadS != slot
-        n := leadDraws ? 1 : 0
-        if slot > 0
-            for t = 0 to slot - 1
-                ft = t == 0 ? f0 : t == 1 ? f1 : t == 2 ? f2 : t == 3 ? f3 :
-                     t == 4 ? f4 : t == 5 ? f5 : t == 6 ? f6 : f7
-                if t != leadS and ft
-                    n += 1
+    if r0 > rk
+        n += 1
+    if r1 > rk
+        n += 1
+    if r2 > rk
+        n += 1
+    if r3 > rk
+        n += 1
+    if r4 > rk
+        n += 1
+    if r5 > rk
+        n += 1
+    if r6 > rk
+        n += 1
+    if r7 > rk
+        n += 1
     n
 
 // Entries and warnings share a marker, exactly as they do in maRejection.pine,
@@ -1921,22 +2115,14 @@ lane(int slot, bool f0, bool f1, bool f2, bool f3, bool f4, bool f5, bool f6, bo
 // their size and their draw order, and there are eight glyphs where there were
 // only six usable shapes. See THE EIGHT MARKS at the foot.
 
-// NO WASH ANY MORE. The seven that are not leading used to be faded to 90 -
-// nearly gone, but still there to be found if you looked. Now they are simply
-// not drawn: the leading series has to be the thing the chart is ABOUT, and a
-// chart with one gate open on a symbol is a chart that should show one marker,
-// not eight at different degrees of see-through. It applies to the mark, to
-// its caption and to its outcome alike, so a whole machine steps back together
-// - see dimOff, folded straight into the eight entry and sixteen outcome flags
-// rather than into their colour.
-//
-// THE COST OF THAT CHOICE: a signal that fired on a non-leading gate leaves no
-// trace on the chart at all now, where it used to leave a pale one. It is still
-// the same fact the closed log and the RUNNING table were already built
-// around - only the LEADER ever had a row in either - so nothing that used to
-// be readable stops being readable. What is gone is the chart-only evidence
-// that something fired on a gate that was not carrying the episode, which is
-// exactly the clutter this was asked to remove.
+// THE WASH, per candle. The seven-versus-one accounting used to be about the
+// EPISODE leader; since 2026-08-20 it is about the BAR: whichever slots mark
+// this candle, the highest of them is solid and the rest wash to 90. A gate
+// that speaks alone is always solid - on a FREE tape. While a trade is on,
+// lockOk above takes every other machine off the candles outright; the wash
+// is how gates queue while everybody is still waiting, not how a running
+// trade shares the tape - it does not. The tables still carry the full
+// account for every gate either way.
 
 // THE ENTRY MARKS ARE DRAWN AT THE FOOT of this file - eight large shapes, one
 // per machine, through location.absolute so that one plot call serves both
@@ -2006,9 +2192,12 @@ WHITE_STEP = color.new(color.white, 25)
 // the plotshape call. The colour has to agree with the flag about WHICH of the
 // two fired - reading showFails in one and not the other is how a hidden failure
 // would come out wearing its failure colour anyway.
-// Washed with the large marker it belongs to, and by the same rule: an outcome
-// that reports a marker standing behind the leader is itself standing behind it.
-// Splitting the two would put a full-strength failure under a pale entry.
+// Washed by the same per-candle rule the large marks use, measured on the
+// OUTCOME ranks: a failure - the green diamond that opens a gate included -
+// belongs to a window and outranks the white step that only waits, and inside
+// a tier the window that opened first takes the candle. The wash is applied at
+// the plot calls, where oTop is finally known - the colour built here is the
+// raw one.
 //
 // AND IT WEARS THAT MARKER'S SHAPE, one size down - see THE EIGHT MARKS at the
 // foot. Shape says which gate, size says entry-or-outcome, and the two questions
@@ -2034,37 +2223,37 @@ smY(bool lng, bool sht, int ln) =>
     gap = atrVal * (0.20 + ln * 0.30)
     lng ? low - gap : sht ? high + gap : na
 
-a1SmL = liveA and ((showFails and a1FailL) or (showWhite and a1WhL))
-a1SmS = liveA and ((showFails and a1FailS) or (showWhite and a1WhS))
-a1SmC = washCol(a1SmL ? (showFails and a1FailL ? a1FailC : WHITE_STEP) : (showFails and a1FailS ? a1FailC : WHITE_STEP), 0)
+a1SmL = liveA and lockOk(0) and ((showFails and a1FailL) or (showWhite and a1WhL))
+a1SmS = liveA and lockOk(0) and ((showFails and a1FailS) or (showWhite and a1WhS))
+a1SmC = a1SmL ? (showFails and a1FailL ? a1FailC : WHITE_STEP) : (showFails and a1FailS ? a1FailC : WHITE_STEP)
 
-a2SmL = liveA and ((showFails and a2FailL) or (showWhite and a2WhL))
-a2SmS = liveA and ((showFails and a2FailS) or (showWhite and a2WhS))
-a2SmC = washCol(a2SmL ? (showFails and a2FailL ? a2FailC : WHITE_STEP) : (showFails and a2FailS ? a2FailC : WHITE_STEP), 1)
+a2SmL = liveA and lockOk(1) and ((showFails and a2FailL) or (showWhite and a2WhL))
+a2SmS = liveA and lockOk(1) and ((showFails and a2FailS) or (showWhite and a2WhS))
+a2SmC = a2SmL ? (showFails and a2FailL ? a2FailC : WHITE_STEP) : (showFails and a2FailS ? a2FailC : WHITE_STEP)
 
-b1SmL = liveB and ((showFails and b1FailL) or (showWhite and b1WhL))
-b1SmS = liveB and ((showFails and b1FailS) or (showWhite and b1WhS))
-b1SmC = washCol(b1SmL ? (showFails and b1FailL ? b1FailC : WHITE_STEP) : (showFails and b1FailS ? b1FailC : WHITE_STEP), 2)
+b1SmL = liveB and lockOk(2) and ((showFails and b1FailL) or (showWhite and b1WhL))
+b1SmS = liveB and lockOk(2) and ((showFails and b1FailS) or (showWhite and b1WhS))
+b1SmC = b1SmL ? (showFails and b1FailL ? b1FailC : WHITE_STEP) : (showFails and b1FailS ? b1FailC : WHITE_STEP)
 
-b2SmL = liveB and ((showFails and b2FailL) or (showWhite and b2WhL))
-b2SmS = liveB and ((showFails and b2FailS) or (showWhite and b2WhS))
-b2SmC = washCol(b2SmL ? (showFails and b2FailL ? b2FailC : WHITE_STEP) : (showFails and b2FailS ? b2FailC : WHITE_STEP), 3)
+b2SmL = liveB and lockOk(3) and ((showFails and b2FailL) or (showWhite and b2WhL))
+b2SmS = liveB and lockOk(3) and ((showFails and b2FailS) or (showWhite and b2WhS))
+b2SmC = b2SmL ? (showFails and b2FailL ? b2FailC : WHITE_STEP) : (showFails and b2FailS ? b2FailC : WHITE_STEP)
 
-c1SmL = liveC and ((showFails and c1FailL) or (showWhite and c1WhL))
-c1SmS = liveC and ((showFails and c1FailS) or (showWhite and c1WhS))
-c1SmC = washCol(c1SmL ? (showFails and c1FailL ? c1FailC : WHITE_STEP) : (showFails and c1FailS ? c1FailC : WHITE_STEP), 4)
+c1SmL = liveC and lockOk(4) and ((showFails and c1FailL) or (showWhite and c1WhL))
+c1SmS = liveC and lockOk(4) and ((showFails and c1FailS) or (showWhite and c1WhS))
+c1SmC = c1SmL ? (showFails and c1FailL ? c1FailC : WHITE_STEP) : (showFails and c1FailS ? c1FailC : WHITE_STEP)
 
-c2SmL = liveC and ((showFails and c2FailL) or (showWhite and c2WhL))
-c2SmS = liveC and ((showFails and c2FailS) or (showWhite and c2WhS))
-c2SmC = washCol(c2SmL ? (showFails and c2FailL ? c2FailC : WHITE_STEP) : (showFails and c2FailS ? c2FailC : WHITE_STEP), 5)
+c2SmL = liveC and lockOk(5) and ((showFails and c2FailL) or (showWhite and c2WhL))
+c2SmS = liveC and lockOk(5) and ((showFails and c2FailS) or (showWhite and c2WhS))
+c2SmC = c2SmL ? (showFails and c2FailL ? c2FailC : WHITE_STEP) : (showFails and c2FailS ? c2FailC : WHITE_STEP)
 
-d1SmL = liveD and ((showFails and d1FailL) or (showWhite and d1WhL))
-d1SmS = liveD and ((showFails and d1FailS) or (showWhite and d1WhS))
-d1SmC = washCol(d1SmL ? (showFails and d1FailL ? d1FailC : WHITE_STEP) : (showFails and d1FailS ? d1FailC : WHITE_STEP), 6)
+d1SmL = liveD and lockOk(6) and ((showFails and d1FailL) or (showWhite and d1WhL))
+d1SmS = liveD and lockOk(6) and ((showFails and d1FailS) or (showWhite and d1WhS))
+d1SmC = d1SmL ? (showFails and d1FailL ? d1FailC : WHITE_STEP) : (showFails and d1FailS ? d1FailC : WHITE_STEP)
 
-d2SmL = liveD and ((showFails and d2FailL) or (showWhite and d2WhL))
-d2SmS = liveD and ((showFails and d2FailS) or (showWhite and d2WhS))
-d2SmC = washCol(d2SmL ? (showFails and d2FailL ? d2FailC : WHITE_STEP) : (showFails and d2FailS ? d2FailC : WHITE_STEP), 7)
+d2SmL = liveD and lockOk(7) and ((showFails and d2FailL) or (showWhite and d2WhL))
+d2SmS = liveD and lockOk(7) and ((showFails and d2FailS) or (showWhite and d2WhS))
+d2SmC = d2SmL ? (showFails and d2FailL ? d2FailC : WHITE_STEP) : (showFails and d2FailS ? d2FailC : WHITE_STEP)
 
 // THE DENSE LANES for the outcome marks, worked out from the sixteen flags
 // above. A slot is "drawing" when either of its sides is, and a slot that draws
@@ -2079,32 +2268,64 @@ oF5 = c2SmL or c2SmS
 oF6 = d1SmL or d1SmS
 oF7 = d2SmL or d2SmS
 
-b1SmY = smY(b1SmL, b1SmS, lane(2, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-b2SmY = smY(b2SmL, b2SmS, lane(3, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-c1SmY = smY(c1SmL, c1SmS, lane(4, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-c2SmY = smY(c2SmL, c2SmS, lane(5, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-d1SmY = smY(d1SmL, d1SmS, lane(6, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-d2SmY = smY(d2SmL, d2SmS, lane(7, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
+// The open half of each outcome, for the rank: a failure mark belongs to a
+// window that is open or opening - the lime one IS the green diamond, the gate
+// opening - while the white step only waits: the same open-versus-pre-armed
+// line the tables' arrow already ranks by. showFails rides along because the
+// rank must follow what is actually DRAWN: with the failure half hidden, the
+// slot only draws at all when its white step fired too, and what stands on the
+// candle then is the waiting white.
+//
+// The TIME each one is ranked by follows the same split - the window's opening
+// for a failure, the arrival on the white step for the white mark - and both
+// come from the leader chain's own aXEff pairs rather than being rebuilt here.
+oA0 = liveA and showFails and (a1FailL or a1FailS)
+oA1 = liveA and showFails and (a2FailL or a2FailS)
+oA2 = liveB and showFails and (b1FailL or b1FailS)
+oA3 = liveB and showFails and (b2FailL or b2FailS)
+oA4 = liveC and showFails and (c1FailL or c1FailS)
+oA5 = liveC and showFails and (c2FailL or c2FailS)
+oA6 = liveD and showFails and (d1FailL or d1FailS)
+oA7 = liveD and showFails and (d2FailL or d2FailS)
+
+oR0 = rankOf(oF0, oA0, oA0 ? a1EffOpnT : a1EffPreT, 0)
+oR1 = rankOf(oF1, oA1, oA1 ? a2EffOpnT : a2EffPreT, 1)
+oR2 = rankOf(oF2, oA2, oA2 ? b1EffOpnT : b1EffPreT, 2)
+oR3 = rankOf(oF3, oA3, oA3 ? b2EffOpnT : b2EffPreT, 3)
+oR4 = rankOf(oF4, oA4, oA4 ? c1EffOpnT : c1EffPreT, 4)
+oR5 = rankOf(oF5, oA5, oA5 ? c2EffOpnT : c2EffPreT, 5)
+oR6 = rankOf(oF6, oA6, oA6 ? d1EffOpnT : d1EffPreT, 6)
+oR7 = rankOf(oF7, oA7, oA7 ? d2EffOpnT : d2EffPreT, 7)
+
+// Which outcome is solid on this bar - see topOf above.
+oTop = topOf(oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7)
+
+b1SmY = smY(b1SmL, b1SmS, lane(oR2, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+b2SmY = smY(b2SmL, b2SmS, lane(oR3, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+c1SmY = smY(c1SmL, c1SmS, lane(oR4, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+c2SmY = smY(c2SmL, c2SmS, lane(oR5, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+d1SmY = smY(d1SmL, d1SmS, lane(oR6, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+d2SmY = smY(d2SmL, d2SmS, lane(oR7, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
 
 // The two POINTING slots split a call per side here exactly as their entry marks
 // do at the foot, and for the same reason: plotshape's style is a const, so a
 // shape that has to point with the trade needs one call for each direction. The
 // lane is worked out once and handed to both, so the pair cannot drift apart.
-a1SmYL = smY(a1SmL, false,  lane(0, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-a1SmYS = smY(false,  a1SmS, lane(0, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-a2SmYL = smY(a2SmL, false,  lane(1, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
-a2SmYS = smY(false,  a2SmS, lane(1, oF0, oF1, oF2, oF3, oF4, oF5, oF6, oF7))
+a1SmYL = smY(a1SmL, false,  lane(oR0, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+a1SmYS = smY(false,  a1SmS, lane(oR0, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+a2SmYL = smY(a2SmL, false,  lane(oR1, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
+a2SmYS = smY(false,  a2SmS, lane(oR1, oR0, oR1, oR2, oR3, oR4, oR5, oR6, oR7))
 
-plotshape(b1SmY, 'B ● outcome', shape.circle,  location.absolute, color = b1SmC, size = size.tiny)
-plotshape(b2SmY, 'B ■ outcome', shape.square,  location.absolute, color = b2SmC, size = size.tiny)
-plotshape(c1SmY, 'C ⚑ outcome', shape.flag,    location.absolute, color = c1SmC, size = size.tiny)
-plotshape(c2SmY, 'C ◆ outcome', shape.diamond, location.absolute, color = c2SmC, size = size.tiny)
-plotchar(d1SmY, title = 'D ☀ outcome', char = '☀', location = location.absolute, color = d1SmC, size = size.tiny)
-plotchar(d2SmY, title = 'D ❄ outcome', char = '❄', location = location.absolute, color = d2SmC, size = size.tiny)
-plotshape(a1SmYL, 'A ▲ outcome · long',  shape.triangleup,   location.absolute, color = a1SmC, size = size.tiny)
-plotshape(a1SmYS, 'A ▼ outcome · short', shape.triangledown, location.absolute, color = a1SmC, size = size.tiny)
-plotshape(a2SmYL, 'A ⬆ outcome · long',  shape.labelup,      location.absolute, color = a2SmC, size = size.tiny)
-plotshape(a2SmYS, 'A ⬇ outcome · short', shape.labeldown,    location.absolute, color = a2SmC, size = size.tiny)
+plotshape(b1SmY, 'B ● outcome', shape.circle,  location.absolute, color = washCol(b1SmC, 2, oTop), size = size.tiny)
+plotshape(b2SmY, 'B ■ outcome', shape.square,  location.absolute, color = washCol(b2SmC, 3, oTop), size = size.tiny)
+plotshape(c1SmY, 'C ⚑ outcome', shape.flag,    location.absolute, color = washCol(c1SmC, 4, oTop), size = size.tiny)
+plotshape(c2SmY, 'C ◆ outcome', shape.diamond, location.absolute, color = washCol(c2SmC, 5, oTop), size = size.tiny)
+plotchar(d1SmY, title = 'D ☀ outcome', char = '☀', location = location.absolute, color = washCol(d1SmC, 6, oTop), size = size.tiny)
+plotchar(d2SmY, title = 'D ❄ outcome', char = '❄', location = location.absolute, color = washCol(d2SmC, 7, oTop), size = size.tiny)
+plotshape(a1SmYL, 'A ▲ outcome · long',  shape.triangleup,   location.absolute, color = washCol(a1SmC, 0, oTop), size = size.tiny)
+plotshape(a1SmYS, 'A ▼ outcome · short', shape.triangledown, location.absolute, color = washCol(a1SmC, 0, oTop), size = size.tiny)
+plotshape(a2SmYL, 'A ⬆ outcome · long',  shape.labelup,      location.absolute, color = washCol(a2SmC, 1, oTop), size = size.tiny)
+plotshape(a2SmYS, 'A ⬇ outcome · short', shape.labeldown,    location.absolute, color = washCol(a2SmC, 1, oTop), size = size.tiny)
 
 // ---------------------------------------------------------------------------
 // The two tables
@@ -2270,7 +2491,7 @@ if barstate.islast and showTable
     table.merge_cells(runTable, 0, 1, 6, 1)
 
     table.cell(runTable, 0, 2, ' Gate ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
-         tooltip = 'The glyph is the SAME shape this machine wears on the chart and the number is the length it is running on this timeframe. ▲ ⬆ gate A, ● ■ gate B, ⚑ ◆ gate C, ☀ ❄ gate D - the first of each pair is the best length, the second the control. ◀ marks the LEADING series: whoever was there FIRST and has not finished. An open window outranks a pre-armed gate whatever the clock says, and inside a tier the earliest wins. Only the leader draws on the candles at all; every other slot draws nothing there until its own turn comes. A row here still exists for every gate that is running, armed or pre-armed, whether it is leading or not - a mark on the chart is a series with a row in the closed log; a series that never led while it ran has none.')
+         tooltip = 'The glyph is the SAME shape this machine wears on the chart and the number is the length it is running on this timeframe. ▲ ⬆ gate A, ● ■ gate B, ⚑ ◆ gate C, ☀ ❄ gate D - the first of each pair is the best length, the second the control. ◀ marks the series to WORK BY. While a trade is on it sits on the OWNER - the slot whose entry took the trade - and the chart draws that slot alone until its window closes. Between trades it is the open window that opened first, pre-armed only when nothing is open, and the still-open gates queue washed behind the solid one. A row here still exists for every gate that is running, armed or pre-armed, whether it is leading or not - a mark on the chart is a series with a row in the closed log; a series that never led while it ran has none.')
     table.cell(runTable, 1, 2, ' State ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
          tooltip = 'RUNNING - entries taken, none has paid yet. ARMED - the gate is open, no entry yet. pre-armed - one step short of the anchor, so the next marker would come out white. Nothing is open on a pre-armed gate and none of it reaches the closed log.')
     table.cell(runTable, 2, 2, ' Market ', bgcolor = C_HEAD, text_color = C_TXT, text_size = txtSize,
@@ -2363,12 +2584,15 @@ if barstate.islast and showTable
             rung = ent > 0 ? ladderRung(ent) : (opn or effOpn) ? 2 : 1
             bg = pre and not opn and not effOpn ? color.new(color.white, 88) : rungFill(rung, 55)
             fg = pre and not opn and not effOpn ? color.new(color.white, 30) : rungText(rung)
-            // ◀ on the leading series, which is the row whose markers keep their
-            // full colour on the chart. It earns its place here rather than only
-            // out there because the leader can be a SECOND length, and those draw
-            // no marker: without this the chart would go entirely pale with
-            // nothing on it saying on whose behalf.
-            table.cell(runTable, 0, r, ' ' + slotTag(s) + (s == leadS ? ' ◀' : '') + ' ', bgcolor = bg, text_color = fg, text_size = txtSizeBig)
+            // ◀ on the ACTIVE series - the open window that opened FIRST,
+            // pre-armed only when nothing is open, an exact tie to the higher
+            // slot (2026-08-20). The candles pick their solid mark per bar by
+            // that same key; this arrow is the standing answer to which machine
+            // to work by, held between signals when nothing is being drawn at
+            // all. lockLead, not leadS: while a trade is on the arrow sits on
+            // the slot whose entry took it - the one the locked tape draws -
+            // and only a free tape falls back to the earliest-open leader.
+            table.cell(runTable, 0, r, ' ' + slotTag(s) + (s == lockLead ? ' ◀' : '') + ' ', bgcolor = bg, text_color = fg, text_size = txtSizeBig)
             table.cell(runTable, 1, r, ' ' + st + ' ', bgcolor = bg, text_color = fg, text_size = txtSize)
             table.cell(runTable, 2, r, inMkt ? ' IN ' : (ent > 0 or opn or effOpn or effPre ? ' wait ' : ' '), bgcolor = bg,
                  text_color = inMkt ? color.white : fg, text_size = txtSize)
@@ -2634,15 +2858,15 @@ bgcolor(showHours ? hoursBg : color.new(color.white, 100), title = 'Indicator ho
 // file compiles - so a white warning on gate D used to cover a lime entry on
 // gate A for no better reason than that D is written lower down, and nothing
 // can reorder that at runtime. That machinery - every machine at its own
-// distance from the candle, in ATR - is still here, but only the LEADER ever
-// draws now, so it is also the only one that ever reaches the front row.
+// distance from the candle, in ATR - places every mark that draws: the solid
+// one in the front row, the washed ones queued behind it.
 //
-// THE LEADER IS THE ONLY ONE THAT DRAWS. The other seven are not washed, they
-// are simply absent, and the leader holds its place from the moment it opened,
-// or from the moment it reached the white step, until it finishes. Nothing
-// appears after it while it is running.
+// THE SOLID MARK IS PICKED PER CANDLE - the highest RANK drawing on this bar:
+// an open window above a warning, the earlier opening above the later, and the
+// furthest letter only on a tie - and the rest wash to 90 (user rule,
+// 2026-08-20). See rankOf, topOf and washCol.
 showSecond = input.bool(true, 'Mark the gates on the chart', group = gOut,
-     tooltip = 'One machine at a time, on the candle you enter after: whichever gate opened its window first (or, if none has, whichever reached the white step first) is the only one that draws. The two that point - the triangle and the arrow - point WITH the trade: tip up below the candle for a long, tip down above it for a short. Untick to clear the candles entirely; the tables keep working.', display = display.none)
+     tooltip = 'Every machine marks the candles it signals on, on the candle you enter after; when several mark one candle the gate that got there first is the solid one - an open window beats a warning, and the furthest letter (D2 highest) only breaks an exact tie; the rest wash to near-invisible. While a trade is on the chart goes further: from the entry to the close of that window every other gate is off the candles entirely, and whoever is still open comes back when it closes. The two that point - the triangle and the arrow - point WITH the trade: tip up below the candle for a long, tip down above it for a short. Untick to clear the candles entirely; the tables keep working.', display = display.none)
 
 // Where a mark sits, in price. The front row at 0.35 ATR from the candle and
 // every other machine that is DRAWING a further 0.50 behind it - see lane, which
@@ -2685,22 +2909,22 @@ markY(bool lng, bool sht, int ln) =>
 // The side flags first, then the DENSE LANES they imply, then the prices. Three
 // steps rather than one, because a lane cannot be worked out from one slot: it
 // counts the other seven.
-eL0 = liveA and (a1Buy or a1BuyW)
-eS0 = liveA and (a1Sell or a1SellW)
-eL1 = liveA and (a2Buy or a2BuyW)
-eS1 = liveA and (a2Sell or a2SellW)
-eL2 = liveB and (b1Buy or b1BuyW)
-eS2 = liveB and (b1Sell or b1SellW)
-eL3 = liveB and (b2Buy or b2BuyW)
-eS3 = liveB and (b2Sell or b2SellW)
-eL4 = liveC and (c1Buy or c1BuyW)
-eS4 = liveC and (c1Sell or c1SellW)
-eL5 = liveC and (c2Buy or c2BuyW)
-eS5 = liveC and (c2Sell or c2SellW)
-eL6 = liveD and (d1Buy or d1BuyW)
-eS6 = liveD and (d1Sell or d1SellW)
-eL7 = liveD and (d2Buy or d2BuyW)
-eS7 = liveD and (d2Sell or d2SellW)
+eL0 = liveA and lockOk(0) and (a1Buy or a1BuyW)
+eS0 = liveA and lockOk(0) and (a1Sell or a1SellW)
+eL1 = liveA and lockOk(1) and (a2Buy or a2BuyW)
+eS1 = liveA and lockOk(1) and (a2Sell or a2SellW)
+eL2 = liveB and lockOk(2) and (b1Buy or b1BuyW)
+eS2 = liveB and lockOk(2) and (b1Sell or b1SellW)
+eL3 = liveB and lockOk(3) and (b2Buy or b2BuyW)
+eS3 = liveB and lockOk(3) and (b2Sell or b2SellW)
+eL4 = liveC and lockOk(4) and (c1Buy or c1BuyW)
+eS4 = liveC and lockOk(4) and (c1Sell or c1SellW)
+eL5 = liveC and lockOk(5) and (c2Buy or c2BuyW)
+eS5 = liveC and lockOk(5) and (c2Sell or c2SellW)
+eL6 = liveD and lockOk(6) and (d1Buy or d1BuyW)
+eS6 = liveD and lockOk(6) and (d1Sell or d1SellW)
+eL7 = liveD and lockOk(7) and (d2Buy or d2BuyW)
+eS7 = liveD and lockOk(7) and (d2Sell or d2SellW)
 
 eF0 = eL0 or eS0
 eF1 = eL1 or eS1
@@ -2711,14 +2935,40 @@ eF5 = eL5 or eS5
 eF6 = eL6 or eS6
 eF7 = eL7 or eS7
 
-eN0 = lane(0, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN1 = lane(1, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN2 = lane(2, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN3 = lane(3, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN4 = lane(4, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN5 = lane(5, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN6 = lane(6, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
-eN7 = lane(7, eF0, eF1, eF2, eF3, eF4, eF5, eF6, eF7)
+// The open half, for the rank: a settled ENTRY - the gate was open and this
+// signal is traded - against a WARNING, the same shape wearing white one step
+// short with nothing at risk on it. The times beside them below are the two
+// the leader chain ranks by: when this window opened, and when this gate
+// reached the white step.
+eA0 = liveA and (a1Buy or a1Sell)
+eA1 = liveA and (a2Buy or a2Sell)
+eA2 = liveB and (b1Buy or b1Sell)
+eA3 = liveB and (b2Buy or b2Sell)
+eA4 = liveC and (c1Buy or c1Sell)
+eA5 = liveC and (c2Buy or c2Sell)
+eA6 = liveD and (d1Buy or d1Sell)
+eA7 = liveD and (d2Buy or d2Sell)
+
+eR0 = rankOf(eF0, eA0, eA0 ? a1EffOpnT : a1EffPreT, 0)
+eR1 = rankOf(eF1, eA1, eA1 ? a2EffOpnT : a2EffPreT, 1)
+eR2 = rankOf(eF2, eA2, eA2 ? b1EffOpnT : b1EffPreT, 2)
+eR3 = rankOf(eF3, eA3, eA3 ? b2EffOpnT : b2EffPreT, 3)
+eR4 = rankOf(eF4, eA4, eA4 ? c1EffOpnT : c1EffPreT, 4)
+eR5 = rankOf(eF5, eA5, eA5 ? c2EffOpnT : c2EffPreT, 5)
+eR6 = rankOf(eF6, eA6, eA6 ? d1EffOpnT : d1EffPreT, 6)
+eR7 = rankOf(eF7, eA7, eA7 ? d2EffOpnT : d2EffPreT, 7)
+
+// Which entry mark is solid on this bar - see topOf above.
+eTop = topOf(eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+
+eN0 = lane(eR0, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN1 = lane(eR1, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN2 = lane(eR2, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN3 = lane(eR3, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN4 = lane(eR4, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN5 = lane(eR5, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN6 = lane(eR6, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
+eN7 = lane(eR7, eR0, eR1, eR2, eR3, eR4, eR5, eR6, eR7)
 
 b1Y = markY(eL2, eS2, eN2)
 b2Y = markY(eL3, eS3, eN3)
@@ -2732,21 +2982,21 @@ a1YS = markY(false, eS0, eN0)
 a2YL = markY(eL1, false, eN1)
 a2YS = markY(false, eS1, eN1)
 
-plotshape(b1Y, 'B ● best',   shape.circle,       location.absolute, color = washCol(b1Col, 2), size = size.normal, offset = -1)
-plotshape(b2Y, 'B ■ second', shape.square,       location.absolute, color = washCol(b2Col, 3), size = size.normal, offset = -1)
-plotshape(c1Y, 'C ⚑ best',   shape.flag,         location.absolute, color = washCol(c1Col, 4), size = size.normal, offset = -1)
-plotshape(c2Y, 'C ◆ second', shape.diamond,      location.absolute, color = washCol(c2Col, 5), size = size.normal, offset = -1)
-plotchar(d1Y, title = 'D ☀ best',   char = '☀', location = location.absolute, color = washCol(d1Col, 6), size = size.normal, offset = -1)
-plotchar(d2Y, title = 'D ❄ second', char = '❄', location = location.absolute, color = washCol(d2Col, 7), size = size.normal, offset = -1)
+plotshape(b1Y, 'B ● best',   shape.circle,       location.absolute, color = washCol(b1Col, 2, eTop), size = size.normal, offset = -1)
+plotshape(b2Y, 'B ■ second', shape.square,       location.absolute, color = washCol(b2Col, 3, eTop), size = size.normal, offset = -1)
+plotshape(c1Y, 'C ⚑ best',   shape.flag,         location.absolute, color = washCol(c1Col, 4, eTop), size = size.normal, offset = -1)
+plotshape(c2Y, 'C ◆ second', shape.diamond,      location.absolute, color = washCol(c2Col, 5, eTop), size = size.normal, offset = -1)
+plotchar(d1Y, title = 'D ☀ best',   char = '☀', location = location.absolute, color = washCol(d1Col, 6, eTop), size = size.normal, offset = -1)
+plotchar(d2Y, title = 'D ❄ second', char = '❄', location = location.absolute, color = washCol(d2Col, 7, eTop), size = size.normal, offset = -1)
 
 // THE TWO THAT POINT, and they point WITH the trade in both directions. Below
 // the candle is a long and the tip is up; above the candle is a short and the
 // tip is down. There is no arrangement in which a tip disagrees with the side
 // its own position already states.
-plotshape(a1YL, 'A ▲ best · long',    shape.triangleup,   location.absolute, color = washCol(a1Col, 0), size = size.normal, offset = -1)
-plotshape(a1YS, 'A ▼ best · short',   shape.triangledown, location.absolute, color = washCol(a1Col, 0), size = size.normal, offset = -1)
-plotshape(a2YL, 'A ⬆ second · long',  shape.labelup,      location.absolute, color = washCol(a2Col, 1), size = size.normal, offset = -1)
-plotshape(a2YS, 'A ⬇ second · short', shape.labeldown,    location.absolute, color = washCol(a2Col, 1), size = size.normal, offset = -1)
+plotshape(a1YL, 'A ▲ best · long',    shape.triangleup,   location.absolute, color = washCol(a1Col, 0, eTop), size = size.normal, offset = -1)
+plotshape(a1YS, 'A ▼ best · short',   shape.triangledown, location.absolute, color = washCol(a1Col, 0, eTop), size = size.normal, offset = -1)
+plotshape(a2YL, 'A ⬆ second · long',  shape.labelup,      location.absolute, color = washCol(a2Col, 1, eTop), size = size.normal, offset = -1)
+plotshape(a2YS, 'A ⬇ second · short', shape.labeldown,    location.absolute, color = washCol(a2Col, 1, eTop), size = size.normal, offset = -1)
 
 // ---------------------------------------------------------------------------
 // The gate under the mark
@@ -2761,8 +3011,8 @@ plotshape(a2YS, 'A ⬇ second · short', shape.labeldown,    location.absolute, 
 // size.tiny had gone past quiet into unreadable, which is a different fault. The
 // gate is the one thing on the mark that cannot be guessed from the shape, so it
 // has to survive being looked at. Small against a LARGE shape is still plainly
-// subordinate. It never needs a wash of its own: gateLbl only ever draws for the
-// leader, because y is na for everything else, so there is nothing to fade.
+// subordinate. It never needs a wash of its own: gateLbl only ever draws for
+// the solid mark of the bar, so there is nothing to fade.
 //
 // 0.20 ATR OUT, and that number is tied to the lane step rather than chosen. The
 // lanes are 0.50 apart, so anything past 0.25 puts the caption nearer the NEXT
@@ -2785,11 +3035,11 @@ plotshape(a2YS, 'A ⬇ second · short', shape.labeldown,    location.absolute, 
 // already been reset to 0 by gateOne before this caption reads it, and only
 // aXSigT still remembers what it was. On an ordinary running bar the two agree.
 gateLbl(float y, bool below, int slot, color col, int openT) =>
-    // Captions stay leader-only even though the marks themselves no longer
-    // are (washCol, 2026-08-10) - a caption competing with seven others for
-    // the same few characters of space is the crowding this section already
-    // exists to avoid, and the shape it belongs to still draws, just washed.
-    if not na(y) and barstate.isconfirmed and not dimOff(slot)
+    // Captions go to the SOLID mark of the bar only - the per-candle top
+    // (2026-08-20). A caption competing with seven others for the same few
+    // characters of space is the crowding this section already exists to
+    // avoid, and the washed shapes still draw, just uncaptioned.
+    if not na(y) and barstate.isconfirmed and slot == eTop
         sinceTxt = openT > 0 ? ' · від ' + str.format_time(openT, 'HH:mm', 'UTC+1') : ''
         label.new(bar_index - 1, below ? y - atrVal * 0.20 : y + atrVal * 0.20,
              gateTxt(slot) + ' · ' + str.tostring(slotLen(slot)) + sinceTxt, style = label.style_none,
@@ -2809,6 +3059,40 @@ gateLbl(a1YL, true,  0, a1Col, a1SigT)
 gateLbl(a1YS, false, 0, a1Col, a1SigT)
 gateLbl(a2YL, true,  1, a2Col, a2SigT)
 gateLbl(a2YS, false, 1, a2Col, a2SigT)
+
+// ---------------------------------------------------------------------------
+// THE SECOND-WIND CROSS (user rule, 2026-08-20)
+// ---------------------------------------------------------------------------
+// When the ownership is a CONTINUATION - see THE SECOND WIND by the tape
+// lock - every entry the owner takes wears a small heavy cross beside its
+// big mark: between the mark and its candle, mirrored to the short side like
+// everything else here. The big mark keeps the window's REAL ladder colour,
+// four entries deep and hot if that is the truth; the cross wears the colour
+// of the RESTARTED count - the first entry after the takeover in first-entry
+// green, the next in the deeper green, and on up the same scale. Read as a
+// pair: "this machine is that deep really, and this is the Nth entry since
+// the previous trade closed".
+//
+// A LABEL, deliberately: the plot budget stands at 58 of 64 and a label
+// costs none of it. No wash and no lane either - under the lock the owner
+// draws alone. 0.05 ATR, hugging the candle: the first cut sat at 0.15 and
+// landed exactly on the big mark's own tip - a shape's pixels reach well
+// past its anchor price - so the cross drowned in the triangle it was meant
+// to caption (user report, 2026-08-20). Beside the wick it stands alone,
+// and the caption keeps the far side of the mark.
+// streakColor(lim + n - 1, lim) is exactly the colour the nth entry of a
+// fresh window wears - the scale above ladderRung.
+if barstate.isconfirmed and showSecond and lockS >= 0 and contOn and contN > 0
+    cwFire = lockS == 0 ? eA0 : lockS == 1 ? eA1 : lockS == 2 ? eA2 : lockS == 3 ? eA3 :
+         lockS == 4 ? eA4 : lockS == 5 ? eA5 : lockS == 6 ? eA6 : eA7
+    cwLong = lockS == 0 ? eL0 : lockS == 1 ? eL1 : lockS == 2 ? eL2 : lockS == 3 ? eL3 :
+         lockS == 4 ? eL4 : lockS == 5 ? eL5 : lockS == 6 ? eL6 : eL7
+    cwLim = lockS == 0 ? a1Lim : lockS == 1 ? a2Lim : lockS == 2 ? b1Lim : lockS == 3 ? b2Lim :
+         lockS == 4 ? c1Lim : lockS == 5 ? c2Lim : lockS == 6 ? d1Lim : d2Lim
+    if cwFire
+        cwY = cwLong ? low[1] - atrVal * 0.05 : high[1] + atrVal * 0.05
+        label.new(bar_index - 1, cwY, '✚', style = label.style_none,
+             textcolor = streakColor(cwLim + contN - 1, cwLim), size = size.small)
 
 
 // ---------------------------------------------------------------------------
@@ -3079,10 +3363,10 @@ if barstate.islast and showLog
 // maRejection.pine's own live/repainting preview, brought over. The header
 // used to say this file drew no intrabar previews, on the grounds that eight
 // machines drawing on every tick was eight markers moving at once - a fair
-// objection when all eight machines drew. It stopped being true the moment
-// only the leader ever draws: there is at most one marker to preview now, the
-// same one dimOff already lets through, so the crowding this was rejected for
-// no longer happens on an ordinary bar.
+// objection when all eight machines drew. It stopped being true once one mark
+// per bar is the solid one: the preview follows the same per-candle rule and
+// only the would-be solid slot previews, so the crowding this was rejected
+// for no longer happens on an ordinary bar.
 //
 // WHY IT LIVES HERE, at the foot of the file, and not beside the signal it
 // projects. livePreview and liveFade are inputs, and TradingView maps a saved
@@ -3106,7 +3390,7 @@ if barstate.islast and showLog
 gLive = 'Live preview'
 
 livePreview = input.bool(true, 'Show a fading marker on the forming candle', group = gLive,
-     tooltip = 'A repainting preview of the leading gate - the same one dimOff already lets through - read from the candle still forming. It can appear, change colour or vanish before that candle closes; only the solid marker afterwards is settled. Off leaves the chart exactly as it was before this existed.', display = display.none)
+     tooltip = 'A repainting preview of the gate whose mark would be solid on this candle, read from the candle still forming. It can appear, change colour or vanish before that candle closes; only the solid marker afterwards is settled. Off leaves the chart exactly as it was before this existed.', display = display.none)
 liveFade = input.int(45, 'Preview transparency', minval = 0, maxval = 90, group = gLive, display = display.none)
 
 // Only the candle currently being built, and only on a real-time connection -
@@ -3254,19 +3538,55 @@ var label d1LLbl = na
 var label d2LLbl = na
 
 // Same dense-lane placement the settled marks use, worked out from the eight
-// live flags rather than the settled ones - almost always at most one is
-// true at once, since dimOff already limits the settled marks to the leader,
-// but the rare bar where NOBODY is leading yet can still see more than one
-// slot's live trigger firing together, exactly as the one-tick-lag note above
-// describes for the settled marks. The lane keeps that bar from stacking them.
-lF0 = a1LBuy or a1LSell or a1LBuyW or a1LSellW
-lF1 = a2LBuy or a2LSell or a2LBuyW or a2LSellW
-lF2 = b1LBuy or b1LSell or b1LBuyW or b1LSellW
-lF3 = b2LBuy or b2LSell or b2LBuyW or b2LSellW
-lF4 = c1LBuy or c1LSell or c1LBuyW or c1LSellW
-lF5 = c2LBuy or c2LSell or c2LBuyW or c2LSellW
-lF6 = d1LBuy or d1LSell or d1LBuyW or d1LSellW
-lF7 = d2LBuy or d2LSell or d2LBuyW or d2LSellW
+// live flags rather than the settled ones - more than one slot's live trigger
+// can fire together on one bar, exactly as the one-tick-lag note above
+// describes for the settled marks. The lane keeps that bar from stacking
+// them, and lTop below picks the one that previews.
+//
+// liveA..liveD ARE INSIDE THE FLAG, and leaving them out was a hole rather
+// than a nicety (user request, 2026-08-20). An unticked gate still entered the
+// competition, could carry the top rank, and then drew nothing - liveMark
+// refuses to draw for a slot whose gate is off - so the whole preview went
+// silent for that tick while a ticked gate had a star to show. The two settled
+// families have always tested the tick box in the same place; this one now
+// does too. lockOk rides in the flag for the same reason: a slot the locked
+// tape silences must not carry the top rank either, or the star would go
+// dark exactly while the owner had one to show.
+lF0 = liveA and lockOk(0) and (a1LBuy or a1LSell or a1LBuyW or a1LSellW)
+lF1 = liveA and lockOk(1) and (a2LBuy or a2LSell or a2LBuyW or a2LSellW)
+lF2 = liveB and lockOk(2) and (b1LBuy or b1LSell or b1LBuyW or b1LSellW)
+lF3 = liveB and lockOk(3) and (b2LBuy or b2LSell or b2LBuyW or b2LSellW)
+lF4 = liveC and lockOk(4) and (c1LBuy or c1LSell or c1LBuyW or c1LSellW)
+lF5 = liveC and lockOk(5) and (c2LBuy or c2LSell or c2LBuyW or c2LSellW)
+lF6 = liveD and lockOk(6) and (d1LBuy or d1LSell or d1LBuyW or d1LSellW)
+lF7 = liveD and lockOk(7) and (d2LBuy or d2LSell or d2LBuyW or d2LSellW)
+
+// The open half for the preview's rank: a previewed ENTRY above a previewed
+// warning - the same line the settled marks will draw one bar later, so the
+// star cannot prefer a slot the settled wash then demotes. Ranked by the same
+// two times as well, so the star lands on the gate that has been carrying the
+// pair rather than on the one with the furthest letter.
+lA0 = a1LBuy or a1LSell
+lA1 = a2LBuy or a2LSell
+lA2 = b1LBuy or b1LSell
+lA3 = b2LBuy or b2LSell
+lA4 = c1LBuy or c1LSell
+lA5 = c2LBuy or c2LSell
+lA6 = d1LBuy or d1LSell
+lA7 = d2LBuy or d2LSell
+
+lR0 = rankOf(lF0, lA0, lA0 ? a1EffOpnT : a1EffPreT, 0)
+lR1 = rankOf(lF1, lA1, lA1 ? a2EffOpnT : a2EffPreT, 1)
+lR2 = rankOf(lF2, lA2, lA2 ? b1EffOpnT : b1EffPreT, 2)
+lR3 = rankOf(lF3, lA3, lA3 ? b2EffOpnT : b2EffPreT, 3)
+lR4 = rankOf(lF4, lA4, lA4 ? c1EffOpnT : c1EffPreT, 4)
+lR5 = rankOf(lF5, lA5, lA5 ? c2EffOpnT : c2EffPreT, 5)
+lR6 = rankOf(lF6, lA6, lA6 ? d1EffOpnT : d1EffPreT, 6)
+lR7 = rankOf(lF7, lA7, lA7 ? d2EffOpnT : d2EffPreT, 7)
+
+// Which slot previews - the same per-candle rule the settled marks use,
+// asked about the live ranks.
+lTop = topOf(lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7)
 
 // No offset and no [1]: the preview sits on THIS bar, the one it is read
 // from, unlike the settled marks which land one bar back on the candle that
@@ -3288,21 +3608,21 @@ liveMark(bool on, label handle, int slot, bool lng, bool sht, color col, int ln)
     if not na(handle)
         label.delete(handle)
     label lbl = na
-    if on and not dimOff(slot) and (lng or sht)
+    if on and slot == lTop and (lng or sht)
         y = liveY(lng, sht, ln)
         if not na(y)
             lbl := label.new(bar_index, y, lng ? '★' : '☆', style = label.style_none,
                  textcolor = color.new(col, liveFade), size = size.large)
     lbl
 
-a1LLbl := liveMark(liveA, a1LLbl, 0, a1LBuy or a1LBuyW, a1LSell or a1LSellW, a1LCol, lane(0, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-a2LLbl := liveMark(liveA, a2LLbl, 1, a2LBuy or a2LBuyW, a2LSell or a2LSellW, a2LCol, lane(1, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-b1LLbl := liveMark(liveB, b1LLbl, 2, b1LBuy or b1LBuyW, b1LSell or b1LSellW, b1LCol, lane(2, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-b2LLbl := liveMark(liveB, b2LLbl, 3, b2LBuy or b2LBuyW, b2LSell or b2LSellW, b2LCol, lane(3, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-c1LLbl := liveMark(liveC, c1LLbl, 4, c1LBuy or c1LBuyW, c1LSell or c1LSellW, c1LCol, lane(4, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-c2LLbl := liveMark(liveC, c2LLbl, 5, c2LBuy or c2LBuyW, c2LSell or c2LSellW, c2LCol, lane(5, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-d1LLbl := liveMark(liveD, d1LLbl, 6, d1LBuy or d1LBuyW, d1LSell or d1LSellW, d1LCol, lane(6, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
-d2LLbl := liveMark(liveD, d2LLbl, 7, d2LBuy or d2LBuyW, d2LSell or d2LSellW, d2LCol, lane(7, lF0, lF1, lF2, lF3, lF4, lF5, lF6, lF7))
+a1LLbl := liveMark(liveA, a1LLbl, 0, a1LBuy or a1LBuyW, a1LSell or a1LSellW, a1LCol, lane(lR0, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+a2LLbl := liveMark(liveA, a2LLbl, 1, a2LBuy or a2LBuyW, a2LSell or a2LSellW, a2LCol, lane(lR1, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+b1LLbl := liveMark(liveB, b1LLbl, 2, b1LBuy or b1LBuyW, b1LSell or b1LSellW, b1LCol, lane(lR2, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+b2LLbl := liveMark(liveB, b2LLbl, 3, b2LBuy or b2LBuyW, b2LSell or b2LSellW, b2LCol, lane(lR3, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+c1LLbl := liveMark(liveC, c1LLbl, 4, c1LBuy or c1LBuyW, c1LSell or c1LSellW, c1LCol, lane(lR4, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+c2LLbl := liveMark(liveC, c2LLbl, 5, c2LBuy or c2LBuyW, c2LSell or c2LSellW, c2LCol, lane(lR5, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+d1LLbl := liveMark(liveD, d1LLbl, 6, d1LBuy or d1LBuyW, d1LSell or d1LSellW, d1LCol, lane(lR6, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
+d2LLbl := liveMark(liveD, d2LLbl, 7, d2LBuy or d2LBuyW, d2LSell or d2LSellW, d2LCol, lane(lR7, lR0, lR1, lR2, lR3, lR4, lR5, lR6, lR7))
 
 // ---------------------------------------------------------------------------
 // THE FLAT, shaded - optional, and moved here
