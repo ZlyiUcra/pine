@@ -335,22 +335,29 @@
 // read the same history or their counters disagree.
 indicator('MAR1 Rotation', overlay = true, max_bars_back = 200, calc_bars_count = 10000)
 
-// Fifteen lengths, and this time the number IS a preference - the compiler
-// allowed twenty. The story is TradingView's RUNTIME memory limit: a plan
-// upgrade let M1 and M3 charts load enough history that 21 x 20 = 420
-// machines across the request.security contexts blew "Memory limits
-// exceeded" while M2, M4 and M5 still ran, so the count was halved to
-// eleven and then raised back to fifteen (both 2026-08-16, user decisions)
-// - 21 x 15 = 315 machines, three quarters of the count that failed,
-// covering 15..43 at step 2. Whether fifteen still runs on M1/M3 is an
-// experiment; eleven is the fallback if it does not.
+// TEN lengths (2026-08-17, user decision), and the number has never been
+// the compiler's - it is TradingView's RUNTIME memory limit, which this
+// file has now failed at three counts in a row. A plan upgrade let M1 and
+// M3 charts load enough history that 21 x 20 = 420 machines across the
+// request.security contexts blew "Memory limits exceeded"; twenty went to
+// eleven, then back to fifteen, and fifteen failed too - at 21 x 15 = 315
+// machines, and reportedly at a Calculated bars setting low enough that
+// bars cannot be the whole story. Ten is 21 x 10 = 210 machines, half the
+// count that first failed, covering 15..33 at step 2.
 //
-// The variable budget is still comfortable: twenty-one slots at
-// thirty-nine values is 819 names against the 1200 ceiling. History of the
-// number: forty while every length handed back one value, twenty once every
-// length handed back two - its totals AND its live state, the second being
-// what lets the traded length be chosen by the ranking instead of typed in -
-// then eleven, then fifteen, for memory.
+// IF TEN FAILS AS WELL, the next lever is the OTHER half of the product
+// and not this one: the twenty-one pair slots. Unticking them does not
+// help - an unticked slot still runs its ten machines on the chart's own
+// symbol, since a request.security call cannot be made conditional - so
+// cutting them means deleting slots and regenerating, exactly like this.
+//
+// The variable budget was never the binding ceiling here and is now
+// nowhere near it: twenty-one slots at twenty-six values is 546 names
+// against the 1200 limit. History of the number: forty while every length
+// handed back one value, twenty once every length handed back two - its
+// totals AND its live state, the second being what lets the traded length
+// be chosen by the ranking instead of typed in - then eleven, fifteen and
+// ten, all three for memory.
 //
 // Sixty was tried, back when a length cost one number, and refused by
 // TradingView outright before a single bar ran:
@@ -359,7 +366,7 @@ indicator('MAR1 Rotation', overlay = true, max_bars_back = 200, calc_bars_count 
 //
 // Thirty slots times sixty lengths is 1800 of those 1824. That is the shape of
 // the arithmetic to redo before changing either number here.
-SWEEP_N = 15
+SWEEP_N = 10
 
 // ---------------------------------------------------------------------------
 // The range
@@ -417,59 +424,55 @@ gSwp = 'Sweep range'
 // where the sweep starts, Step says how far apart the lengths sit, Last says
 // where it stops.
 //
-//   15, step 2, to 43    15, 17, 19 ... 43 - the default, and exact
-//   15, step 1, to 30    every length from 15 to 29 - fifteen rows, half span
+//   15, step 2, to 33    15, 17, 19 ... 33 - the default, and exact
+//   15, step 1, to 30    every length from 15 to 24 - ten rows, half span
 //   25, step 1, to 30    25, 26, 27 ... 30 - six rows, the other slots idle
-//   10, step 1, to 200   10, 11, 12 ... 24 - the slots run out at 24
+//   10, step 1, to 200   10, 11, 12 ... 19 - the slots run out at 19
 //
 // The one thing the three of them cannot override is SWEEP_N. There are exactly
-// fifteen call sites and there is no Pine in which there are sixteen, so:
+// ten call sites and there is no Pine in which there are eleven, so:
 //
-//   fewer than fifteen lengths fit in the range  the extra slots are computed
+//   fewer than ten lengths fit in the range      the extra slots are computed
 //                                                anyway, because a call site
 //                                                cannot be made conditional,
 //                                                and simply not drawn
-//   more than fifteen fit                        the sweep stops at
-//                                                First + 14·Step, short of Last
+//   more than ten fit                            the sweep stops at
+//                                                First + 9·Step, short of Last
 //
 // Neither case is left to be worked out from the last row. The header prints the
 // range that was actually swept and, when it is not the one that was typed, says
 // so in amber - and says which of the two reasons it was.
 //
-// Nothing here changes the cost. All fifteen machines run whatever the range says,
+// Nothing here changes the cost. All ten machines run whatever the range says,
 // so a narrow range is not cheaper - it just draws fewer rows.
 //
 // Both minimums are 1 so that First + i·Step can never reach zero, which is what
 // lets the lengths be built from inputs at all: ta.ema needs a SIMPLE int, and
 // arithmetic on inputs stays simple.
 //
-// 15 TO 43 AT STEP 2 (2026-08-16, user decision - the fourth grid of one
-// day). The sweep was cut from twenty lengths (5..43) to eleven (20..40)
-// for the RUNTIME memory limit, then raised back to fifteen the same day:
-// 315 machines against the 420 that blew "Memory limits exceeded" on M1
-// and M3, so whether this count still runs there is an experiment, and
-// eleven is the fallback if it does not. See THE LOCAL VARIABLE BUDGET in
-// the header and the note at SWEEP_N.
+// 15 TO 33 AT STEP 2 (2026-08-17, user decision), which is ten lengths
+// with the step landing on the last one exactly. First and Step did not
+// move - only Last, and it followed the count: ten from 15 at step 2 reach
+// 33, so anything past that would make the header say in amber, on every
+// run, that the step does not land on it.
 //
-// LAST IS 43 AND NOT 44, which is the same fifteen lengths written so the
-// step lands on the last one exactly: fifteen from 15 at step 2 reach 43,
-// so a Last of 44 would sweep the identical set and make the header say in
-// amber, on every run, that the step does not land on it.
-//
-// The short lengths are not gone, they are one setting away: type 5 into
-// First and the same fifteen slots sweep 5..33 instead.
+// WHAT THE CUT COSTS IS THE TOP OF THE RANGE. The grid used to reach 43
+// and now stops at 33, so the lengths in the forties are no longer swept
+// and cannot be picked. Two settings move the window without changing the
+// count: First 25 sweeps 25..43, First 5 sweeps 5..23. Step 3 from 15
+// reaches 42 at the price of skipping every other length.
 //
 // NOTE FOR SAVED CHARTS: defaults do not overwrite saved settings. A chart
-// that carried an older version still holds its old First / Last - First 16
-// / Last 44 sweeps 16..44, First 20 / Last 40 sweeps 20..40 on eleven of the
-// fifteen slots. Set First to 15 and Last to 43 by hand there, or reset the
-// inputs once.
+// that carried an older version still holds its old First / Last - First 15
+// / Last 43 asks for fifteen lengths and gets the first ten of them,
+// 15..33, with the header saying so in amber. Set Last to 33 by hand there,
+// or reset the inputs once.
 sweepFrom = input.int(15, 'First MA length', minval = 1, maxval = 1000, group = gSwp,
-     tooltip = 'The shortest moving average in the sweep. Lowering it reaches down at the cost of the top end, since fifteen lengths is fifteen lengths.', display = display.none)
+     tooltip = 'The shortest moving average in the sweep. Lowering it reaches down at the cost of the top end, since ten lengths is ten lengths.', display = display.none)
 sweepStep = input.int(2, 'Step', minval = 1, maxval = 50, group = gSwp,
-     tooltip = 'The gap between one swept length and the next. Fifteen lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between. At step 1 the same fifteen slots cover 15..29 instead.', display = display.none)
-sweepTo = input.int(43, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
-     tooltip = 'Where the sweep stops. Fifteen slots exist, so if First, Step and this ask for more than fifteen the sweep ends at First + 14 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 15 to 43 at step 2 is exactly fifteen and fills the table.', display = display.none)
+     tooltip = 'The gap between one swept length and the next. Ten lengths are computed whatever this is, so a larger step costs nothing extra and reaches further - it just skips what lies between. At step 1 the same ten slots cover 15..24 instead.', display = display.none)
+sweepTo = input.int(33, 'Last MA length', minval = 1, maxval = 1000, group = gSwp,
+     tooltip = 'Where the sweep stops. Ten slots exist, so if First, Step and this ask for more than ten the sweep ends at First + 9 steps and the header says so. If they ask for fewer, the rest of the rows are simply not drawn - 15 to 33 at step 2 is exactly ten and fills the table.', display = display.none)
 
 // How many of the fifteen call sites land inside the requested range. Guarded on
 // both ends: a Last at or below First gives one row rather than a negative
@@ -658,7 +661,7 @@ tailWeight = input.int(50, 'Tail weight in the Balanced score, %', minval = 0, m
 // Fifteen rows fit one column at the default of twenty; eight puts them into
 // two short blocks side by side.
 rowsPerBlock = input.int(20, 'Rows per block (wraps sideways past this)', minval = 2, maxval = 40, group = gOut,
-     tooltip = 'Up to four blocks stand side by side, so 8 here holds all 15 lengths in two short columns and 20 holds them in one. Anything that does not fit in four blocks is not drawn, and the footer says so rather than letting rows go missing quietly.', display = display.none)
+     tooltip = 'Up to four blocks stand side by side, so 5 here holds all 10 lengths in two short columns and 20 holds them in one. Anything that does not fit in four blocks is not drawn, and the footer says so rather than letting rows go missing quietly.', display = display.none)
 
 tablePos    = input.string('Middle right', 'Table position',
      options = ['Middle right', 'Middle left', 'Middle center', 'Top right', 'Bottom right', 'Top center', 'Bottom center'], group = gOut, display = display.none)
@@ -1036,7 +1039,7 @@ gList2 = 'Pairs 11-20'
 gList3 = 'Pairs 21'
 
 use01 = input.bool(true,  'Pair 1',  inline = 'p01', group = gList1, display = display.none,
-     tooltip = 'The tick is the off switch, and on this file it is also the main performance lever: each ticked slot is fifteen state machines over that pair\'s whole history.')
+     tooltip = 'The tick is the off switch, and on this file it is also the main performance lever: each ticked slot is ten state machines over that pair\'s whole history.')
 sym01 = input.symbol('FX:EURUSD', '', inline = 'p01', group = gList1, display = display.none)
 use02 = input.bool(true,  'Pair 2',  inline = 'p02', group = gList1, display = display.none)
 sym02 = input.symbol('FX:GBPUSD', '', inline = 'p02', group = gList1, display = display.none)
@@ -1200,7 +1203,7 @@ gRot = 'Rotation'
 // names it; when fewer rows than it asks for have enough wins there is no
 // pick at all, the row says so, and the pairs table stays empty rather than
 // trading a length nobody vouched for.
-pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 15, group = gRot,
+pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 10, group = gRot,
      tooltip = 'The row of the ranking that becomes the traded MA - 1 is the top row, 2 the second. It is re-read at every round boundary, so this is the only place the traded length is chosen. If fewer rows than this have enough wins, there is no pick, and the pairs table below stays empty until there is.')
 
 // The space switch. Ticked, the twenty-row ranking - header, columns, footer
@@ -1216,7 +1219,7 @@ pickPos = input.int(1, 'Ranking position to trade', minval = 1, maxval = 15, gro
 // end of the input list for the position rule every other foot-of-file input
 // already follows.
 hideSweep = input.bool(true, 'Hide the ranking table (cockpit only)', group = gRot,
-     tooltip = 'Draws only the pick row of the ranking, the ROTATION row, the PAIRS table and the LAST WIN line - the compact cockpit. The ranking is still computed, so the pick stays live; the other fourteen rows are just not drawn. Untick to get the full table back.', display = display.none)
+     tooltip = 'Draws only the pick row of the ranking, the ROTATION row, the PAIRS table and the LAST WIN line - the compact cockpit. The ranking is still computed, so the pick stays live; the other nine rows are just not drawn. Untick to get the full table back.', display = display.none)
 
 // WHEN A ROUND ENDS, and there is now exactly one way that it can.
 //
@@ -2167,14 +2170,14 @@ pairState() =>
     // the counter bookkeeping sits behind it.
     active = scanBars <= 0 or bar_index > last_bar_index - scanBars
 
-    // GENERATED - fifteen call sites and the thirty-nine-wide tuple they feed.
+    // GENERATED - ten call sites and the twenty-six-wide tuple they feed.
     // Every length hands back FIVE numbers now: the packed totals the
     // ranking is built from, the packed live state the pairs table is drawn
     // from, its trading-machine counter digits, the age of the window those
     // counters last closed, and the age of the entry that took that window
     // past the round threshold - the last three five lengths to a float, see
     // the h, g and f blocks below. There is no extra machine for the traded
-    // length - it is one of these fifteen, chosen by the ranking, so a machine of
+    // length - it is one of these ten, chosen by the ranking, so a machine of
     // its own would be a second copy of one of them.
     // Regenerate, never hand-edit.
     [q1, r1, t1, a1, b1] = sweepOne(sweepFrom + 0 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
@@ -2187,36 +2190,28 @@ pairState() =>
     [q8, r8, t8, a8, b8] = sweepOne(sweepFrom + 7 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
     [q9, r9, t9, a9, b9] = sweepOne(sweepFrom + 8 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
     [q10, r10, t10, a10, b10] = sweepOne(sweepFrom + 9 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q11, r11, t11, a11, b11] = sweepOne(sweepFrom + 10 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q12, r12, t12, a12, b12] = sweepOne(sweepFrom + 11 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q13, r13, t13, a13, b13] = sweepOne(sweepFrom + 12 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q14, r14, t14, a14, b14] = sweepOne(sweepFrom + 13 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
-    [q15, r15, t15, a15, b15] = sweepOne(sweepFrom + 14 * sweepStep, srcVal, sepVal, bodyRef, rangeSize, bodySize, upWick, dnWick, tolVal, isBull, isBear, wickRejectDown, wickRejectUp, smallBody, longWickDown, longWickUp, counterShort, counterLong, dcShort, dcLong, hoursOk, flatOk, tradeOk, active)
 
     // THE TRADING MACHINE'S COUNTERS, five lengths to a float. Each t is
     // three digits - entries mod 100 over closes mod 10, see t2v at the
     // tail of sweepOne - so five of them are fifteen digits, exact in a
-    // double. Three floats instead of fifteen values is what keeps the
+    // double. Two floats instead of ten values is what keeps the
     // tuple inside the variable budget: the rotation reads DELTAS bar to
     // bar, so the low digits are all it ever needs.
     h1 = 1.0 * t1 + 1.0 * t2 * 1000 + 1.0 * t3 * 1000000 + 1.0 * t4 * 1000000000 + 1.0 * t5 * 1000000000000
     h2 = 1.0 * t6 + 1.0 * t7 * 1000 + 1.0 * t8 * 1000000 + 1.0 * t9 * 1000000000 + 1.0 * t10 * 1000000000000
-    h3 = 1.0 * t11 + 1.0 * t12 * 1000 + 1.0 * t13 * 1000000 + 1.0 * t14 * 1000000000 + 1.0 * t15 * 1000000000000
 
     // THE WINDOW AGES, five lengths to a float, the identical layout the
     // counters use above and read back by the identical t2At - three digits
     // each, fifteen to a float, exact in a double.
     g1 = 1.0 * a1 + 1.0 * a2 * 1000 + 1.0 * a3 * 1000000 + 1.0 * a4 * 1000000000 + 1.0 * a5 * 1000000000000
     g2 = 1.0 * a6 + 1.0 * a7 * 1000 + 1.0 * a8 * 1000000 + 1.0 * a9 * 1000000000 + 1.0 * a10 * 1000000000000
-    g3 = 1.0 * a11 + 1.0 * a12 * 1000 + 1.0 * a13 * 1000000 + 1.0 * a14 * 1000000000 + 1.0 * a15 * 1000000000000
 
     // THE CROSSING AGES, the third family and the last, packed exactly like
     // the two above and read by the same t2At.
     f1 = 1.0 * b1 + 1.0 * b2 * 1000 + 1.0 * b3 * 1000000 + 1.0 * b4 * 1000000000 + 1.0 * b5 * 1000000000000
     f2 = 1.0 * b6 + 1.0 * b7 * 1000 + 1.0 * b8 * 1000000 + 1.0 * b9 * 1000000000 + 1.0 * b10 * 1000000000000
-    f3 = 1.0 * b11 + 1.0 * b12 * 1000 + 1.0 * b13 * 1000000 + 1.0 * b14 * 1000000000 + 1.0 * b15 * 1000000000000
 
-    [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, q11, q12, q13, q14, q15, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, r11, r12, r13, r14, r15, h1, h2, h3, g1, g2, g3, f1, f2, f3]
+    [q1, q2, q3, q4, q5, q6, q7, q8, q9, q10, r1, r2, r3, r4, r5, r6, r7, r8, r9, r10, h1, h2, g1, g2, f1, f2]
 
 // ---------------------------------------------------------------------------
 // The scan
@@ -2227,33 +2222,33 @@ pairState() =>
 // No lookahead argument: the default is barmerge.lookahead_off, which is the
 // only honest setting here.
 //
-// GENERATED - twenty-one destructurings of thirty-nine values each: fifteen
-// packed totals in 1..15, the fifteen packed live states in 16..30, one per
-// swept length and in the same order, the three trading-machine counter floats
-// in 31..33, the three window-age floats in 34..36 and the three
-// threshold-crossing floats in 37..39 - five lengths to a float, in the same
+// GENERATED - twenty-one destructurings of twenty-six values each: ten
+// packed totals in 1..10, the ten packed live states in 11..20, one per
+// swept length and in the same order, the two trading-machine counter floats
+// in 21..22, the two window-age floats in 23..24 and the two
+// threshold-crossing floats in 25..26 - five lengths to a float, in the same
 // order again.
-[v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39] = request.security(s01, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39] = request.security(s02, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39] = request.security(s03, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39] = request.security(s04, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39] = request.security(s05, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39] = request.security(s06, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39] = request.security(s07, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39] = request.security(s08, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39] = request.security(s09, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39] = request.security(s10, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39] = request.security(s11, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39] = request.security(s12, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39] = request.security(s13, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39] = request.security(s14, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39] = request.security(s15, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39] = request.security(s16, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39] = request.security(s17, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39] = request.security(s18, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39] = request.security(s19, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39] = request.security(s20, timeframe.period, pairState(), ignore_invalid_symbol = true)
-[v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39] = request.security(s21, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26] = request.security(s01, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26] = request.security(s02, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26] = request.security(s03, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26] = request.security(s04, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26] = request.security(s05, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26] = request.security(s06, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26] = request.security(s07, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26] = request.security(s08, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26] = request.security(s09, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26] = request.security(s10, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26] = request.security(s11, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26] = request.security(s12, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26] = request.security(s13, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26] = request.security(s14, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26] = request.security(s15, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26] = request.security(s16, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26] = request.security(s17, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26] = request.security(s18, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26] = request.security(s19, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26] = request.security(s20, timeframe.period, pairState(), ignore_invalid_symbol = true)
+[v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26] = request.security(s21, timeframe.period, pairState(), ignore_invalid_symbol = true)
 // ---------------------------------------------------------------------------
 // The totals
 // ---------------------------------------------------------------------------
@@ -2445,11 +2440,10 @@ accum(int k, float v, string pair) =>
 // long").
 var float[] packAll = array.new_float(SWEEP_N * 21, float(na))
 
-// GENERATED - one slot's fifteen totals into the flat array. Regenerate,
+// GENERATED - one slot's ten totals into the flat array. Regenerate,
 // never hand-edit.
 stashPair(int slot, float v1, float v2, float v3, float v4,
-     float v5, float v6, float v7, float v8, float v9, float v10,
-     float v11, float v12, float v13, float v14, float v15) =>
+     float v5, float v6, float v7, float v8, float v9, float v10) =>
     b = slot * SWEEP_N
     array.set(packAll, b + 0, v1)
     array.set(packAll, b + 1, v2)
@@ -2461,20 +2455,15 @@ stashPair(int slot, float v1, float v2, float v3, float v4,
     array.set(packAll, b + 7, v8)
     array.set(packAll, b + 8, v9)
     array.set(packAll, b + 9, v10)
-    array.set(packAll, b + 10, v11)
-    array.set(packAll, b + 11, v12)
-    array.set(packAll, b + 12, v13)
-    array.set(packAll, b + 13, v14)
-    array.set(packAll, b + 14, v15)
 
-// One pair, all fifteen lengths. 'on' is the slot's tick box and 'raw' its
+// One pair, all ten lengths. 'on' is the slot's tick box and 'raw' its
 // symbol: both have to hold, because an unticked or blank slot was pointed at
 // the chart's own symbol and its answer is about a pair nobody asked for.
 //
 // na is tested through the first value alone: ignore_invalid_symbol makes the
-// whole tuple na at once, so one test settles all fifteen.
+// whole tuple na at once, so one test settles all ten.
 //
-// GENERATED no longer - the fifteen values arrive through packAll, so the
+// GENERATED no longer - the ten values arrive through packAll, so the
 // signature is three arguments and the body is a loop. accum keeps every
 // counter it touches in an array rather than in a `var`, which is what makes
 // a loop legal here where the machines themselves needed separate call sites.
@@ -2527,14 +2516,12 @@ rvStamp(float v) => int((int(v) - int(v) % 10000000000) / 10000000000)
 // Pine evaluates every branch of a ternary, which costs nothing when every
 // branch is a bare name.
 //
-// na for an index outside 0..14 - which is what "no pick yet" looks like, and
+// na for an index outside 0..9 - which is what "no pick yet" looks like, and
 // every caller already tests the value for na.
 pickN(int k, float a1, float a2, float a3, float a4, float a5,
-     float a6, float a7, float a8, float a9, float a10,
-     float a11, float a12, float a13, float a14, float a15) =>
+     float a6, float a7, float a8, float a9, float a10) =>
     k == 0 ? a1 : k == 1 ? a2 : k == 2 ? a3 : k == 3 ? a4 : k == 4 ? a5 :
      k == 5 ? a6 : k == 6 ? a7 : k == 7 ? a8 : k == 8 ? a9 : k == 9 ? a10 :
-     k == 10 ? a11 : k == 11 ? a12 : k == 12 ? a13 : k == 13 ? a14 : k == 14 ? a15 :
      float(na)
 
 // ---------------------------------------------------------------------------
@@ -2839,12 +2826,12 @@ t2At(float hv, int g) =>
 // at least one window really did. It under-reports in that rare corner and
 // never over-reports, which is the right way round for a trigger that ends a
 // round.
-rotWatch(int slot, bool on, string raw, float ha, float hb, float hc,
-     float ga, float gb, float gc, float fa, float fb, float fc) =>
+rotWatch(int slot, bool on, string raw, float ha, float hb,
+     float ga, float gb, float fa, float fb) =>
     k  = activeIdx
-    hv = k < 0 ? float(na) : k < 5 ? ha : k < 10 ? hb : hc
-    gv = k < 0 ? float(na) : k < 5 ? ga : k < 10 ? gb : gc
-    fv = k < 0 ? float(na) : k < 5 ? fa : k < 10 ? fb : fc
+    hv = k < 0 ? float(na) : k < 5 ? ha : hb
+    gv = k < 0 ? float(na) : k < 5 ? ga : gb
+    fv = k < 0 ? float(na) : k < 5 ? fa : fb
     if on and raw != '' and not na(hv) and hv >= 0
         t = t2At(hv, k % 5)
         c = t % 10
@@ -4171,27 +4158,27 @@ redrawNow = barstate.islastconfirmedhistory or (barstate.islast and barstate.isc
 //
 // GENERATED - twenty-one stashPair calls. Regenerate, never hand-edit.
 if barstate.isconfirmed
-    stashPair(0, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10, v01_11, v01_12, v01_13, v01_14, v01_15)
-    stashPair(1, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10, v02_11, v02_12, v02_13, v02_14, v02_15)
-    stashPair(2, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10, v03_11, v03_12, v03_13, v03_14, v03_15)
-    stashPair(3, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10, v04_11, v04_12, v04_13, v04_14, v04_15)
-    stashPair(4, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10, v05_11, v05_12, v05_13, v05_14, v05_15)
-    stashPair(5, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10, v06_11, v06_12, v06_13, v06_14, v06_15)
-    stashPair(6, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10, v07_11, v07_12, v07_13, v07_14, v07_15)
-    stashPair(7, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10, v08_11, v08_12, v08_13, v08_14, v08_15)
-    stashPair(8, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10, v09_11, v09_12, v09_13, v09_14, v09_15)
-    stashPair(9, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10, v10_11, v10_12, v10_13, v10_14, v10_15)
-    stashPair(10, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10, v11_11, v11_12, v11_13, v11_14, v11_15)
-    stashPair(11, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10, v12_11, v12_12, v12_13, v12_14, v12_15)
-    stashPair(12, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10, v13_11, v13_12, v13_13, v13_14, v13_15)
-    stashPair(13, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10, v14_11, v14_12, v14_13, v14_14, v14_15)
-    stashPair(14, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10, v15_11, v15_12, v15_13, v15_14, v15_15)
-    stashPair(15, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10, v16_11, v16_12, v16_13, v16_14, v16_15)
-    stashPair(16, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10, v17_11, v17_12, v17_13, v17_14, v17_15)
-    stashPair(17, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10, v18_11, v18_12, v18_13, v18_14, v18_15)
-    stashPair(18, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10, v19_11, v19_12, v19_13, v19_14, v19_15)
-    stashPair(19, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10, v20_11, v20_12, v20_13, v20_14, v20_15)
-    stashPair(20, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10, v21_11, v21_12, v21_13, v21_14, v21_15)
+    stashPair(0, v01_1, v01_2, v01_3, v01_4, v01_5, v01_6, v01_7, v01_8, v01_9, v01_10)
+    stashPair(1, v02_1, v02_2, v02_3, v02_4, v02_5, v02_6, v02_7, v02_8, v02_9, v02_10)
+    stashPair(2, v03_1, v03_2, v03_3, v03_4, v03_5, v03_6, v03_7, v03_8, v03_9, v03_10)
+    stashPair(3, v04_1, v04_2, v04_3, v04_4, v04_5, v04_6, v04_7, v04_8, v04_9, v04_10)
+    stashPair(4, v05_1, v05_2, v05_3, v05_4, v05_5, v05_6, v05_7, v05_8, v05_9, v05_10)
+    stashPair(5, v06_1, v06_2, v06_3, v06_4, v06_5, v06_6, v06_7, v06_8, v06_9, v06_10)
+    stashPair(6, v07_1, v07_2, v07_3, v07_4, v07_5, v07_6, v07_7, v07_8, v07_9, v07_10)
+    stashPair(7, v08_1, v08_2, v08_3, v08_4, v08_5, v08_6, v08_7, v08_8, v08_9, v08_10)
+    stashPair(8, v09_1, v09_2, v09_3, v09_4, v09_5, v09_6, v09_7, v09_8, v09_9, v09_10)
+    stashPair(9, v10_1, v10_2, v10_3, v10_4, v10_5, v10_6, v10_7, v10_8, v10_9, v10_10)
+    stashPair(10, v11_1, v11_2, v11_3, v11_4, v11_5, v11_6, v11_7, v11_8, v11_9, v11_10)
+    stashPair(11, v12_1, v12_2, v12_3, v12_4, v12_5, v12_6, v12_7, v12_8, v12_9, v12_10)
+    stashPair(12, v13_1, v13_2, v13_3, v13_4, v13_5, v13_6, v13_7, v13_8, v13_9, v13_10)
+    stashPair(13, v14_1, v14_2, v14_3, v14_4, v14_5, v14_6, v14_7, v14_8, v14_9, v14_10)
+    stashPair(14, v15_1, v15_2, v15_3, v15_4, v15_5, v15_6, v15_7, v15_8, v15_9, v15_10)
+    stashPair(15, v16_1, v16_2, v16_3, v16_4, v16_5, v16_6, v16_7, v16_8, v16_9, v16_10)
+    stashPair(16, v17_1, v17_2, v17_3, v17_4, v17_5, v17_6, v17_7, v17_8, v17_9, v17_10)
+    stashPair(17, v18_1, v18_2, v18_3, v18_4, v18_5, v18_6, v18_7, v18_8, v18_9, v18_10)
+    stashPair(18, v19_1, v19_2, v19_3, v19_4, v19_5, v19_6, v19_7, v19_8, v19_9, v19_10)
+    stashPair(19, v20_1, v20_2, v20_3, v20_4, v20_5, v20_6, v20_7, v20_8, v20_9, v20_10)
+    stashPair(20, v21_1, v21_2, v21_3, v21_4, v21_5, v21_6, v21_7, v21_8, v21_9, v21_10)
 
 // ---------------------------------------------------------------------------
 // THE ROTATION - the only part of this file that runs on every bar
@@ -4235,31 +4222,31 @@ if barstate.isconfirmed
         jrnDayAt := time
 
     // GENERATED - twenty-one rotWatch calls, each handing over the pair's
-    // nine packed trading-machine floats - three of closure counters, three of
-    // window ages and three of threshold-crossing ages - the traded length's
+    // six packed trading-machine floats - two of closure counters, two of
+    // window ages and two of threshold-crossing ages - the traded length's
     // three digits of each are picked INSIDE rotWatch. Regenerate, never
     // hand-edit.
-    rotWatch(0, use01, sym01, v01_31, v01_32, v01_33, v01_34, v01_35, v01_36, v01_37, v01_38, v01_39)
-    rotWatch(1, use02, sym02, v02_31, v02_32, v02_33, v02_34, v02_35, v02_36, v02_37, v02_38, v02_39)
-    rotWatch(2, use03, sym03, v03_31, v03_32, v03_33, v03_34, v03_35, v03_36, v03_37, v03_38, v03_39)
-    rotWatch(3, use04, sym04, v04_31, v04_32, v04_33, v04_34, v04_35, v04_36, v04_37, v04_38, v04_39)
-    rotWatch(4, use05, sym05, v05_31, v05_32, v05_33, v05_34, v05_35, v05_36, v05_37, v05_38, v05_39)
-    rotWatch(5, use06, sym06, v06_31, v06_32, v06_33, v06_34, v06_35, v06_36, v06_37, v06_38, v06_39)
-    rotWatch(6, use07, sym07, v07_31, v07_32, v07_33, v07_34, v07_35, v07_36, v07_37, v07_38, v07_39)
-    rotWatch(7, use08, sym08, v08_31, v08_32, v08_33, v08_34, v08_35, v08_36, v08_37, v08_38, v08_39)
-    rotWatch(8, use09, sym09, v09_31, v09_32, v09_33, v09_34, v09_35, v09_36, v09_37, v09_38, v09_39)
-    rotWatch(9, use10, sym10, v10_31, v10_32, v10_33, v10_34, v10_35, v10_36, v10_37, v10_38, v10_39)
-    rotWatch(10, use11, sym11, v11_31, v11_32, v11_33, v11_34, v11_35, v11_36, v11_37, v11_38, v11_39)
-    rotWatch(11, use12, sym12, v12_31, v12_32, v12_33, v12_34, v12_35, v12_36, v12_37, v12_38, v12_39)
-    rotWatch(12, use13, sym13, v13_31, v13_32, v13_33, v13_34, v13_35, v13_36, v13_37, v13_38, v13_39)
-    rotWatch(13, use14, sym14, v14_31, v14_32, v14_33, v14_34, v14_35, v14_36, v14_37, v14_38, v14_39)
-    rotWatch(14, use15, sym15, v15_31, v15_32, v15_33, v15_34, v15_35, v15_36, v15_37, v15_38, v15_39)
-    rotWatch(15, use16, sym16, v16_31, v16_32, v16_33, v16_34, v16_35, v16_36, v16_37, v16_38, v16_39)
-    rotWatch(16, use17, sym17, v17_31, v17_32, v17_33, v17_34, v17_35, v17_36, v17_37, v17_38, v17_39)
-    rotWatch(17, use18, sym18, v18_31, v18_32, v18_33, v18_34, v18_35, v18_36, v18_37, v18_38, v18_39)
-    rotWatch(18, use19, sym19, v19_31, v19_32, v19_33, v19_34, v19_35, v19_36, v19_37, v19_38, v19_39)
-    rotWatch(19, use20, sym20, v20_31, v20_32, v20_33, v20_34, v20_35, v20_36, v20_37, v20_38, v20_39)
-    rotWatch(20, use21, sym21, v21_31, v21_32, v21_33, v21_34, v21_35, v21_36, v21_37, v21_38, v21_39)
+    rotWatch(0, use01, sym01, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26)
+    rotWatch(1, use02, sym02, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26)
+    rotWatch(2, use03, sym03, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26)
+    rotWatch(3, use04, sym04, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26)
+    rotWatch(4, use05, sym05, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26)
+    rotWatch(5, use06, sym06, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26)
+    rotWatch(6, use07, sym07, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26)
+    rotWatch(7, use08, sym08, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26)
+    rotWatch(8, use09, sym09, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26)
+    rotWatch(9, use10, sym10, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26)
+    rotWatch(10, use11, sym11, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26)
+    rotWatch(11, use12, sym12, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26)
+    rotWatch(12, use13, sym13, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26)
+    rotWatch(13, use14, sym14, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26)
+    rotWatch(14, use15, sym15, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26)
+    rotWatch(15, use16, sym16, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26)
+    rotWatch(16, use17, sym17, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26)
+    rotWatch(17, use18, sym18, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26)
+    rotWatch(18, use19, sym19, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26)
+    rotWatch(19, use20, sym20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26)
+    rotWatch(20, use21, sym21, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26)
 
     winsSinceRot += array.size(rotWinNames)
     if array.size(rotWinNames) > 0
@@ -4339,28 +4326,28 @@ if redrawNow
         array.set(rotTally, k, 0)
 
     // GENERATED - twenty-one rotOne calls, each picking the traded length's
-    // LIVE state out of that pair's fifteen. Regenerate, never hand-edit.
-    rotOne(use01, sym01, 0, pickN(activeIdx, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30))
-    rotOne(use02, sym02, 1, pickN(activeIdx, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30))
-    rotOne(use03, sym03, 2, pickN(activeIdx, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30))
-    rotOne(use04, sym04, 3, pickN(activeIdx, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30))
-    rotOne(use05, sym05, 4, pickN(activeIdx, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30))
-    rotOne(use06, sym06, 5, pickN(activeIdx, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30))
-    rotOne(use07, sym07, 6, pickN(activeIdx, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30))
-    rotOne(use08, sym08, 7, pickN(activeIdx, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30))
-    rotOne(use09, sym09, 8, pickN(activeIdx, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30))
-    rotOne(use10, sym10, 9, pickN(activeIdx, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30))
-    rotOne(use11, sym11, 10, pickN(activeIdx, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30))
-    rotOne(use12, sym12, 11, pickN(activeIdx, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30))
-    rotOne(use13, sym13, 12, pickN(activeIdx, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30))
-    rotOne(use14, sym14, 13, pickN(activeIdx, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30))
-    rotOne(use15, sym15, 14, pickN(activeIdx, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30))
-    rotOne(use16, sym16, 15, pickN(activeIdx, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30))
-    rotOne(use17, sym17, 16, pickN(activeIdx, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30))
-    rotOne(use18, sym18, 17, pickN(activeIdx, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30))
-    rotOne(use19, sym19, 18, pickN(activeIdx, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30))
-    rotOne(use20, sym20, 19, pickN(activeIdx, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30))
-    rotOne(use21, sym21, 20, pickN(activeIdx, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30))
+    // LIVE state out of that pair's ten. Regenerate, never hand-edit.
+    rotOne(use01, sym01, 0, pickN(activeIdx, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20))
+    rotOne(use02, sym02, 1, pickN(activeIdx, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20))
+    rotOne(use03, sym03, 2, pickN(activeIdx, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20))
+    rotOne(use04, sym04, 3, pickN(activeIdx, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20))
+    rotOne(use05, sym05, 4, pickN(activeIdx, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20))
+    rotOne(use06, sym06, 5, pickN(activeIdx, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20))
+    rotOne(use07, sym07, 6, pickN(activeIdx, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20))
+    rotOne(use08, sym08, 7, pickN(activeIdx, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20))
+    rotOne(use09, sym09, 8, pickN(activeIdx, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20))
+    rotOne(use10, sym10, 9, pickN(activeIdx, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20))
+    rotOne(use11, sym11, 10, pickN(activeIdx, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20))
+    rotOne(use12, sym12, 11, pickN(activeIdx, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20))
+    rotOne(use13, sym13, 12, pickN(activeIdx, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20))
+    rotOne(use14, sym14, 13, pickN(activeIdx, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20))
+    rotOne(use15, sym15, 14, pickN(activeIdx, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20))
+    rotOne(use16, sym16, 15, pickN(activeIdx, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20))
+    rotOne(use17, sym17, 16, pickN(activeIdx, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20))
+    rotOne(use18, sym18, 17, pickN(activeIdx, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20))
+    rotOne(use19, sym19, 18, pickN(activeIdx, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20))
+    rotOne(use20, sym20, 19, pickN(activeIdx, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20))
+    rotOne(use21, sym21, 20, pickN(activeIdx, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20))
 
     scanned    = array.get(tally, 0)
     unresolved = array.get(tally, 1)
@@ -4550,28 +4537,28 @@ pubPack(int d1, int d2, int d3, int d4, int d5, int d6, int d7, int d8, int d9, 
      d6 * 10000 + d7 * 1000 + d8 * 100 + d9 * 10 + d10
 
 // GENERATED - twenty-one digits, each picking the traded length's LIVE state
-// out of that pair's fifteen. Regenerate, never hand-edit.
-pd01 = pubDigit(use01, sym01, pickN(activeIdx, v01_16, v01_17, v01_18, v01_19, v01_20, v01_21, v01_22, v01_23, v01_24, v01_25, v01_26, v01_27, v01_28, v01_29, v01_30))
-pd02 = pubDigit(use02, sym02, pickN(activeIdx, v02_16, v02_17, v02_18, v02_19, v02_20, v02_21, v02_22, v02_23, v02_24, v02_25, v02_26, v02_27, v02_28, v02_29, v02_30))
-pd03 = pubDigit(use03, sym03, pickN(activeIdx, v03_16, v03_17, v03_18, v03_19, v03_20, v03_21, v03_22, v03_23, v03_24, v03_25, v03_26, v03_27, v03_28, v03_29, v03_30))
-pd04 = pubDigit(use04, sym04, pickN(activeIdx, v04_16, v04_17, v04_18, v04_19, v04_20, v04_21, v04_22, v04_23, v04_24, v04_25, v04_26, v04_27, v04_28, v04_29, v04_30))
-pd05 = pubDigit(use05, sym05, pickN(activeIdx, v05_16, v05_17, v05_18, v05_19, v05_20, v05_21, v05_22, v05_23, v05_24, v05_25, v05_26, v05_27, v05_28, v05_29, v05_30))
-pd06 = pubDigit(use06, sym06, pickN(activeIdx, v06_16, v06_17, v06_18, v06_19, v06_20, v06_21, v06_22, v06_23, v06_24, v06_25, v06_26, v06_27, v06_28, v06_29, v06_30))
-pd07 = pubDigit(use07, sym07, pickN(activeIdx, v07_16, v07_17, v07_18, v07_19, v07_20, v07_21, v07_22, v07_23, v07_24, v07_25, v07_26, v07_27, v07_28, v07_29, v07_30))
-pd08 = pubDigit(use08, sym08, pickN(activeIdx, v08_16, v08_17, v08_18, v08_19, v08_20, v08_21, v08_22, v08_23, v08_24, v08_25, v08_26, v08_27, v08_28, v08_29, v08_30))
-pd09 = pubDigit(use09, sym09, pickN(activeIdx, v09_16, v09_17, v09_18, v09_19, v09_20, v09_21, v09_22, v09_23, v09_24, v09_25, v09_26, v09_27, v09_28, v09_29, v09_30))
-pd10 = pubDigit(use10, sym10, pickN(activeIdx, v10_16, v10_17, v10_18, v10_19, v10_20, v10_21, v10_22, v10_23, v10_24, v10_25, v10_26, v10_27, v10_28, v10_29, v10_30))
-pd11 = pubDigit(use11, sym11, pickN(activeIdx, v11_16, v11_17, v11_18, v11_19, v11_20, v11_21, v11_22, v11_23, v11_24, v11_25, v11_26, v11_27, v11_28, v11_29, v11_30))
-pd12 = pubDigit(use12, sym12, pickN(activeIdx, v12_16, v12_17, v12_18, v12_19, v12_20, v12_21, v12_22, v12_23, v12_24, v12_25, v12_26, v12_27, v12_28, v12_29, v12_30))
-pd13 = pubDigit(use13, sym13, pickN(activeIdx, v13_16, v13_17, v13_18, v13_19, v13_20, v13_21, v13_22, v13_23, v13_24, v13_25, v13_26, v13_27, v13_28, v13_29, v13_30))
-pd14 = pubDigit(use14, sym14, pickN(activeIdx, v14_16, v14_17, v14_18, v14_19, v14_20, v14_21, v14_22, v14_23, v14_24, v14_25, v14_26, v14_27, v14_28, v14_29, v14_30))
-pd15 = pubDigit(use15, sym15, pickN(activeIdx, v15_16, v15_17, v15_18, v15_19, v15_20, v15_21, v15_22, v15_23, v15_24, v15_25, v15_26, v15_27, v15_28, v15_29, v15_30))
-pd16 = pubDigit(use16, sym16, pickN(activeIdx, v16_16, v16_17, v16_18, v16_19, v16_20, v16_21, v16_22, v16_23, v16_24, v16_25, v16_26, v16_27, v16_28, v16_29, v16_30))
-pd17 = pubDigit(use17, sym17, pickN(activeIdx, v17_16, v17_17, v17_18, v17_19, v17_20, v17_21, v17_22, v17_23, v17_24, v17_25, v17_26, v17_27, v17_28, v17_29, v17_30))
-pd18 = pubDigit(use18, sym18, pickN(activeIdx, v18_16, v18_17, v18_18, v18_19, v18_20, v18_21, v18_22, v18_23, v18_24, v18_25, v18_26, v18_27, v18_28, v18_29, v18_30))
-pd19 = pubDigit(use19, sym19, pickN(activeIdx, v19_16, v19_17, v19_18, v19_19, v19_20, v19_21, v19_22, v19_23, v19_24, v19_25, v19_26, v19_27, v19_28, v19_29, v19_30))
-pd20 = pubDigit(use20, sym20, pickN(activeIdx, v20_16, v20_17, v20_18, v20_19, v20_20, v20_21, v20_22, v20_23, v20_24, v20_25, v20_26, v20_27, v20_28, v20_29, v20_30))
-pd21 = pubDigit(use21, sym21, pickN(activeIdx, v21_16, v21_17, v21_18, v21_19, v21_20, v21_21, v21_22, v21_23, v21_24, v21_25, v21_26, v21_27, v21_28, v21_29, v21_30))
+// out of that pair's ten. Regenerate, never hand-edit.
+pd01 = pubDigit(use01, sym01, pickN(activeIdx, v01_11, v01_12, v01_13, v01_14, v01_15, v01_16, v01_17, v01_18, v01_19, v01_20))
+pd02 = pubDigit(use02, sym02, pickN(activeIdx, v02_11, v02_12, v02_13, v02_14, v02_15, v02_16, v02_17, v02_18, v02_19, v02_20))
+pd03 = pubDigit(use03, sym03, pickN(activeIdx, v03_11, v03_12, v03_13, v03_14, v03_15, v03_16, v03_17, v03_18, v03_19, v03_20))
+pd04 = pubDigit(use04, sym04, pickN(activeIdx, v04_11, v04_12, v04_13, v04_14, v04_15, v04_16, v04_17, v04_18, v04_19, v04_20))
+pd05 = pubDigit(use05, sym05, pickN(activeIdx, v05_11, v05_12, v05_13, v05_14, v05_15, v05_16, v05_17, v05_18, v05_19, v05_20))
+pd06 = pubDigit(use06, sym06, pickN(activeIdx, v06_11, v06_12, v06_13, v06_14, v06_15, v06_16, v06_17, v06_18, v06_19, v06_20))
+pd07 = pubDigit(use07, sym07, pickN(activeIdx, v07_11, v07_12, v07_13, v07_14, v07_15, v07_16, v07_17, v07_18, v07_19, v07_20))
+pd08 = pubDigit(use08, sym08, pickN(activeIdx, v08_11, v08_12, v08_13, v08_14, v08_15, v08_16, v08_17, v08_18, v08_19, v08_20))
+pd09 = pubDigit(use09, sym09, pickN(activeIdx, v09_11, v09_12, v09_13, v09_14, v09_15, v09_16, v09_17, v09_18, v09_19, v09_20))
+pd10 = pubDigit(use10, sym10, pickN(activeIdx, v10_11, v10_12, v10_13, v10_14, v10_15, v10_16, v10_17, v10_18, v10_19, v10_20))
+pd11 = pubDigit(use11, sym11, pickN(activeIdx, v11_11, v11_12, v11_13, v11_14, v11_15, v11_16, v11_17, v11_18, v11_19, v11_20))
+pd12 = pubDigit(use12, sym12, pickN(activeIdx, v12_11, v12_12, v12_13, v12_14, v12_15, v12_16, v12_17, v12_18, v12_19, v12_20))
+pd13 = pubDigit(use13, sym13, pickN(activeIdx, v13_11, v13_12, v13_13, v13_14, v13_15, v13_16, v13_17, v13_18, v13_19, v13_20))
+pd14 = pubDigit(use14, sym14, pickN(activeIdx, v14_11, v14_12, v14_13, v14_14, v14_15, v14_16, v14_17, v14_18, v14_19, v14_20))
+pd15 = pubDigit(use15, sym15, pickN(activeIdx, v15_11, v15_12, v15_13, v15_14, v15_15, v15_16, v15_17, v15_18, v15_19, v15_20))
+pd16 = pubDigit(use16, sym16, pickN(activeIdx, v16_11, v16_12, v16_13, v16_14, v16_15, v16_16, v16_17, v16_18, v16_19, v16_20))
+pd17 = pubDigit(use17, sym17, pickN(activeIdx, v17_11, v17_12, v17_13, v17_14, v17_15, v17_16, v17_17, v17_18, v17_19, v17_20))
+pd18 = pubDigit(use18, sym18, pickN(activeIdx, v18_11, v18_12, v18_13, v18_14, v18_15, v18_16, v18_17, v18_18, v18_19, v18_20))
+pd19 = pubDigit(use19, sym19, pickN(activeIdx, v19_11, v19_12, v19_13, v19_14, v19_15, v19_16, v19_17, v19_18, v19_19, v19_20))
+pd20 = pubDigit(use20, sym20, pickN(activeIdx, v20_11, v20_12, v20_13, v20_14, v20_15, v20_16, v20_17, v20_18, v20_19, v20_20))
+pd21 = pubDigit(use21, sym21, pickN(activeIdx, v21_11, v21_12, v21_13, v21_14, v21_15, v21_16, v21_17, v21_18, v21_19, v21_20))
 
 // 80000000000 is the leading 8. Eleven digits against an exact-integer range
 // of 2^53, so the value crosses into the DOM without a rounding of any kind.
