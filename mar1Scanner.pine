@@ -182,7 +182,7 @@ successScope = input.string('Entries only', 'A window is closed by',
 // nothing to do with the gate.
 gMa = 'MA length (from the rotation)'
 
-maLength = input.int(41, 'MA Length (1st timeframe)', minval = 2, group = gMa)
+maLength = input.int(49, 'MA Length (1st timeframe)', minval = 2, group = gMa)
 
 // The second column - the same three values, measured on the SECOND
 // timeframe, declared right under their first-column siblings so the two

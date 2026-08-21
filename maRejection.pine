@@ -111,7 +111,7 @@ gMa = 'MA length (from the rotation)'
 // The moving average the whole idea is built around, and the only setting in
 // this file whose value comes from outside it. Left VISIBLE in the status line
 // - see the note on the three visible inputs further down.
-maLength = input.int(41, 'MA Length (1st timeframe)', minval = 2, group = gMa)
+maLength = input.int(49, 'MA Length (1st timeframe)', minval = 2, group = gMa)
 
 // The second column - the same three values, measured on the SECOND
 // timeframe, declared right under their first-column siblings so the two

@@ -245,41 +245,41 @@ onA  = input.bool(true, 'Gate A on', group = gA, display = display.none)
 pctA = input.float(55.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'ga', group = gA,
      tooltip = 'Gate A. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minA = input.int(6, '', minval = 1, inline = 'ga', group = gA, display = display.none)
-maA11 = input.int(29, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a1', group = gA,
+maA11 = input.int(26, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a1', group = gA,
      tooltip = 'The two lengths maSweepPairs.pine ranked first and second for gate A on the first timeframe. Live only while the chart is on it.', display = display.none)
-maA12 = input.int(24, '', minval = 1, maxval = 1000, inline = 'a1', group = gA, display = display.none)
-maA31 = input.int(8, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a3', group = gA,
+maA12 = input.int(51, '', minval = 1, maxval = 1000, inline = 'a1', group = gA, display = display.none)
+maA31 = input.int(5, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'a3', group = gA,
      tooltip = 'The same two, measured on the second timeframe. Live only while the chart is on it.', display = display.none)
-maA32 = input.int(19, '', minval = 1, maxval = 1000, inline = 'a3', group = gA, display = display.none)
+maA32 = input.int(40, '', minval = 1, maxval = 1000, inline = 'a3', group = gA, display = display.none)
 
 onB  = input.bool(true, 'Gate B on', group = gB, display = display.none)
 pctB = input.float(80.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gb', group = gB,
      tooltip = 'Gate B. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minB = input.int(7, '', minval = 1, inline = 'gb', group = gB, display = display.none)
-maB11 = input.int(6, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b1', group = gB,
+maB11 = input.int(28, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b1', group = gB,
      tooltip = 'The two lengths maSweepPairs.pine ranked first and second for gate B on the first timeframe.', display = display.none)
-maB12 = input.int(7, '', minval = 1, maxval = 1000, inline = 'b1', group = gB, display = display.none)
-maB31 = input.int(13, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b3', group = gB,
+maB12 = input.int(29, '', minval = 1, maxval = 1000, inline = 'b1', group = gB, display = display.none)
+maB31 = input.int(50, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'b3', group = gB,
      tooltip = 'The same two on the second timeframe. Live while the chart is on it.', display = display.none)
-maB32 = input.int(6, '', minval = 1, maxval = 1000, inline = 'b3', group = gB, display = display.none)
+maB32 = input.int(44, '', minval = 1, maxval = 1000, inline = 'b3', group = gB, display = display.none)
 
 onC  = input.bool(true, 'Gate C on', group = gC, display = display.none)
 pctC = input.float(90.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gc', group = gC,
      tooltip = 'Gate C. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minC = input.int(8, '', minval = 1, inline = 'gc', group = gC, display = display.none)
-maC11 = input.int(41, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
-maC12 = input.int(24, '', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
-maC31 = input.int(5, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
-maC32 = input.int(6, '', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
+maC11 = input.int(49, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
+maC12 = input.int(45, '', minval = 1, maxval = 1000, inline = 'c1', group = gC, display = display.none)
+maC31 = input.int(47, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
+maC32 = input.int(48, '', minval = 1, maxval = 1000, inline = 'c3', group = gC, display = display.none)
 
 onD  = input.bool(true, 'Gate D on', group = gD, display = display.none)
 pctD = input.float(95.0, 'Percentage  /  Min entries', minval = 1.0, maxval = 100.0, step = 0.05, inline = 'gd', group = gD,
      tooltip = 'Gate D. The percentage and the minimum entries that define this gate, swept on both timeframes.', display = display.none)
 minD = input.int(9, '', minval = 1, inline = 'gd', group = gD, display = display.none)
-maD11 = input.int(9, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
-maD12 = input.int(24, '', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
-maD31 = input.int(9, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
-maD32 = input.int(8, '', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
+maD11 = input.int(53, 'MA on 1st timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
+maD12 = input.int(47, '', minval = 1, maxval = 1000, inline = 'd1', group = gD, display = display.none)
+maD31 = input.int(55, 'MA on 2nd timeframe:  best  /  second', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
+maD32 = input.int(56, '', minval = 1, maxval = 1000, inline = 'd3', group = gD, display = display.none)
 
 // Which column of the grid the chart is asking for.
 //
