@@ -11,3 +11,8 @@ checks/*
 !checks/*.cjs
 !checks/*.mts
 !checks/*.ts
+
+# Hand-made backups of the Pine files - mid-session snapshots kept for
+# recovery, never part of the project. Same reasoning as the data above: they
+# stay on disk, git simply stops asking about them.
+*.bak*
